@@ -200,6 +200,29 @@ it.each(LINES.flatMap((line) => Object.keys(MOUNTS).map((mount) => [line, mount]
   },
 )
 
+// rg drops a byte-order mark only where a file starts, which a line answer
+// cannot say it does, so an answer that starts with one is not used. Twin of
+// test_rg_reads_a_file_whose_line_answer_starts_with_a_mark.
+const MARKED: Record<string, number[]> = {
+  '/m/mid.txt': [...ENC.encode('skip\n'), 0xef, 0xbb, 0xbf, ...ENC.encode('ada\n')],
+  '/m/top.txt': [0xef, 0xbb, 0xbf, ...ENC.encode('ada\n')],
+}
+
+function marked(vfs: RAMVFS): RAMVFS {
+  vfs.store.dirs.add('/m')
+  for (const [key, data] of Object.entries(MARKED)) vfs.store.files.set(key, new Uint8Array(data))
+  return vfs
+}
+
+it.each(['bytes', 'stream'] as const)(
+  'reads a file whose rg line answer starts with a mark (%s)',
+  async (lines) => {
+    const searched = await run(marked(new SearchRAM({ files: false, lines })), 'rg -x ada /m')
+    expect(searched).toEqual(await run(marked(new RAMVFS()), 'rg -x ada /m'))
+    expect(searched[0]).toBe('/m/top.txt:ada\n')
+  },
+)
+
 const EVERY = 'a.txt b.txt c.txt sub/d.txt z.txt'
 
 // Twin of test_what_a_search_reads_asks_and_scans.

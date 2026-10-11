@@ -196,6 +196,28 @@ def test_a_search_never_changes_what_grep_and_rg_print(line, mount):
     assert _run(SearchRAM(**MOUNTS[mount]), line) == _run(RAMVFS(), line)
 
 
+# rg drops a byte-order mark only where a file starts, which a line answer
+# cannot say it does, so an answer that starts with one is not used.
+MARKED = {
+    "/m/mid.txt": b"skip\n\xef\xbb\xbfada\n",
+    "/m/top.txt": b"\xef\xbb\xbfada\n",
+}
+
+
+def _marked(vfs: RAMVFS) -> RAMVFS:
+    vfs._store.dirs.add("/m")
+    vfs._store.files.update(MARKED)
+    return vfs
+
+
+@pytest.mark.parametrize("lines", ["bytes", "stream"])
+def test_rg_reads_a_file_whose_line_answer_starts_with_a_mark(lines):
+    line = "rg -x ada /m"
+    searched = _run(_marked(SearchRAM(files=False, lines=lines)), line)
+    assert searched == _run(_marked(RAMVFS()), line)
+    assert searched[0] == b"/m/top.txt:ada\n"
+
+
 EVERY = "a.txt b.txt c.txt sub/d.txt z.txt"
 
 

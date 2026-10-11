@@ -301,7 +301,9 @@ export async function handleCommand(
     )
   }
 
-  // A wrapper execs the program it names, past every function and CLI.
+  // A wrapper execs the program it names, past every function and CLI; the
+  // session's allow list judges the name it typed.
+  const typed = cmdName
   const wrapped = EXEC_WRAPPERS.get(cmdName)
   if (wrapped !== undefined) {
     const [runs, option] = wrapped
@@ -337,8 +339,8 @@ export async function handleCommand(
   // backend work. The admission policies (fired upstream at the
   // dispatch chokepoint) stay ahead of this so
   // protective refusals keep their specific messages.
-  if (lookup(cmdName, session, registry) === Consumer.UNKNOWN) {
-    const errBytes = encodeText(`${cmdName}: command not found\n`)
+  if (lookup(typed, session, registry) === Consumer.UNKNOWN) {
+    const errBytes = encodeText(`${typed}: command not found\n`)
     return [
       null,
       new IOResult({ exitCode: 127, stderr: errBytes }),

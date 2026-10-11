@@ -110,3 +110,17 @@ async def test_a_cross_mount_sed_in_place_keeps_both_edited_files_cached():
         assert await again.materialize_stdout() == b"b1\n"
     finally:
         await ws.close()
+
+
+# A session that may run egrep runs it, though egrep runs grep.
+@pytest.mark.asyncio
+async def test_an_allowed_wrapper_runs_without_the_program_it_names():
+    ws = Workspace(
+        {"/data": (RAMVFS(), MountMode.WRITE)}, mode=MountMode.WRITE
+    )
+    await ws.shell("printf 'a|b\\nx\\n' > /data/e.txt")
+    ws.create_session("narrow", profile={"commands": {"allow": ["egrep"]}})
+    io = await ws.shell("egrep 'a|x' /data/e.txt", session_id="narrow")
+    assert (io.exit_code, io.stdout) == (0, b"a|b\nx\n")
+    io = await ws.shell("grep x /data/e.txt", session_id="narrow")
+    assert io.exit_code == 127

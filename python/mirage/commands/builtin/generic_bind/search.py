@@ -42,11 +42,12 @@ from mirage.commands.config import CommandIO, CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
-from mirage.io.stream import close_quietly, ensure_stream
+from mirage.io.stream import async_chain, close_quietly, ensure_stream
 from mirage.io.types import ByteSource, materialize
 from mirage.observe.context import revision_for
 from mirage.shell.bytes import byte_view, utf8_locale
 from mirage.types import FileType, PathSpec
+from mirage.utils.encoding import bom_of
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
 from mirage.utils.path import glob_prefix_match
 from mirage.vfs.types import ScanReason
@@ -221,6 +222,27 @@ def candidate_reads(
             await close_quietly(chunks)
 
     return read, stream
+
+
+async def _unmarked(found: ByteSource) -> ByteSource | None:
+    """rg's ``lines_containing`` answer as it stands, or None, so the file
+    is read, when it starts with a byte-order mark: rg drops a mark only
+    where the file starts, which an answer cannot say it does.
+
+    Args:
+        found (ByteSource): the answer.
+    """
+    if isinstance(found, bytes):
+        return None if bom_of(found) is not None else found
+    head = b""
+    async for chunk in found:
+        head += chunk
+        if len(head) >= 3:
+            break
+    if bom_of(head) is not None:
+        await close_quietly(found)
+        return None
+    return async_chain([head, found])
 
 
 async def _holds_line(found: ByteSource) -> bool:
@@ -408,7 +430,8 @@ async def search_reads(
             )
             if found is None:
                 await read_unanswered()
-            return found
+                return None
+            return await _unmarked(found) if name == "rg" else found
         for text in terms.texts:
             found = await lines(
                 accessor,

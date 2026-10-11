@@ -46,7 +46,8 @@ NOTE = (
 
 def fetch(name: str) -> str:
     with urllib.request.urlopen(f"{SPEC}/{name}") as response:
-        return response.read().decode()
+        data: bytes = response.read()
+    return data.decode()
 
 
 def high_half(name: str) -> list[int]:

@@ -322,7 +322,9 @@ async def handle_command(
             ),
         )
 
-    # A wrapper execs the program it names, past every function and CLI.
+    # A wrapper execs the program it names, past every function and CLI;
+    # the session's allow list judges the name it typed.
+    typed = cmd_name
     if cmd_name in EXEC_WRAPPERS:
         cmd_name, option = EXEC_WRAPPERS[cmd_name]
         parts = [cmd_name, option, *parts[1:]]
@@ -354,8 +356,8 @@ async def handle_command(
     # backend work. The admission policies (fired upstream at the
     # dispatch chokepoint) stay ahead of this so protective refusals
     # keep their specific messages.
-    if lookup(cmd_name, session, registry) is Consumer.UNKNOWN:
-        err = encode_text(f"{cmd_name}: command not found\n")
+    if lookup(typed, session, registry) is Consumer.UNKNOWN:
+        err = encode_text(f"{typed}: command not found\n")
         return (
             None,
             IOResult(exit_code=127, stderr=err),

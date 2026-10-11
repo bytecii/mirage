@@ -17,9 +17,11 @@ import { pathsScoped } from '../../../view/namespace_view.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 
 import { ScanReason } from '../../../vfs/types.ts'
-import { ensureStream } from '../../../io/stream.ts'
+import { asyncChain, closeQuietly, ensureStream } from '../../../io/stream.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { byteView, utf8Locale } from '../../../shell/bytes.ts'
+import { concat } from '../../../utils/bytes.ts'
+import { bomOf } from '../../../utils/encoding.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../utils/filetype.ts'
 import { globPrefixMatch } from '../../../utils/path.ts'
 import { isFsError } from '../../../errors/fs.ts'
@@ -162,6 +164,27 @@ export function candidateReads(
       if (chunk.length > 0) yield chunk
     }
   }
+}
+
+/**
+ * rg's `linesContaining` answer as it stands, or null, so the file is read,
+ * when it starts with a byte-order mark: rg drops a mark only where the file
+ * starts, which an answer cannot say it does. Mirrors Python's `_unmarked`.
+ */
+async function unmarked(found: ByteSource): Promise<ByteSource | null> {
+  if (found instanceof Uint8Array) return bomOf(found) === null ? found : null
+  const rest = found[Symbol.asyncIterator]()
+  let head: Uint8Array = new Uint8Array(0)
+  while (head.length < 3) {
+    const step = await rest.next()
+    if (step.done === true) break
+    head = concat([head, step.value])
+  }
+  if (bomOf(head) !== null) {
+    await closeQuietly(found)
+    return null
+  }
+  return asyncChain([head, { [Symbol.asyncIterator]: () => rest }])
 }
 
 // Whether a `linesContaining` answer holds a line; a stream is pulled to its
@@ -314,8 +337,11 @@ export async function searchReads<A extends Accessor>(
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {
       const answer = await lines(accessor, path, only, ignoreCase, index)
-      if (answer === null) await readUnanswered()
-      return answer
+      if (answer === null) {
+        await readUnanswered()
+        return null
+      }
+      return name === 'rg' ? unmarked(answer) : answer
     }
     for (const text of asked.texts) {
       const answer = await lines(accessor, path, text, ignoreCase, index)

@@ -273,3 +273,24 @@ describe('the cross-mount entry point', () => {
     }
   })
 })
+
+// Twin of test_an_allowed_wrapper_runs_without_the_program_it_names: a
+// session that may run egrep runs it, though egrep runs grep.
+describe('a wrapper', () => {
+  it('runs where the allow list names it but not the program it runs', async () => {
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      await ws.shell("printf 'a|b\\nx\\n' > /data/e.txt")
+      ws.createSession('narrow', { profile: { commands: { allow: ['egrep'] } } })
+      const io = await ws.shell("egrep 'a|x' /data/e.txt", { sessionId: 'narrow' })
+      expect([io.exitCode, new TextDecoder().decode(io.stdout)]).toEqual([0, 'a|b\nx\n'])
+      const plain = await ws.shell('grep x /data/e.txt', { sessionId: 'narrow' })
+      expect(plain.exitCode).toBe(127)
+    } finally {
+      await ws.close()
+    }
+  })
+})
