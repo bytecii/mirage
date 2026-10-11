@@ -15,11 +15,12 @@
 import argparse
 import asyncio
 import functools
+import logging
 import os
 import posixpath
 import shlex
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import asyncssh
 
@@ -32,6 +33,8 @@ import asyncssh
 #
 # The advertised URLs below stay on 127.0.0.1 on purpose: 0.0.0.0 is an
 # interface to listen on, not an address anything can connect to.
+logger = logging.getLogger(__name__)
+
 BIND_HOST = os.environ.get("MIRAGE_BIND_HOST", "127.0.0.1")
 
 # A directory the server's own access check refuses to list, the way
@@ -77,13 +80,42 @@ def _inside(root: str, path: str) -> bool:
     return real == root or real.startswith(root + os.sep)
 
 
+def _files(
+    root: str, directory: str, ancestors: frozenset[str]
+) -> Iterator[str | None]:
+    """The regular files below ``directory`` inside ``root``, links
+    followed, under every name the tree gives them; None where a link
+    leads back into a directory being walked, which GNU grep reports as a
+    recursive directory loop.
+
+    Args:
+        root (str): Local directory served as the SFTP root.
+        directory (str): The directory walked.
+        ancestors (frozenset[str]): The real paths of the directories
+            above it.
+    """
+    real = os.path.realpath(directory)
+    if real in ancestors:
+        yield None
+        return
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if not _inside(root, path):
+            continue
+        if os.path.isdir(path):
+            yield from _files(root, path, ancestors | {real})
+        elif os.path.isfile(path):
+            yield path
+
+
 def search_names(
     root: str, text: bytes, fold: bool, scopes: list[str]
 ) -> tuple[int, bytes, bytes]:
     """What the search's grep answers over ``scopes`` under the chroot the
     SFTP server applies: the regular files holding ``text`` (ASCII case
     folded under ``fold``), links followed, NUL-ended, with grep's exit
-    status. Nothing outside ``root`` is read, through a link or not.
+    status. Nothing outside ``root`` is read, through a link or not, and
+    a loop or an unreadable file exits 2, as grep does.
 
     Args:
         root (str): Local directory served as the SFTP root.
@@ -103,25 +135,21 @@ def search_names(
                 b"",
                 f"grep: {scope}: No such file or directory\n".encode(),
             )
-        walked: set[str] = set()
-        for directory, dirs, files in os.walk(base, followlinks=True):
-            real = os.path.realpath(directory)
-            if real in walked or not _inside(root, real):
-                dirs[:] = []
+        for path in _files(root, base, frozenset()):
+            if path is None:
+                status = 2
                 continue
-            walked.add(real)
-            for name in sorted(files):
-                path = os.path.join(directory, name)
-                if not _inside(root, path) or not os.path.isfile(path):
-                    continue
-                try:
-                    with open(path, "rb") as handle:
-                        data = handle.read()
-                except OSError:
-                    status = 2
-                    continue
-                if needle in (data.lower() if fold else data):
-                    names.append(scope.rstrip("/") + path[len(base) :])
+            try:
+                with open(path, "rb") as handle:
+                    data = handle.read()
+            except OSError as exc:
+                logger.debug(
+                    "ssh fake search could not read %s: %s", path, exc
+                )
+                status = 2
+                continue
+            if needle in (data.lower() if fold else data):
+                names.append(scope.rstrip("/") + path[len(base) :])
     if names and status != 2:
         status = 0
     return status, b"".join(n.encode() + b"\0" for n in names), b""
