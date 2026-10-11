@@ -19,7 +19,7 @@ import { MountMode } from '../types.ts'
 import { Workspace } from '../workspace/workspace/workspace.ts'
 import { getTestParser } from '../workspace/fixtures/workspace_fixture.ts'
 import type { Policy } from './base.ts'
-import type { Action, CommandContext } from './types.ts'
+import { Outcome, type Action, type CommandContext, type Decision } from './types.ts'
 
 // The browser-runtime branch under node's test runner: no task isolation,
 // so a hook cannot run as a policy deciding.
@@ -60,6 +60,49 @@ describe('a hook without task isolation', () => {
       expect(refused).toEqual(['EACCES'])
       expect(files).toBeUndefined()
       expect((await ws.shell('echo $TEAM')).stdoutText).toBe('core\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it("spends a write's approval with that write, while another waits", async () => {
+    // A's write waits on the host while B's is approved: B's nod is spent
+    // with B's write, not left standing on A's call.
+    let entered!: () => void
+    let release!: () => void
+    const reached = new Promise<void>((resolve) => (entered = resolve))
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const askedB: string[] = []
+    const asker: Policy = {
+      preSession: (ctx) => (ctx.key === 'X' ? { kind: 'ask', reason: 'x' } : null),
+    }
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: await getTestParser(),
+        policies: [asker],
+        onAsk: async (record: Decision) => {
+          if (record.sessionId === 'a') {
+            entered()
+            await held
+          } else {
+            askedB.push(record.sessionId)
+          }
+          return { ...record, outcome: Outcome.ALLOW }
+        },
+      },
+    )
+    ws.createSession('a')
+    ws.createSession('b')
+    try {
+      const a = ws.shell('export X=1', { sessionId: 'a' })
+      await reached
+      expect((await ws.shell('export X=2', { sessionId: 'b' })).exitCode).toBe(0)
+      expect((await ws.shell('export X=2', { sessionId: 'b' })).exitCode).toBe(0)
+      expect(askedB).toEqual(['b', 'b'])
+      release()
+      expect((await a).exitCode).toBe(0)
     } finally {
       await ws.close()
     }

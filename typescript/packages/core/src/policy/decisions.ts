@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { createAsyncContext } from '../utils/async_context.ts'
+import { asyncContextIsolatesTasks, createAsyncContext } from '../utils/async_context.ts'
 import { explaining } from '../context/session_context.ts'
 import { sha256Hex } from '../utils/hash.ts'
 import { PolicyDenied } from './errors.ts'
@@ -499,10 +499,12 @@ export class Decisions {
    * retry finds the grants standing, as a held line's does. A call made
    * inside another runs in the outer one; a call another ledger runs (a
    * host callback reaching a second workspace mid-call) is no call of this
-   * one's. Mirrors Python's `within_call`.
+   * one's. Without task isolation a call's frame would reach every other
+   * task's ops, so there a grant is spent where it is used. Mirrors
+   * Python's `within_call`.
    */
   async withinCall<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    if (getOpCall(this) !== null) return run()
+    if (!asyncContextIsolatesTasks || getOpCall(this) !== null) return run()
     const handed: HandOff = { claimed: [], parent: null, origin: null }
     try {
       return await runWithOpCall(this, handed, run)
