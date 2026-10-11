@@ -52,7 +52,7 @@ function bytes(text: string): Uint8Array {
 describe('grepCommand', () => {
   it('quotes the text and every scope', () => {
     expect(grepCommand("it's", ['data/a b'], true)).toBe(
-      "env LC_ALL=C grep --dereference-recursive -lF --null -i -e 'it'\\''s' -- 'data/a b'",
+      "env LC_ALL=C grep --dereference-recursive --devices=skip -lF --null -i -e 'it'\\''s' -- 'data/a b'",
     )
   })
 })
@@ -71,13 +71,16 @@ describe('filesContaining', () => {
   })
 
   // Only a clean run answers: a file grep could not read (exit 2, which the
-  // walk then reports), a grep refusing an option (busybox exits 1 for one),
-  // a signal, a name outside the root or not UTF-8, and a server that runs no
-  // command all leave every file to be read. Twin of
+  // walk then reports), a grep refusing an option (busybox exits 1 for one), a
+  // server forced to internal-sftp (its refusal on stdout, exit 1), output cut
+  // short, a signal, a name outside the root or not UTF-8, and a server that
+  // runs no command all leave every file to be read. Twin of
   // test_files_containing_leaves_an_unclean_run_to_the_scan.
   it.each<[string, Answer]>([
     ['exit 2', [2, bytes('/data/a.txt\0'), new Uint8Array()]],
     ['stderr', [1, new Uint8Array(), bytes('grep: unrecognized option\n')]],
+    ['internal-sftp', [1, bytes('This service allows sftp connections only.\n'), new Uint8Array()]],
+    ['cut short', [0, bytes('/data/a.txt\0/data/b'), new Uint8Array()]],
     ['signal', [null, new Uint8Array(), new Uint8Array()]],
     ['outside', [0, bytes('/elsewhere/a\0'), new Uint8Array()]],
     [

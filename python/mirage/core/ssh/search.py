@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 # The remote search: grep in the C locale, so it compares bytes as mirage
 # reads them; --dereference-recursive, so it reads every file the walk can
 # reach, a link's target included (GNU's spelling of -R: BSD grep's -R
-# follows no link, and refuses this one); and --null, so a name ends where
-# a NUL does. `env` sets the locale under any login shell.
-GREP = "env LC_ALL=C grep --dereference-recursive -lF --null"
+# follows no link, and refuses this one); --devices=skip, so a FIFO the
+# walk would never read cannot block it; and --null, so a name ends where a
+# NUL does. `env` sets the locale under any login shell.
+GREP = "env LC_ALL=C grep --dereference-recursive --devices=skip -lF --null"
 
 
 def grep_command(text: str, scopes: list[str], ignore_case: bool) -> str:
@@ -56,10 +57,11 @@ async def files_containing(
 
     The answer is exact, since every file is searched, so a whole word
     is asked as plain text: a file the word only sits inside is one more
-    read. Only an exit of 0 or 1 with nothing on stderr answers: a
-    server that runs no commands, a grep that refuses an option (busybox
-    exits 1 for one), or a file it could not read (which the walk then
-    reports) leaves every file to be read.
+    read. Only an exit of 0 or 1 with nothing on stderr, and output that
+    is NUL-ended names, answers: a server that runs no commands (one
+    forced to internal-sftp says so on stdout and exits 1), a grep that
+    refuses an option (busybox exits 1 for one), or a file it could not
+    read (which the walk then reports) leaves every file to be read.
 
     Args:
         accessor (SSHAccessor): the mount's connection.
@@ -76,14 +78,15 @@ async def files_containing(
     except (asyncssh.Error, OSError) as exc:
         logger.debug("ssh search left to the scan: %s", exc)
         return None
-    if status not in (0, 1) or err:
+    if status not in (0, 1) or err or (out and not out.endswith(b"\0")):
         return None
     base = root.rstrip("/")
     hits: list[PathSpec] = []
     for raw in out.split(b"\0")[:-1]:
         try:
             name = raw.decode()
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as exc:
+            logger.debug("ssh search left to the scan: %s", exc)
             return None
         if not name.startswith(base + "/"):
             return None

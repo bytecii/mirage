@@ -53,8 +53,8 @@ def _scope(vfs_path: str = "") -> PathSpec:
 
 def test_grep_command_quotes_the_text_and_every_scope():
     assert grep_command("it's", ["data/a b"], True) == (
-        "env LC_ALL=C grep --dereference-recursive -lF --null -i "
-        "-e 'it'\\''s' -- 'data/a b'"
+        "env LC_ALL=C grep --dereference-recursive --devices=skip -lF "
+        "--null -i -e 'it'\\''s' -- 'data/a b'"
     )
 
 
@@ -80,14 +80,17 @@ async def test_files_containing_names_what_grep_lists(
 
 # Only a clean run answers: a file grep could not read (exit 2, which the
 # walk then reports), a grep refusing an option (busybox exits 1 for one),
-# a signal, a name outside the root or not UTF-8, and a server that runs
-# no command all leave every file to be read.
+# a server forced to internal-sftp (its refusal on stdout, exit 1), output
+# cut short, a signal, a name outside the root or not UTF-8, and a server
+# that runs no command all leave every file to be read.
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "answer",
     [
         (2, b"/data/a.txt\0", b""),
         (1, b"", b"grep: unrecognized option\n"),
+        (1, b"This service allows sftp connections only.\n", b""),
+        (0, b"/data/a.txt\0/data/b", b""),
         (None, b"", b""),
         (0, b"/elsewhere/a\0", b""),
         (0, b"/data/\xff\0", b""),

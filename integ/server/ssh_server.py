@@ -41,9 +41,19 @@ BIND_HOST = os.environ.get("MIRAGE_BIND_HOST", "127.0.0.1")
 # so the battery cannot make one through the shell.
 UNLISTABLE = b"unlistable"
 
-# The one command the server runs: the remote grep an ssh mount's search
-# sends. Nothing else runs on a server that asks for no password.
-GREP = ["env", "LC_ALL=C", "grep"]
+# The one command the server answers: the remote grep an ssh mount's
+# search sends, `SEARCH [-i] -e TEXT -- SCOPE...`. A server that asks for no
+# password runs nothing, so it answers this one itself, reading only inside
+# the served root.
+SEARCH = [
+    "env",
+    "LC_ALL=C",
+    "grep",
+    "--dereference-recursive",
+    "--devices=skip",
+    "-lF",
+    "--null",
+]
 
 
 class NoAuthServer(asyncssh.SSHServer):
@@ -62,35 +72,85 @@ class ChrootSFTPServer(asyncssh.SFTPServer):
             yield name
 
 
-async def run_grep(root: str, process: asyncssh.SSHServerProcess) -> None:
-    """Run the search's grep without a shell, under the same chroot the
-    SFTP server applies: each scope is taken under ``root``, and each name
-    grep prints is given back as the client named it.
+def _inside(root: str, path: str) -> bool:
+    real = os.path.realpath(path)
+    return real == root or real.startswith(root + os.sep)
+
+
+def search_names(
+    root: str, text: bytes, fold: bool, scopes: list[str]
+) -> tuple[int, bytes, bytes]:
+    """What the search's grep answers over ``scopes`` under the chroot the
+    SFTP server applies: the regular files holding ``text`` (ASCII case
+    folded under ``fold``), links followed, NUL-ended, with grep's exit
+    status. Nothing outside ``root`` is read, through a link or not.
+
+    Args:
+        root (str): Local directory served as the SFTP root.
+        text (bytes): The text searched for.
+        fold (bool): Whether -i was given.
+        scopes (list[str]): The directories, as the client named them.
+    """
+    root = os.path.realpath(root)
+    needle = text.lower() if fold else text
+    names: list[str] = []
+    status = 1
+    for scope in scopes:
+        base = os.path.join(root, scope.lstrip("/"))
+        if not _inside(root, base) or not os.path.isdir(base):
+            return (
+                2,
+                b"",
+                f"grep: {scope}: No such file or directory\n".encode(),
+            )
+        walked: set[str] = set()
+        for directory, dirs, files in os.walk(base, followlinks=True):
+            real = os.path.realpath(directory)
+            if real in walked or not _inside(root, real):
+                dirs[:] = []
+                continue
+            walked.add(real)
+            for name in sorted(files):
+                path = os.path.join(directory, name)
+                if not _inside(root, path) or not os.path.isfile(path):
+                    continue
+                try:
+                    with open(path, "rb") as handle:
+                        data = handle.read()
+                except OSError:
+                    status = 2
+                    continue
+                if needle in (data.lower() if fold else data):
+                    names.append(scope.rstrip("/") + path[len(base) :])
+    if names and status != 2:
+        status = 0
+    return status, b"".join(n.encode() + b"\0" for n in names), b""
+
+
+async def run_search(root: str, process: asyncssh.SSHServerProcess) -> None:
+    """Answer the ssh search's grep, and refuse any other command.
 
     Args:
         root (str): Local directory served as the SFTP root.
         process (asyncssh.SSHServerProcess): The exec request.
     """
     argv = shlex.split(process.command or "")
-    if argv[:3] != GREP or "--" not in argv:
-        process.stderr.write(b"only the search's grep runs here\n")
+    fold = argv[len(SEARCH) : len(SEARCH) + 1] == ["-i"]
+    rest = argv[len(SEARCH) + fold :]
+    if (
+        argv[: len(SEARCH)] != SEARCH
+        or len(rest) < 4
+        or rest[::2][:2] != ["-e", "--"]
+    ):
+        process.stderr.write(b"only the ssh search runs here\n")
         process.exit(127)
         return
-    cut = argv.index("--") + 1
-    scopes = [scope.lstrip("/") or "." for scope in argv[cut:]]
-    child = await asyncio.create_subprocess_exec(
-        *argv[:cut],
-        *scopes,
-        cwd=root,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    status, out, err = await asyncio.to_thread(
+        search_names, root, rest[1].encode(), fold, rest[3:]
     )
-    out, err = await child.communicate()
-    names = [name.removeprefix(b"./") for name in out.split(b"\0")[:-1]]
-    process.stdout.write(b"".join(b"/" + name + b"\0" for name in names))
+    process.stdout.write(out)
     process.stderr.write(err)
-    process.exit(child.returncode or 0)
+    process.exit(status)
 
 
 async def start_server(root: str, port: int = 0) -> asyncssh.SSHAcceptor:
@@ -108,7 +168,7 @@ async def start_server(root: str, port: int = 0) -> asyncssh.SSHAcceptor:
         server_host_keys=[host_key],
         server_factory=NoAuthServer,
         sftp_factory=functools.partial(ChrootSFTPServer, root),
-        process_factory=functools.partial(run_grep, root),
+        process_factory=functools.partial(run_search, root),
         encoding=None,
     )
 

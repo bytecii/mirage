@@ -21,9 +21,10 @@ import { joinRoot } from './utils.ts'
 // The remote search: grep in the C locale, so it compares bytes as mirage
 // reads them; --dereference-recursive, so it reads every file the walk can
 // reach, a link's target included (GNU's spelling of -R: BSD grep's -R
-// follows no link, and refuses this one); and --null, so a name ends where a
-// NUL does. `env` sets the locale under any login shell.
-export const GREP = 'env LC_ALL=C grep --dereference-recursive -lF --null'
+// follows no link, and refuses this one); --devices=skip, so a FIFO the walk
+// would never read cannot block it; and --null, so a name ends where a NUL
+// does. `env` sets the locale under any login shell.
+export const GREP = 'env LC_ALL=C grep --dereference-recursive --devices=skip -lF --null'
 
 /**
  * The remote grep that lists the files under `scopes` holding `text`.
@@ -40,10 +41,11 @@ export function grepCommand(text: string, scopes: string[], ignoreCase: boolean)
  *
  * The answer is exact, since every file is searched, so a whole word is asked
  * as plain text: a file the word only sits inside is one more read. Only an
- * exit of 0 or 1 with nothing on stderr answers: a server that runs no
- * commands, a grep that refuses an option (busybox exits 1 for one), or a
- * file it could not read (which the walk then reports) leaves every file to
- * be read. Mirrors Python's `files_containing`.
+ * exit of 0 or 1 with nothing on stderr, and output that is NUL-ended names,
+ * answers: a server that runs no commands (one forced to internal-sftp says
+ * so on stdout and exits 1), a grep that refuses an option (busybox exits 1
+ * for one), or a file it could not read (which the walk then reports) leaves
+ * every file to be read. Mirrors Python's `files_containing`.
  */
 export async function filesContaining(
   accessor: SSHAccessor,
@@ -63,6 +65,7 @@ export async function filesContaining(
     return null
   }
   if ((status !== 0 && status !== 1) || err.length > 0) return null
+  if (out.length > 0 && out[out.length - 1] !== 0) return null
   const [first] = under
   if (first === undefined) return []
   const base = root.replace(/\/+$/, '')
@@ -73,7 +76,8 @@ export async function filesContaining(
     let name: string
     try {
       name = decoder.decode(out.subarray(start, end))
-    } catch {
+    } catch (error) {
+      console.debug(`ssh search left to the scan: ${String(error)}`)
       return null
     }
     if (!name.startsWith(`${base}/`)) return null
