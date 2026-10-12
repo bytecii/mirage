@@ -17,11 +17,11 @@ import type { Accessor } from '../../../accessor/base.ts'
 import { IOResult } from '../../../io/types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
+import { chunks } from '../../../io/cooperative.ts'
+import type { ByteSource } from '../../../io/types.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
-const DEC = new TextDecoder()
 
 // Grammar, shared with `bc.py` so the two hosts parse one language
 // (precedence low to high):
@@ -1506,10 +1506,11 @@ function lineStatements(
   return [out, quits]
 }
 
-// Read bc's input into the statements of each logical line, stripping
-// its comments, and answer whether a block comment ran to the end of the
-// input -- which GNU reports and which discards the statements it was
-// reading. The grouping is what GNU runs as one unit: a whole
+// Read bc's input into the statements of each logical line as it arrives,
+// stripping its comments, and yield last `EOF_IN_COMMENT` when a block
+// comment runs to the end of the input -- which GNU reports and which
+// discards the statements it was reading. The grouping is what GNU runs as
+// one unit: a whole
 // `semicolon_list`, however many input lines a block comment stretched it
 // over, so a parse error anywhere in a group discards the whole group.
 //
@@ -1521,67 +1522,98 @@ function lineStatements(
 // counter without ending the statement. A string is neither: it is copied
 // verbatim, so `"a#b"` keeps its hash and a string carrying a newline
 // keeps the statement open across the line break.
-function parseInput(text: string): [BcStatement[][], boolean] {
-  const lines: BcStatement[][] = []
-  let chars: string[] = []
-  let charLines: number[] = []
+async function* parseInput(
+  source: ByteSource,
+  signal?: AbortSignal,
+): AsyncGenerator<BcStatement[] | string> {
+  const stream = chunks(source, signal)
+  const decoder = new TextDecoder()
+  let text = ''
   let pos = 0
-  let line = 1
-  while (pos < text.length) {
-    const char = text.charAt(pos)
-    if (char === STRING_QUOTE) {
-      const end = stringEnd(text, pos)
-      if (end > 0) {
-        // The token is copied as it stands: a `#` or a `/*` in it is
-        // content, and a newline in it advances the counter without
-        // ending the logical line, so a diagnostic after a string that
-        // spans lines still names its own line.
-        for (let index = pos; index < end; index++) {
-          const inner = text.charAt(index)
-          chars.push(inner)
-          charLines.push(line)
-          if (inner === '\n') line++
+  let exhausted = false
+  const refill = async (): Promise<void> => {
+    const next = await stream.next()
+    exhausted = next.done === true
+    text += next.done === true ? decoder.decode() : decoder.decode(next.value, { stream: true })
+  }
+  const ended = (): boolean => exhausted
+  const more = async (): Promise<boolean> => {
+    while (pos >= text.length && !ended()) await refill()
+    return pos < text.length
+  }
+  try {
+    let chars: string[] = []
+    let charLines: number[] = []
+    let line = 1
+    while (await more()) {
+      const char = text.charAt(pos)
+      if (char === STRING_QUOTE) {
+        let end = stringEnd(text, pos)
+        while (end < 0 && !ended()) {
+          await refill()
+          end = stringEnd(text, pos)
         }
-        pos = end
+        if (end > 0) {
+          // The token is copied as it stands: a `#` or a `/*` in it is
+          // content, and a newline in it advances the counter without
+          // ending the logical line, so a diagnostic after a string that
+          // spans lines still names its own line.
+          for (let index = pos; index < end; index++) {
+            const inner = text.charAt(index)
+            chars.push(inner)
+            charLines.push(line)
+            if (inner === '\n') line++
+          }
+          pos = end
+          continue
+        }
+        // No closing quote anywhere: the parser reports this one as an
+        // illegal character, and the rest of the input lexes as usual,
+        // comments included.
+      }
+      if (char === LINE_COMMENT) {
+        while ((await more()) && text.charAt(pos) !== '\n') pos++
         continue
       }
-      // No closing quote anywhere: the parser reports this one as an
-      // illegal character, and the rest of the input lexes as usual,
-      // comments included.
-    }
-    if (char === LINE_COMMENT) {
-      while (pos < text.length && text.charAt(pos) !== '\n') pos++
-      continue
-    }
-    if (text.startsWith(BLOCK_OPEN, pos)) {
-      pos += BLOCK_OPEN.length
-      while (pos < text.length && !text.startsWith(BLOCK_CLOSE, pos)) {
-        if (text.charAt(pos) === '\n') line++
-        pos++
+      if (char === '/' && pos + 1 === text.length && !ended()) await refill()
+      if (text.startsWith(BLOCK_OPEN, pos)) {
+        pos += BLOCK_OPEN.length
+        while (await more()) {
+          if (text.charAt(pos) === '*' && pos + 1 === text.length && !ended()) await refill()
+          if (text.startsWith(BLOCK_CLOSE, pos)) break
+          if (text.charAt(pos) === '\n') line++
+          pos++
+        }
+        if (pos >= text.length) {
+          yield EOF_IN_COMMENT
+          return
+        }
+        pos += BLOCK_CLOSE.length
+        chars.push(' ')
+        charLines.push(line)
+        continue
       }
-      if (pos >= text.length) return [lines, true]
-      pos += BLOCK_CLOSE.length
-      chars.push(' ')
+      if (char === '\n') {
+        const [found, quits] = lineStatements(chars.join(''), charLines, line)
+        if (found.length > 0) yield found
+        if (quits) return
+        chars = []
+        charLines = []
+        line++
+        text = text.slice(pos + 1)
+        pos = 0
+        continue
+      }
+      chars.push(char)
       charLines.push(line)
-      continue
-    }
-    if (char === '\n') {
-      const [found, quits] = lineStatements(chars.join(''), charLines, line)
-      if (found.length > 0) lines.push(found)
-      if (quits) return [lines, false]
-      chars = []
-      charLines = []
-      line++
       pos++
-      continue
     }
-    chars.push(char)
-    charLines.push(line)
-    pos++
+    const [found] = lineStatements(chars.join(''), charLines, line)
+    if (found.length > 0) yield found
+    return
+  } finally {
+    await stream.return?.()
   }
-  const [found] = lineStatements(chars.join(''), charLines, line)
-  if (found.length > 0) lines.push(found)
-  return [lines, false]
 }
 
 // Copy the state a discarded line has to be rolled back to. GNU compiles
@@ -1620,32 +1652,20 @@ function errorLine(statement: BcStatement, error: BcParseError): number {
   return statement.lines[error.pos] ?? statement.lines[0] ?? statement.incompleteLine
 }
 
-async function bc(
-  _accessor: Accessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const fl = new FlagView(opts.flags, specOf('bc'))
-  // -l is short-only, so it lands on the disambiguated `args_l` dest
-  // (`AMBIGUOUS_NAMES`); a plain `l` key is one the parser never emits.
-  const useMath = fl.asBool('args_l')
-  const raw = (await readStdinAsync(opts.stdin)) ?? new Uint8Array(0)
-  const state: BcState = {
-    scale: useMath ? MATH_LIBRARY_SCALE : 0,
-    mathMode: useMath,
-    ibase: DEFAULT_BASE,
-    obase: DEFAULT_BASE,
-    last: ZERO,
-    variables: new Map<string, BcNumber>(),
-    warnings: [],
-  }
-  const folder = new OutputColumn(outputLineSize(opts.env))
-  const results: string[] = []
-  const errors: string[] = []
-  const [lines, eofInComment] = parseInput(DEC.decode(raw))
+// Run each logical line as it arrives and yield what it prints; every
+// diagnostic lands in `errors`, in order.
+async function* runLines(
+  lines: AsyncIterable<BcStatement[] | string>,
+  state: BcState,
+  folder: OutputColumn,
+  errors: string[],
+): AsyncGenerator<Uint8Array> {
   let halted = false
-  for (const statements of lines) {
+  for await (const statements of lines) {
+    if (typeof statements === 'string') {
+      errors.push(statements)
+      continue
+    }
     // GNU compiles one whole line and runs it at its newline, so a parse
     // error anywhere on the line means none of it ever ran: the values,
     // the runtime errors, the warnings and every write are buffered here
@@ -1722,13 +1742,43 @@ async function bc(
       continue
     }
     errors.push(...lineErrors)
-    results.push(...lineResults)
+    if (lineResults.length > 0) yield ENC.encode(lineResults.join(''))
     if (halted) break
   }
-  if (eofInComment) errors.push(EOF_IN_COMMENT)
-  const stdout = ENC.encode(results.join(''))
-  const stderr = errors.length > 0 ? ENC.encode(errors.join('\n') + '\n') : null
-  return [stdout, new IOResult({ stderr })]
+}
+
+function bc(
+  _accessor: Accessor,
+  paths: PathSpec[],
+  texts: string[],
+  opts: CommandOpts,
+): Promise<CommandFnResult> {
+  const fl = new FlagView(opts.flags, specOf('bc'))
+  // -l is short-only, so it lands on the disambiguated `args_l` dest
+  // (`AMBIGUOUS_NAMES`); a plain `l` key is one the parser never emits.
+  const useMath = fl.asBool('args_l')
+  const state: BcState = {
+    scale: useMath ? MATH_LIBRARY_SCALE : 0,
+    mathMode: useMath,
+    ibase: DEFAULT_BASE,
+    obase: DEFAULT_BASE,
+    last: ZERO,
+    variables: new Map<string, BcNumber>(),
+    warnings: [],
+  }
+  const folder = new OutputColumn(outputLineSize(opts.env))
+  const errors: string[] = []
+  const lines = parseInput(opts.stdin ?? new Uint8Array(), opts.signal)
+  const io = new IOResult()
+  async function* output(): AsyncGenerator<Uint8Array> {
+    try {
+      yield* runLines(lines, state, folder, errors)
+    } finally {
+      await lines.return(undefined)
+      io.stderr = errors.length > 0 ? ENC.encode(errors.join('\n') + '\n') : null
+    }
+  }
+  return Promise.resolve([output(), io])
 }
 
 export const GENERAL_BC = command({

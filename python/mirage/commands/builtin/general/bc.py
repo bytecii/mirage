@@ -12,15 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import codecs
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.utils.stream import read_stdin_async
 from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.io.cooperative import chunks
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -2048,8 +2050,10 @@ def line_statements(
     return out, quits
 
 
-def parse_input(text: str) -> tuple[list[list[BcStatement]], bool]:
-    """Read bc's input into statements, stripping its comments.
+async def parse_input(
+    source: ByteSource,
+) -> AsyncGenerator[list[BcStatement] | str, None]:
+    """Read bc's input into statements as it arrives, stripping its comments.
 
     `#` runs to the end of its line and leaves the newline in place, so
     the newline still terminates the statement and the line counter still
@@ -2061,75 +2065,112 @@ def parse_input(text: str) -> tuple[list[list[BcStatement]], bool]:
     a newline keeps the statement open across the line break.
 
     Args:
-        text (str): the decoded stdin.
+        source (ByteSource): the stdin, decoded as UTF-8 as it arrives.
 
-    Returns:
-        tuple[list[list[BcStatement]], bool]: the statements of each
-            logical line, in order, and whether a block comment ran to
-            the end of the input, which GNU reports and which discards
-            the statements it was reading. The grouping is what GNU runs
-            as one unit -- a whole `semicolon_list`, however many input
-            lines a block comment stretched it over -- so a parse error
-            anywhere in a group discards the whole group.
+    Yields:
+        list[BcStatement] | str: the statements of each logical line, in
+            order, or last ``EOF_IN_COMMENT`` when a block comment runs to
+            the end of the input, which GNU reports and which discards the
+            statements it was reading. The grouping is what GNU runs as
+            one unit -- a whole `semicolon_list`, however many input lines
+            a block comment stretched it over -- so a parse error anywhere
+            in a group discards the whole group.
     """
-    lines: list[list[BcStatement]] = []
-    chars: list[str] = []
-    char_lines: list[int] = []
-    pos = 0
-    line = 1
-    while pos < len(text):
-        char = text[pos]
-        if char == STRING_QUOTE:
-            end = string_end(text, pos)
-            if end > 0:
-                # The token is copied as it stands: a `#` or a `/*` in it
-                # is content, and a newline in it advances the counter
-                # without ending the logical line, so a diagnostic after
-                # a string that spans lines still names its own line.
-                for index in range(pos, end):
-                    chars.append(text[index])
-                    char_lines.append(line)
-                    if text[index] == "\n":
-                        line += 1
-                pos = end
+    stream = chunks(source)
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    text = ""
+    exhausted = False
+
+    async def refill() -> None:
+        nonlocal text, exhausted
+        try:
+            text += decoder.decode(await anext(stream))
+        except StopAsyncIteration:
+            text += decoder.decode(b"", final=True)
+            exhausted = True
+
+    async def more() -> bool:
+        while pos >= len(text) and not exhausted:
+            await refill()
+        return pos < len(text)
+
+    try:
+        chars: list[str] = []
+        char_lines: list[int] = []
+        pos = 0
+        line = 1
+        while await more():
+            char = text[pos]
+            if char == STRING_QUOTE:
+                end = string_end(text, pos)
+                while end < 0 and not exhausted:
+                    await refill()
+                    end = string_end(text, pos)
+                if end > 0:
+                    # The token is copied as it stands: a `#` or a `/*` in it
+                    # is content, and a newline in it advances the counter
+                    # without ending the logical line, so a diagnostic after
+                    # a string that spans lines still names its own line.
+                    for index in range(pos, end):
+                        chars.append(text[index])
+                        char_lines.append(line)
+                        if text[index] == "\n":
+                            line += 1
+                    pos = end
+                    continue
+                # No closing quote anywhere: the parser reports this one as an
+                # illegal character, and the rest of the input lexes as
+                # usual, comments included.
+            if char == LINE_COMMENT:
+                while await more() and text[pos] != "\n":
+                    pos += 1
                 continue
-            # No closing quote anywhere: the parser reports this one as an
-            # illegal character, and the rest of the input lexes as
-            # usual, comments included.
-        if char == LINE_COMMENT:
-            while pos < len(text) and text[pos] != "\n":
-                pos += 1
-            continue
-        if text.startswith(BLOCK_OPEN, pos):
-            pos += len(BLOCK_OPEN)
-            while pos < len(text) and not text.startswith(BLOCK_CLOSE, pos):
-                if text[pos] == "\n":
-                    line += 1
-                pos += 1
-            if pos >= len(text):
-                return lines, True
-            pos += len(BLOCK_CLOSE)
-            chars.append(" ")
+            if text[pos] == "/" and pos + 1 == len(text) and not exhausted:
+                await refill()
+            if text.startswith(BLOCK_OPEN, pos):
+                pos += len(BLOCK_OPEN)
+                while await more():
+                    if (
+                        text[pos] == "*"
+                        and pos + 1 == len(text)
+                        and not exhausted
+                    ):
+                        await refill()
+                    if text.startswith(BLOCK_CLOSE, pos):
+                        break
+                    if text[pos] == "\n":
+                        line += 1
+                    pos += 1
+                if pos >= len(text):
+                    yield EOF_IN_COMMENT
+                    return
+                pos += len(BLOCK_CLOSE)
+                chars.append(" ")
+                char_lines.append(line)
+                continue
+            if char == "\n":
+                found, quits = line_statements(
+                    "".join(chars), char_lines, line
+                )
+                if found:
+                    yield found
+                if quits:
+                    return
+                chars = []
+                char_lines = []
+                line += 1
+                text = text[pos + 1 :]
+                pos = 0
+                continue
+            chars.append(char)
             char_lines.append(line)
-            continue
-        if char == "\n":
-            found, quits = line_statements("".join(chars), char_lines, line)
-            if found:
-                lines.append(found)
-            if quits:
-                return lines, False
-            chars = []
-            char_lines = []
-            line += 1
             pos += 1
-            continue
-        chars.append(char)
-        char_lines.append(line)
-        pos += 1
-    found, _ = line_statements("".join(chars), char_lines, line)
-    if found:
-        lines.append(found)
-    return lines, False
+        found, _ = line_statements("".join(chars), char_lines, line)
+        if found:
+            yield found
+        return
+    finally:
+        await stream.aclose()
 
 
 def snapshot_state(state: BcState) -> BcState:
@@ -2191,27 +2232,26 @@ def error_line(statement: BcStatement, error: BcParseError) -> int:
     return statement.lines[0]
 
 
-@command("bc", vfs=None, spec=SPECS["bc"])
-async def bc(
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(opts.flags, spec=SPECS["bc"])
-    use_math = fl.as_bool("args_l")
-    raw = await read_stdin_async(opts.stdin)
-    if raw is None:
-        raw = b""
-    state = BcState(
-        scale=MATH_LIBRARY_SCALE if use_math else 0, math_mode=use_math
-    )
-    folder = OutputColumn(output_line_size(opts.env))
-    results: list[str] = []
-    errors: list[str] = []
-    lines, eof_in_comment = parse_input(raw.decode(errors="replace"))
+async def run_lines(
+    lines: AsyncIterator[list[BcStatement] | str],
+    state: BcState,
+    folder: OutputColumn,
+    errors: list[str],
+) -> AsyncGenerator[bytes, None]:
+    """Run each logical line as it arrives and yield what it prints.
+
+    Args:
+        lines (AsyncIterator[list[BcStatement] | str]): ``parse_input``'s
+            lines, or its end-of-input diagnostic.
+        state (BcState): the interpreter state, updated in place.
+        folder (OutputColumn): folds the output at the line length.
+        errors (list[str]): receives every diagnostic, in order.
+    """
     halted = False
-    for statements in lines:
+    async for statements in lines:
+        if isinstance(statements, str):
+            errors.append(statements)
+            continue
         # GNU compiles one whole line and runs it at its newline, so a
         # parse error anywhere on the line means none of it ever ran: the
         # values, the runtime errors, the warnings and every write are
@@ -2285,11 +2325,38 @@ async def bc(
             halted = False
             continue
         errors.extend(line_errors)
-        results.extend(line_results)
+        if line_results:
+            yield "".join(line_results).encode()
         if halted:
             break
-    if eof_in_comment:
-        errors.append(EOF_IN_COMMENT)
-    stdout = "".join(results).encode()
-    stderr = ("\n".join(errors) + "\n").encode() if errors else None
-    return stdout, IOResult(stderr=stderr)
+
+
+@command("bc", vfs=None, spec=SPECS["bc"])
+async def bc(
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPECS["bc"])
+    use_math = fl.as_bool("args_l")
+    state = BcState(
+        scale=MATH_LIBRARY_SCALE if use_math else 0, math_mode=use_math
+    )
+    folder = OutputColumn(output_line_size(opts.env))
+    errors: list[str] = []
+    lines = parse_input(opts.stdin if opts.stdin is not None else b"")
+    io = IOResult()
+
+    async def output() -> AsyncIterator[bytes]:
+        try:
+            async with aclosing(
+                run_lines(lines, state, folder, errors)
+            ) as chunks:
+                async for chunk in chunks:
+                    yield chunk
+        finally:
+            await lines.aclose()
+            io.stderr = ("\n".join(errors) + "\n").encode() if errors else None
+
+    return output(), io

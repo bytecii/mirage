@@ -11,7 +11,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-
 import asyncio
 import threading
 from dataclasses import dataclass
@@ -19,7 +18,11 @@ from dataclasses import dataclass
 import pytest
 
 from mirage.concurrency import ConcurrencyLimiter
-from mirage.concurrency.limiter import bounded_map, run_blocking
+from mirage.concurrency.limiter import (
+    bounded_map,
+    bounded_map_stream,
+    run_blocking,
+)
 
 
 @dataclass
@@ -167,3 +170,23 @@ async def test_bounded_map_keeps_order_and_owns_its_workers():
         return value * 2
 
     assert await bounded_map([3, 1, 2], double, 2) == [6, 2, 4]
+
+
+@pytest.mark.asyncio
+async def test_stream_map_yields_without_waiting_for_another_input_and_joins():
+    closed = asyncio.Event()
+
+    async def inputs():
+        try:
+            yield 1
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def work(value):
+        return value + 1
+
+    mapped = bounded_map_stream(inputs(), work, 2)
+    assert await asyncio.wait_for(anext(mapped), 1) == 2
+    await mapped.aclose()
+    assert closed.is_set()

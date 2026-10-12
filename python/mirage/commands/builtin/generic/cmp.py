@@ -22,6 +22,7 @@ from mirage.commands.spec.usage import (
 )
 from mirage.errors.constants import FS_ERRORS
 from mirage.errors.render import format_fs_error
+from mirage.io.cooperative import read_prefix
 from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.types import PathSpec
 
@@ -178,9 +179,13 @@ async def cmp_cmd(
     # offset and so equal unread.
     data: list[bytes] = []
     unread: IsADirectoryError | None = None
-    for p in (p0, p1):
+    for index, p in enumerate((p0, p1)):
         try:
-            data.append(await read(p))
+            data.append(
+                await read_prefix(stdin, skip[index] + limit)
+                if is_stdin(p) and stdin is not None and limit is not None
+                else await read(p)
+            )
         except IsADirectoryError as exc:
             unread = unread or exc
             data.append(b"")

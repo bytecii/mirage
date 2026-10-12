@@ -14,7 +14,13 @@
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager
 from typing import ParamSpec, TypeVar, cast
 
@@ -117,3 +123,51 @@ async def settle(task: asyncio.Future[_R]) -> _R:
         except asyncio.CancelledError:
             logger.debug("deferring cancellation until owned work settles")
     return task.result()
+
+
+async def bounded_map_stream(
+    items: AsyncIterator[_T], fn: Callable[[_T], Awaitable[_R]], workers: int
+) -> AsyncGenerator[_R, None]:
+    """Map a stream in input order, owning every admitted task until it settles.
+
+    Args:
+        items (AsyncIterator): input, pulled only while a slot is free.
+        fn (Callable): work for one input.
+        workers (int): outstanding results allowed; zero means unlimited.
+    """
+    permits = asyncio.Semaphore(workers) if workers else None
+    ready: asyncio.Queue[asyncio.Future[_R] | None] = asyncio.Queue()
+    active: set[asyncio.Future[_R]] = set()
+
+    async def produce() -> None:
+        try:
+            while True:
+                if permits is not None:
+                    await permits.acquire()
+                try:
+                    item = await anext(items)
+                except StopAsyncIteration:
+                    return
+                task = asyncio.ensure_future(fn(item))
+                active.add(task)
+                ready.put_nowait(task)
+        finally:
+            ready.put_nowait(None)
+
+    producer = asyncio.create_task(produce())
+    try:
+        while (task := await ready.get()) is not None:
+            result = await task
+            active.remove(task)
+            yield result
+            if permits is not None:
+                permits.release()
+        await producer
+    finally:
+        producer.cancel()
+        for task in active:
+            task.cancel()
+        await asyncio.gather(producer, *active, return_exceptions=True)
+        close = getattr(items, "aclose", None)
+        if close is not None:
+            await close()

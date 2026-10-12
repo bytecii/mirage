@@ -100,3 +100,51 @@ describe('sed operands after a directory (GNU sed 4.9)', () => {
     expect(await run(script, flags)).toEqual({ out, code: 4, reads: ['/f', '/d'] })
   })
 })
+
+it.each([
+  ['w /saved', 0],
+  ['w /saved\nq7', 7],
+] as const)(
+  'finalizes reached writes and status when %s output closes early',
+  async (script, code) => {
+    const files = new Map<string, Uint8Array>()
+    const result = await sedGeneric(
+      [],
+      [script],
+      {
+        stdin: new TextEncoder().encode('x\n'),
+        flags: {},
+        cwd: '/',
+      } as CommandOpts,
+      () => yieldBytes(new Uint8Array()),
+      (p, data) => {
+        files.set(p.virtual, data)
+        return Promise.resolve()
+      },
+    )
+    if (result === null) throw new Error('no result')
+    const output = result[0] as AsyncGenerator<Uint8Array, void>
+    expect(await output.next()).toEqual({ done: false, value: new TextEncoder().encode('x\n') })
+    await output.return(undefined)
+    expect(DEC.decode(files.get('/saved'))).toBe('x\n')
+    expect(result[1].exitCode).toBe(code)
+  },
+)
+
+it('shares bytes-valued stdin across repeated operands', async () => {
+  const dash = new PathSpec({ virtual: '-', directory: '-', vfsPath: '-', rawPath: '-' })
+  const result = await sedGeneric(
+    [dash, dash],
+    [''],
+    {
+      stdin: new TextEncoder().encode('x\n'),
+      flags: {},
+      cwd: '/',
+    } as CommandOpts,
+    () => yieldBytes(new Uint8Array()),
+    () => Promise.resolve(),
+  )
+  if (result === null) throw new Error('no result')
+  expect(DEC.decode(await materialize(result[0]))).toBe('x\n')
+  expect(result[1].exitCode).toBe(0)
+})

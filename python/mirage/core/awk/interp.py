@@ -95,6 +95,7 @@ from mirage.core.awk.value import (
     to_num,
     to_str,
 )
+from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import byte_view, from_byte_view
 
 SCALAR_DEFAULTS = {
@@ -195,6 +196,7 @@ class Interpreter:
         assignments: dict[str, str] | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> None:
+        self._budget = YieldBudget()
         self.program = program
         self.host = host
         self.globals: dict[str, Value] = {}
@@ -1068,6 +1070,7 @@ class Interpreter:
         Args:
             node (Stmt): the statement to run.
         """
+        await self._budget.run()
         if isinstance(node, Block):
             for inner in node.body:
                 await self.exec_stmt(inner)

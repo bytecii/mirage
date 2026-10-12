@@ -20,6 +20,7 @@ from mirage.commands.spec.argmatch import ArgmatchMatch, argmatch
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import argmatch_error
+from mirage.concurrency.worker import run_isolated
 from mirage.errors.constants import FS_ERRORS
 from mirage.errors.fs import fs_strerror
 from mirage.errors.types import BadDescriptorError, FileTooLargeError
@@ -429,9 +430,11 @@ async def sort_generic(
         return b"", IOResult()
 
     if parsed.merge:
-        ordered = merge_lines(runs, cfg)
+        ordered = await run_isolated(merge_lines, runs, cfg)
     else:
-        ordered = sort_lines([record for run in runs for record in run], cfg)
+        ordered = await run_isolated(
+            sort_lines, [record for run in runs for record in run], cfg
+        )
     separator = b"\x00" if parsed.zero_terminated else b"\n"
     output = separator.join(record.encode() for record in ordered)
     if ordered:

@@ -16,6 +16,7 @@ import asyncio
 import threading
 
 import pytest
+from fastapi import HTTPException
 
 from mirage.io.cooperative import CHUNK_SIZE
 from mirage.io.pipe import CAPACITY
@@ -34,13 +35,13 @@ async def test_an_upload_reads_back_in_order_then_ends():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("capacity", [CAPACITY, CAPACITY * 2])
-async def test_a_full_upload_waits_for_the_reader(capacity):
+async def test_a_full_upload_spools_without_waiting_for_the_reader(capacity):
     upload = UploadStdin(capacity)
     for i in range(capacity // CHUNK_SIZE):
         await upload.feed(bytes([i]) * CHUNK_SIZE)
     blocked = asyncio.ensure_future(upload.feed(b"next"))
     await asyncio.sleep(0.05)
-    assert not blocked.done()
+    assert blocked.done()
     assert await upload.read() == b"\x00" * CHUNK_SIZE
     await asyncio.wait_for(blocked, 1)
     await upload.close()
@@ -57,13 +58,13 @@ async def test_a_full_upload_waits_for_the_reader(capacity):
 
 
 @pytest.mark.asyncio
-async def test_discard_frees_a_waiting_feed_and_drops_the_rest():
+async def test_discard_drops_spooled_input_and_the_rest():
     upload = UploadStdin()
     for i in range(CAPACITY // CHUNK_SIZE):
         await upload.feed(bytes([i]) * CHUNK_SIZE)
     blocked = asyncio.ensure_future(upload.feed(b"next"))
     await asyncio.sleep(0.05)
-    upload.discard()
+    await upload.discard()
     await asyncio.wait_for(blocked, 1)
     await upload.feed(b"later")
     await upload.close()
@@ -75,7 +76,7 @@ async def test_discard_ends_a_waiting_read():
     upload = UploadStdin()
     waiting = asyncio.ensure_future(upload.read())
     await asyncio.sleep(0.05)
-    upload.discard()
+    await upload.discard()
     assert await asyncio.wait_for(waiting, 1) == b""
 
 
@@ -100,3 +101,19 @@ def test_a_line_on_another_loop_reads_the_upload():
         return got
 
     assert asyncio.run(main()) == [b"xxx", b"y"]
+
+
+@pytest.mark.asyncio
+async def test_upload_limit_rejects_input_and_discard_keeps_receiving():
+    upload = UploadStdin(capacity=2, limit=4)
+    try:
+        await upload.feed(b"ab")
+        await upload.feed(b"cd")
+        with pytest.raises(HTTPException) as caught:
+            await upload.feed(b"e")
+        assert caught.value.status_code == 413
+        await upload.discard()
+        await upload.feed(b"ignored")
+        assert await upload.read() == b""
+    finally:
+        await upload.discard()

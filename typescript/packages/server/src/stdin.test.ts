@@ -43,13 +43,13 @@ describe('UploadStdin', () => {
   })
 
   it.each([CAPACITY, CAPACITY * 2])(
-    'makes a %i-byte upload wait for the reader',
+    'spools a %i-byte upload without waiting for the reader',
     async (capacity) => {
       const upload = new UploadStdin(capacity)
       for (let i = 0; i < capacity / CHUNK_SIZE; i++)
         await upload.feed(new Uint8Array(CHUNK_SIZE).fill(i))
       const blocked = upload.feed(Buffer.from('next'))
-      expect(await settled(blocked)).toBe(false)
+      expect(await settled(blocked)).toBe(true)
       const reading = upload[Symbol.asyncIterator]()
       expect((await reading.next()).value).toEqual(new Uint8Array(CHUNK_SIZE))
       await blocked
@@ -67,13 +67,13 @@ describe('UploadStdin', () => {
     },
   )
 
-  it('frees a waiting feed on discard and drops the rest', async () => {
+  it('discards spooled bytes and drops the rest', async () => {
     const upload = new UploadStdin()
     for (let i = 0; i < CAPACITY / CHUNK_SIZE; i++)
       await upload.feed(new Uint8Array(CHUNK_SIZE).fill(i))
     const blocked = upload.feed(Buffer.from('next'))
-    expect(await settled(blocked)).toBe(false)
-    upload.discard()
+    expect(await settled(blocked)).toBe(true)
+    await upload.discard()
     await blocked
     await upload.feed(Buffer.from('later'))
     upload.close()
@@ -84,7 +84,20 @@ describe('UploadStdin', () => {
     const upload = new UploadStdin()
     const waiting = upload[Symbol.asyncIterator]().next()
     expect(await settled(waiting)).toBe(false)
-    upload.discard()
+    await upload.discard()
     expect((await waiting).done).toBe(true)
+  })
+  it('rejects excess input and keeps receiving after discard', async () => {
+    const upload = new UploadStdin(2, 4)
+    try {
+      await upload.feed(Buffer.from('ab'))
+      await upload.feed(Buffer.from('cd'))
+      await expect(upload.feed(Buffer.from('e'))).rejects.toMatchObject({ statusCode: 413 })
+      await upload.discard()
+      await upload.feed(Buffer.from('ignored'))
+      expect((await upload[Symbol.asyncIterator]().next()).done).toBe(true)
+    } finally {
+      await upload.discard()
+    }
   })
 })

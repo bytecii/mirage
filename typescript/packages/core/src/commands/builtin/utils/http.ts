@@ -18,6 +18,7 @@
 // earlier version threw on !resp.ok here, which made both tools fail on any
 // 4xx and leaked 'fetch failed' onto stderr for a refused connection.
 
+import { makeAbortError, mergeSignals } from '../../../utils/abort.ts'
 import { HttpConnectError, HttpTimeoutError } from '../errors.ts'
 
 export const DEFAULT_USER_AGENT = 'Mozilla/5.0 (compatible; mirage/1.0)'
@@ -112,6 +113,8 @@ export interface HttpRequestOptions {
   // False skips certificate verification (curl's -k), where the host
   // registered a fetch that can (`registerInsecureFetch`).
   verify?: boolean
+  // The invocation's cancellation, which aborts the request with it.
+  signal?: AbortSignal
 }
 
 async function doFetch(url: string, options: HttpRequestOptions): Promise<HttpResponse> {
@@ -146,7 +149,7 @@ async function doFetch(url: string, options: HttpRequestOptions): Promise<HttpRe
       const init: RequestInit = {
         method,
         headers,
-        signal: controller.signal,
+        signal: mergeSignals(controller.signal, options.signal) ?? controller.signal,
         redirect: 'manual',
       }
       if (body !== undefined) {
@@ -168,9 +171,11 @@ async function doFetch(url: string, options: HttpRequestOptions): Promise<HttpRe
         // request the python twin wraps.
         buf = await resp.arrayBuffer()
       } catch (err) {
-        // A transport failure carries no status. The only abort here is the
-        // deadline above, which curl answers with its own code (28), so it
-        // is told apart from a connection that never opened.
+        // A transport failure carries no status. Past a canceled
+        // invocation, the only abort here is the deadline above, which curl
+        // answers with its own code (28), so it is told apart from a
+        // connection that never opened.
+        if (options.signal?.aborted === true) throw makeAbortError(options.signal)
         const { host, port } = endpoint(current)
         if (err instanceof DOMException && err.name === 'AbortError') {
           throw new HttpTimeoutError(host, port, Date.now() - started)
@@ -220,6 +225,7 @@ export function httpFormRequest(
     timeoutMs?: number | null
     followRedirects?: boolean
     verify?: boolean
+    signal?: AbortSignal
   } = {},
 ): Promise<HttpResponse> {
   const method = opts.method ?? 'POST'
@@ -238,15 +244,17 @@ export function httpFormRequest(
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.followRedirects !== undefined ? { followRedirects: opts.followRedirects } : {}),
     ...(opts.verify !== undefined ? { verify: opts.verify } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   })
 }
 
 export function httpGet(
   url: string,
-  opts: { headers?: Record<string, string>; timeoutMs?: number | null } = {},
+  opts: { headers?: Record<string, string>; timeoutMs?: number | null; signal?: AbortSignal } = {},
 ): Promise<HttpResponse> {
   const options: HttpRequestOptions = { method: 'GET' }
   if (opts.headers !== undefined) options.headers = opts.headers
   if (opts.timeoutMs !== undefined) options.timeoutMs = opts.timeoutMs
+  if (opts.signal !== undefined) options.signal = opts.signal
   return httpRequest(url, options)
 }

@@ -79,6 +79,34 @@ class AsyncLineIterator:
         data, found = await self.read_until(eol)
         return data if found or data else None
 
+    def buffered_lines(
+        self,
+        eol: bytes = b"\n",
+        limit: int = 31,
+        needles: tuple[bytes, ...] | None = None,
+        ignore_case: bool = False,
+    ) -> list[bytes]:
+        """Peek at complete buffered records without pulling or consuming input.
+
+        Args:
+            eol (bytes): the one-byte record delimiter.
+            limit (int): maximum records to return.
+            needles (tuple[bytes, ...] | None): keep only the records that
+                hold one, as ``skip_nonmatching_lines`` reads them; None
+                keeps every record.
+            ignore_case (bool): search an ASCII-lowercased view.
+        """
+        if needles is None:
+            return self._buf.split(eol, limit)[:-1]
+        kept: list[bytes] = []
+        for record in self._buf.split(eol)[:-1]:
+            view = record.lower() if ignore_case else record
+            if any(needle in view for needle in needles):
+                kept.append(record)
+                if len(kept) == limit:
+                    break
+        return kept
+
     def skip_empty_lines(
         self, limit: int | None = None, eol: bytes = b"\n"
     ) -> int:

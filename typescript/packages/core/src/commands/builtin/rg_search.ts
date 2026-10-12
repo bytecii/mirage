@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Worker } from '../../concurrency/worker.ts'
+import { AsyncRegex, prepare } from '../../utils/regex.ts'
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
 import { concat } from '../../utils/bytes.ts'
 import { closeQuietly, discardStreams } from '../../io/stream.ts'
@@ -156,12 +158,12 @@ function globalOf(pat: RegExp): RegExp {
  * where a plain `exec` loop also yields the empty match right after `b`.
  */
 export function* rustMatches(pat: RegExp, text: string): Generator<RegExpExecArray> {
-  const re = globalOf(pat)
+  const re = pat instanceof AsyncRegex ? pat : globalOf(pat)
   let pos = 0
   let lastEnd = -1
   while (pos <= text.length) {
     re.lastIndex = pos
-    const m = re.exec(text)
+    const m = re instanceof AsyncRegex ? re.search(text, pos) : re.exec(text)
     if (m === null) return
     const end = m.index + m[0].length
     if (m[0].length === 0 && end === lastEnd) {
@@ -1188,7 +1190,8 @@ export class RgPrinter {
   }
 }
 
-function selects(pat: RegExp, text: string, invert: boolean): boolean {
+async function selects(pat: RegExp, text: string, invert: boolean): Promise<boolean> {
+  await prepare(pat, text)
   return pat.test(text) !== invert
 }
 
@@ -1258,14 +1261,30 @@ function skipRecords(
 async function readRecord(
   lines: AsyncLineIterator,
   f: RgFlags,
+  pat: RegExp,
+  needles: string[] | null,
   signal?: AbortSignal,
 ): Promise<[Uint8Array, boolean] | null> {
+  let record: [Uint8Array, boolean]
   if (!f.nullData && f.json !== true) {
     const raw = await lines.readline(signal)
-    return raw === null ? null : [raw, true]
+    if (raw === null) return null
+    record = [raw, true]
+  } else {
+    record = await lines.readUntil(f.nullData ? 0 : 0x0a, signal)
+    if (!record[1] && record[0].length === 0) return null
   }
-  const [raw, terminated] = await lines.readUntil(f.nullData ? 0 : 0x0a, signal)
-  return terminated || raw.length > 0 ? [raw, terminated] : null
+  const [raw] = record
+  if (pat instanceof AsyncRegex) {
+    await pat.prepare(readLine(raw, f)[0], () =>
+      f.maxCount === null && !(f.quiet || f.filesOnly || f.filesWithoutMatch || f.stopOnNonmatch)
+        ? lines
+            .bufferedLines(f.nullData ? 0 : 0x0a, 31, needles, pat.ignoreCase)
+            .map((item) => readLine(item, f)[0])
+        : [],
+    )
+  }
+  return record
 }
 
 // Read no further than the first selected line (-q, -l and
@@ -1281,10 +1300,10 @@ async function listing(
   let selected = 0
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const record = await readRecord(lines, f, signal)
+    const record = await readRecord(lines, f, pat, needles, signal)
     if (record === null) break
     const [text] = readLine(record[0], f)
-    if (selects(pat, text, f.invert)) {
+    if (await selects(pat, text, f.invert)) {
       tally.selected = true
       // --stats and --json count every selected line, up to -m.
       if (f.stats !== true && f.json !== true) return
@@ -1309,10 +1328,10 @@ async function count(
   const needles = recordNeedles(pat, f)
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const record = await readRecord(lines, f, signal)
+    const record = await readRecord(lines, f, pat, needles, signal)
     if (record === null) break
     const [text] = readLine(record[0], f)
-    if (!selects(pat, text, f.invert)) {
+    if (!(await selects(pat, text, f.invert))) {
       if (stop.armed) break
       stop.passesOver()
       continue
@@ -1375,7 +1394,7 @@ async function* printedLines(
     const [skipped, bytes] = skipRecords(lines, needles, pat, f)
     index += skipped
     position += bytes
-    const record = await readRecord(lines, f, signal)
+    const record = await readRecord(lines, f, pat, needles, signal)
     if (record === null) break
     const [raw, terminated] = record
     index += 1
@@ -1383,7 +1402,7 @@ async function* printedLines(
     position += raw.byteLength + 1
     const [text, cr] = readLine(raw, f)
     if (!terminated) printer.openLine = index
-    const hit = selects(pat, text, f.invert)
+    const hit = await selects(pat, text, f.invert)
     if (binary.converted) {
       // A binary file prints its notice at the first selected line and
       // nothing else.
@@ -1418,10 +1437,14 @@ async function* printedLines(
         if (lastPrinted >= 0 && first > lastPrinted + 1 && f.contextSeparator !== null) {
           yield encodeText(f.contextSeparator + recordEnd(f))
         }
-        for (const [i, s, t, c] of held) yield* printer.context(i, s, t, c)
+        for (const [i, s, t, c] of held) {
+          await prepare(pat, t)
+          yield* printer.context(i, s, t, c)
+        }
         held.length = 0
         afterLeft = f.contextAfter
       }
+      await prepare(pat, text)
       records = printer.selected(index, start, text, cr)
       lastPrinted = index
     } else if (f.passthru) {
@@ -1494,6 +1517,7 @@ async function* multiline(
   }
   const text = decodeText(concat(parts))
   const lines = splitLines(text, f)
+  await prepare(pat, text)
   const regions = findRegions(pat, text, lines)
   const spanned = new Set<number>()
   for (const r of regions) for (let i = r.first; i <= r.last; i++) spanned.add(i)
@@ -1576,7 +1600,10 @@ async function* multiline(
         }
         for (const h of held) {
           const hl = lines[h]
-          if (hl !== undefined) yield* printer.context(h, hl.start, hl.text, hl.cr)
+          if (hl !== undefined) {
+            await prepare(pat, hl.text)
+            yield* printer.context(h, hl.start, hl.text, hl.cr)
+          }
         }
         held.length = 0
         afterLeft = f.contextAfter
@@ -1584,6 +1611,7 @@ async function* multiline(
       chunks = chosen
       lastPrinted = i
     } else if (f.passthru || afterLeft > 0) {
+      await prepare(pat, line.text)
       chunks = [
         ...((extra.get(i) as Uint8Array[] | undefined) ?? []),
         ...printer.context(i, line.start, line.text, line.cr),
@@ -1686,6 +1714,7 @@ export async function* searchHaystack(
   signal?: AbortSignal,
   named = true,
   pipe = false,
+  worker?: Worker,
 ): AsyncGenerator<Uint8Array> {
   // ripgrep selects no line at all under -m0 and prints nothing, count and
   // listing included.
@@ -1702,6 +1731,16 @@ export async function* searchHaystack(
           ? 'convert'
           : 'quit',
   )
+  const pattern = new AsyncRegex(
+    pat,
+    signal,
+    !(
+      (f.quiet || f.filesOnly || f.filesWithoutMatch) &&
+      !(f.stats === true || f.json === true || (f.multiline === true && f.invert))
+    ),
+    worker,
+  )
+  pat = pattern
   const encoding = f.encoding ?? 'auto'
   const reader = binary.read(encoding === 'none' ? source : transcoded(source, encoding), pipe)
   const lines = new AsyncLineIterator(reader)
@@ -1733,6 +1772,7 @@ export async function* searchHaystack(
     await discardStreams(source)
     throw error
   } finally {
+    await pattern.close()
     tally.nul = binary.offset
     // ripgrep counts the bytes it read up to where it stopped, and a binary
     // file up to its first NUL.

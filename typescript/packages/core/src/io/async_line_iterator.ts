@@ -63,6 +63,34 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
     return { done: false, value: line }
   }
 
+  /**
+   * Peek at complete buffered records without pulling or consuming input;
+   * with `needles`, only the records holding one, as `skipNonmatchingLines`
+   * reads them.
+   */
+  bufferedLines(
+    eol = NEWLINE,
+    limit = 31,
+    needles: readonly string[] | null = null,
+    ignoreCase = false,
+  ): Uint8Array[] {
+    const records: Uint8Array[] = []
+    let start = 0
+    while (records.length < limit) {
+      const end = this.buf.indexOf(eol, start)
+      if (end < 0) break
+      const record = this.buf.subarray(start, end)
+      start = end + 1
+      if (needles !== null) {
+        const text = BYTE_VIEW.decode(record)
+        const view = ignoreCase ? text.toLowerCase() : text
+        if (!needles.some((needle) => view.includes(needle))) continue
+      }
+      records.push(record)
+    }
+    return records
+  }
+
   /** Consume buffered empty lines without pulling more input. */
   skipEmptyLines(limit = Infinity, eol = NEWLINE): number {
     let count = 0

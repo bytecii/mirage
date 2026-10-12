@@ -21,6 +21,7 @@ import type { ExecutionTable } from '../jobs.ts'
 import { ExecutionStatus, type ExecutionRecord } from '@struktoai/mirage-core/execution/types'
 import { explanationToDict, ioResultToDict } from '../io_serde.ts'
 import { MAX_REQUEST_PART, MultipartError, partEvents, type PartEvent } from '../multipart.ts'
+import { MAX_STDIN_BYTES } from '../constants.ts'
 import { UploadStdin } from '../stdin.ts'
 import { ShellOutput, shellResponse } from '../stream.ts'
 import { RouteError, failure, queryFlag, requireEntry, sessionOf } from './vfs.ts'
@@ -115,9 +116,12 @@ async function readShellBody(
       }
       if (background) {
         const chunks: Uint8Array[] = []
+        let received = 0
         await readPart(
           events,
           (data) => {
+            received += data.byteLength
+            if (received > MAX_STDIN_BYTES) throw new MultipartError(413, 'stdin part too large')
             chunks.push(data)
           },
           () => undefined,
@@ -138,8 +142,8 @@ async function readShellBody(
         },
       ).then(
         () => undefined,
-        (error: unknown) => {
-          stdin.discard()
+        async (error: unknown) => {
+          await stdin.discard()
           return error
         },
       )
@@ -148,7 +152,7 @@ async function readShellBody(
         stdin,
         failed,
         finish: async () => {
-          stdin.discard()
+          await stdin.discard()
           const error = await failed
           if (error instanceof MultipartError) throw error
           if (error !== undefined) req.log.debug({ err: error }, 'shell upload ended early')
@@ -309,7 +313,8 @@ export function registerShellRoutes(app: FastifyInstance, deps: ShellRoutesDeps)
             return ioResultToDict(await entry.runner.ws.shell(body.command, options))
           const execution = await entry.runner.ws.shell(body.command, { ...options, stream: true })
           try {
-            for await (const chunk of execution.events) await output.emit(chunk.stream, chunk.data)
+            for await (const chunk of execution.events)
+              await output.emit(chunk.stream, chunk.data, signal)
             return ioResultToDict(await execution.wait())
           } finally {
             await execution.close()

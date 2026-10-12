@@ -54,7 +54,7 @@ import { checkSyntax, syntaxErrorResult } from '../../shell/parse/index.ts'
 import { findSyntaxIssue } from '../../shell/parse/syntax.ts'
 import type { ParseScope } from '../../shell/parse/scope.ts'
 import { INTERPRETER_NAMES } from '../lookup/constants.ts'
-import { guardIO, runWithTimeout } from '../../commands/builtin/utils/limit.ts'
+import { guardIO, maybeWithTimeout, runWithTimeout } from '../../commands/builtin/utils/limit.ts'
 import {
   PolicyDenied,
   postCommandGate,
@@ -514,7 +514,8 @@ async function runCommandBody(
     timeout,
     argv.name !== '' ? argv.name : '?',
   )
-  let stdout = rawStdout
+  // A builtin that streams (xargs) runs on after it returns.
+  let stdout = maybeWithTimeout(rawStdout, resolved, argv.name !== '' ? argv.name : '?')
   if (io.producer === null && argv.name !== '') {
     // Builtins and other non-mount routes return no rider; stamp the
     // expanded name here so postExecute policies keyed on a command

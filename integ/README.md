@@ -37,6 +37,11 @@ implementations cannot drift apart.
   the access creates only once the first output byte reaches it, so HTTP,
   the CLI and SSH must deliver output before the line ends; MCP progress
   cases gate the same way on the first preview.
+- `interrupt/`: cancellation through real FastAPI and Fastify servers. One
+  `cases.json` covers both hosts; `python/.venv/bin/python integ/interrupt/run.py`
+  launches isolated servers and an external watchdog. It checks CPU work,
+  bounded stdin consumers, owned HTTP requests, upload disconnects, late body
+  errors and output backpressure. `--host` and `--case` select a focused run.
 - `policy/`: the policy corpus. Each case binds sessions to profiles and
   registers coded policies, then drives lines, VFS calls, tools, asks and
   explain, pinning what each refuses, asks or lets through: the allow list,
@@ -197,6 +202,7 @@ flowchart LR
     core --> J1["integ"]
     ts --> J2["integ-ts"]
     core & ts --> J3["integ-shared-py · integ-shared-ts<br/>integ-shared-parity · integ-selftests<br/>integ-facets · integ-wandb"]
+    core & ts --> INTERRUPT["integ-interrupt<br/>CPU · streams · disconnect · cancellation"]
     core & ts --> HOST["integ-hosting<br/>FastAPI · Fastify · Monty<br/>RAM · S3 · Redis · Slack"]
     data --> J4["integ-data · integ-watch"]
     database --> J5["integ-database"]

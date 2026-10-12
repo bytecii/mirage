@@ -53,6 +53,7 @@ from mirage.commands.spec.usage import (
     argmatch_valid_block,
     usage_hint,
 )
+from mirage.concurrency.worker import Worker
 from mirage.errors.constants import FS_ERRORS, WALK_ERRORS
 from mirage.errors.fs import fs_strerror, walk_refusal
 from mirage.io.types import ByteSource, IOResult, materialize
@@ -396,6 +397,7 @@ async def grep_generic(
             utf8=utf8,
         ), io
 
+    worker = Worker()
     mounts = opts.ns.mounts if opts.ns is not None else None
     prefix = mount_prefix_of(paths[0].virtual, paths[0].vfs_path)
     rd = mount_parent_readdir(
@@ -510,6 +512,7 @@ async def grep_generic(
                         printed,
                         utf8,
                         info.size if info.type == FileType.FILE else None,
+                        worker,
                     )
                 ) as output:
                     async for chunk in output:
@@ -533,6 +536,7 @@ async def grep_generic(
                 if f.quiet and matched:
                     break
         finally:
+            await worker.close()
             if diagnostics:
                 io.stderr = (await materialize(io.stderr)) + b"".join(
                     diagnostics

@@ -112,6 +112,19 @@ describe('command timeout', () => {
       await ws.close()
     }
   })
+
+  it('a streamed builtin keeps its deadline after it returns', async () => {
+    DEFAULT_COMMAND_LIMITS.xargs = new Limit({ timeoutSeconds: 0.05 })
+    const ws = buildWs()
+    try {
+      const r = await ws.shell("printf '2\\n' | xargs sleep")
+      expect(r.exitCode).toBe(124)
+      expect(DEC.decode(r.stderr)).toContain('xargs: timed out after 0.05s')
+    } finally {
+      delete DEFAULT_COMMAND_LIMITS.xargs
+      await ws.close()
+    }
+  })
 })
 
 // python3 is guarded like any other command: the same limit surface,

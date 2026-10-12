@@ -14,3 +14,5 @@
 
 export const MAX_FINISHED_JOBS = 1024
 export const FINISHED_JOB_RETENTION_SECONDS = 3600
+
+export const MAX_STDIN_BYTES = 64 * 1024 * 1024

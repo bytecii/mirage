@@ -111,6 +111,40 @@ function battery(): [string, Check][] {
 }
 
 const CHECKS: [string, Check][] = [
+  [
+    'bundled computation workers execute searches, jq, sort and diff',
+    async (ws) => {
+      equal(await shell(ws, "printf 'bbb\\n' | rg --count-matches 'a*|b+'"), [0, '4\n', ''])
+      equal(await shell(ws, "printf 'abc\\n' | grep b"), [0, 'abc\n', ''])
+      equal(await shell(ws, "printf '2\\n1\\n' | sort -n"), [0, '1\n2\n', ''])
+      equal(await shell(ws, 'printf \'{"x":7}\' | jq .x'), [0, '7\n', ''])
+      equal(await shell(ws, 'echo a > /data/a; echo b > /data/b; diff /data/a /data/b'), [
+        1,
+        '1c1\n< a\n---\n> b\n',
+        '',
+      ])
+    },
+  ],
+  [
+    'a bundled regexp worker can be interrupted',
+    async (ws) => {
+      const controller = new AbortController()
+      const running = aborted(
+        shell(ws, "printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!\\n' | grep -E '^(a+)+$'", {
+          signal: controller.signal,
+        }),
+      )
+      const timer = setTimeout(() => controller.abort(), 250)
+      try {
+        equal(await running, 'AbortError')
+        equal(await shell(ws, 'echo ready'), [0, 'ready\n', ''])
+      } finally {
+        clearTimeout(timer)
+        controller.abort()
+      }
+    },
+  ],
+
   ...ICONV_MULTIBYTE_DIGESTS.map(([spec, ...expected]): [string, Check] => [
     `iconv ${spec.name} decode and reverse tables match the pinned digests`,
     async () => {

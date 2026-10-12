@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { abortable, mergeSignals } from '../utils/abort.ts'
+
 /**
  * Limit concurrent async operations within one process.
  *
@@ -88,4 +90,74 @@ export async function boundedMap<T, R>(
   await Promise.all(Array.from({ length: Math.min(Math.max(1, workers), items.length) }, worker))
   if (failure !== undefined) throw failure.reason
   return results
+}
+
+/** Map a stream in input order, owning all admitted work through cancellation. */
+export async function* boundedMapStream<T, R>(
+  items: (signal: AbortSignal) => AsyncIterable<T>,
+  fn: (item: T, signal: AbortSignal) => Promise<R>,
+  workers: number,
+  parent?: AbortSignal,
+): AsyncGenerator<R> {
+  const controller = new AbortController()
+  const signal = mergeSignals(parent, controller.signal) ?? controller.signal
+  const permits = workers > 0 ? new ConcurrencyLimiter(workers) : null
+  type Result = { value: R } | { error: unknown }
+  const ready: { result: Promise<Result>; release: () => void }[] = []
+  let done = false
+  let failure: { error: unknown } | undefined
+  let wake: (() => void) | undefined
+  const isDone = (): boolean => done
+  const iterator = items(signal)[Symbol.asyncIterator]()
+  const producer = (async (): Promise<void> => {
+    try {
+      for (;;) {
+        const release =
+          permits === null ? (): void => undefined : await abortable(permits.acquire(), signal)
+        const next = await abortable(iterator.next(), signal)
+        if (next.done === true) {
+          release()
+          return
+        }
+        const result = fn(next.value, signal).then(
+          (value): Result => ({ value }),
+          (error: unknown): Result => ({ error }),
+        )
+        ready.push({ result, release })
+        wake?.()
+      }
+    } catch (error) {
+      failure = { error }
+    } finally {
+      done = true
+      wake?.()
+    }
+  })()
+  try {
+    for (;;) {
+      const entry = ready[0]
+      if (entry === undefined) {
+        if (isDone()) break
+        await abortable(
+          new Promise<void>((resolve) => {
+            wake = resolve
+          }),
+          signal,
+        )
+        wake = undefined
+        continue
+      }
+      const result = await abortable(entry.result, signal)
+      if ('error' in result) throw result.error
+      yield result.value
+      ready.shift()
+      entry.release()
+    }
+    if (failure !== undefined) throw failure.error
+  } finally {
+    controller.abort()
+    await producer
+    await Promise.all(ready.map((entry) => entry.result))
+    await iterator.return?.()
+  }
 }

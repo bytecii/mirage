@@ -19,7 +19,11 @@ from functools import partial
 from itertools import accumulate
 from typing import Any, TypeVar
 
-from mirage.commands.builtin.utils.limit import guard_io, run_with_timeout
+from mirage.commands.builtin.utils.limit import (
+    guard_io,
+    maybe_with_timeout,
+    run_with_timeout,
+)
 from mirage.context import (
     RedirectRunner,
     note_refusal,
@@ -535,6 +539,8 @@ async def _dispatch_command_body(
     stdout, io, exec_node = await run_with_timeout(
         body, timeout, argv.name or "?"
     )
+    # A builtin that streams (xargs) runs on after it returns.
+    stdout = maybe_with_timeout(stdout, resolved, argv.name or "?")
     if io.producer is None and argv.name:
         # Builtins and other non-mount routes return no rider; stamp the
         # expanded name here so post_execute policies keyed on a command

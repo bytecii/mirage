@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from dataclasses import dataclass, field
 
 from mirage.commands.builtin.sed_script import (
@@ -25,6 +25,9 @@ from mirage.commands.builtin.sed_script import (
     SedRegex,
     sed_regex_flags,
 )
+from mirage.io.async_line_iterator import AsyncLineIterator
+from mirage.io.types import ByteSource
+from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import byte_view, from_byte_view, text_view
 from mirage.utils.posix import compile_posix_regex
 
@@ -143,6 +146,7 @@ class SedInput:
     error: str = ""
     code: int = 0
     fatal: bool = False
+    source: ByteSource | None = None
 
 
 @dataclass(frozen=True)
@@ -180,16 +184,6 @@ class _InputLine:
 class _Reader:
     lines: list[str]
     pos: int = 0
-
-
-def _split_lines(text: str) -> list[_InputLine]:
-    if not text:
-        return []
-    parts = text.split("\n")
-    if text.endswith("\n"):
-        parts.pop()
-        return [_InputLine(p, True) for p in parts]
-    return [_InputLine(p, i < len(parts) - 1) for i, p in enumerate(parts)]
 
 
 def _reader_lines(text: str) -> list[str]:
@@ -305,6 +299,8 @@ class SedMachine:
     """
 
     def __init__(self, program: SedProgram, opts: SedRunOptions) -> None:
+        self._budget = YieldBudget()
+        self._reader: AsyncLineIterator | None = None
         self.program = program
         self.opts = opts
         self._files = opts.files
@@ -329,8 +325,7 @@ class SedMachine:
         self._main = self.stdout
         self._inputs: list[SedInput] = []
         self._file_idx = 0
-        self._lines: list[_InputLine] = []
-        self._line_idx = 0
+        self._next_line: _InputLine | None = None
         self._file_name = "-"
         self._reset_at_next_file = True
         self._line_number = 0
@@ -358,12 +353,14 @@ class SedMachine:
         """Whether a ``q``, ``Q`` or panic ended the run."""
         return self.quit_code is not None or self.panic_code is not None
 
-    def process(self, inputs: list[SedInput], to_stdout: bool) -> str:
+    async def process(
+        self, inputs: list[SedInput], to_stdout: bool
+    ) -> AsyncGenerator[str, None]:
         """Run the program over ``inputs`` as one stream.
 
-        With ``separate`` each file is its own stream. The main output
-        goes to stdout, or, when ``to_stdout`` is False, to a fresh stream
-        whose text is returned (-i's per-file output).
+        With ``separate`` each file is its own stream. The main output is
+        yielded as it is reached: stdout's, or, when ``to_stdout`` is
+        False, a fresh stream's (-i's per-file output).
 
         Args:
             inputs (list[SedInput]): the operands in order.
@@ -373,18 +370,33 @@ class SedMachine:
         self._main = out
         self._inputs = inputs
         self._file_idx = 0
-        self._lines = []
-        self._line_idx = 0
+        self._next_line = None
         self._reset_at_next_file = True
         try:
-            while not self.stopped() and self._read_pattern_space(False):
-                status = self._execute_program()
-                if status != -1:
-                    self.quit_code = status
+            while not self.stopped():
+                if self._append_queue:
+                    self._dump_append_queue()
+                if out.chunks:
+                    chunk = "".join(out.chunks)
+                    out.chunks.clear()
+                    yield chunk
+                if not await self._read_pattern_space(False):
+                    break
+                async for status in self._execute_program():
+                    if status != -1:
+                        self.quit_code = status
+                    if out.chunks:
+                        yield "".join(out.chunks)
+                        out.chunks.clear()
         except SedPanic as exc:
             self.panic_code = exc.code
             self.stderr_lines.append(exc.message)
-        return "" if to_stdout else "".join(out.chunks)
+        finally:
+            if self._reader is not None:
+                await self._reader.discard()
+        if out.chunks:
+            yield "".join(out.chunks)
+            out.chunks.clear()
 
     def _reset_addresses(self) -> None:
         for i, cmd in enumerate(self.program.commands):
@@ -395,29 +407,43 @@ class SedMachine:
                 else _RANGE_INACTIVE
             )
 
-    def _open_next_file(self) -> bool:
+    def _open_next_file(self, ignore_fatal: bool = False) -> bool:
         while self._file_idx < len(self._inputs):
             nxt = self._inputs[self._file_idx]
             self._file_idx += 1
             self._file_name = nxt.name
-            if nxt.text is None:
+            if nxt.text is None and nxt.source is None:
                 if nxt.fatal:
-                    raise SedPanic(nxt.error)
-                self.stderr_lines.append(nxt.error)
-                self.bad_code = max(self.bad_code, nxt.code)
-                self._lines = []
-                self._line_idx = 0
+                    if not ignore_fatal:
+                        raise SedPanic(nxt.error)
+                else:
+                    self.stderr_lines.append(nxt.error)
+                    self.bad_code = max(self.bad_code, nxt.code)
                 continue
-            self._lines = _split_lines(nxt.text)
-            self._line_idx = 0
+            self._reader = AsyncLineIterator(
+                nxt.source
+                if nxt.source is not None
+                else from_byte_view(nxt.text or "", self.opts.utf8)
+            )
+            self._next_line = None
             return True
         return False
 
-    def _read_pattern_space(self, append: bool) -> bool:
-        if self._append_queue:
-            self._dump_append_queue()
+    async def _more(self) -> bool:
+        if self._next_line is not None:
+            return True
+        if self._reader is None:
+            return False
+        raw, chomped = await self._reader.read_until(b"\n")
+        if raw or chomped:
+            self._next_line = _InputLine(
+                byte_view(raw, self.opts.utf8), chomped
+            )
+        return self._next_line is not None
+
+    async def _read_pattern_space(self, append: bool) -> bool:
         self._replaced = False
-        while self._line_idx >= len(self._lines):
+        while not await self._more():
             if self._file_idx >= len(self._inputs):
                 return False
             if self._reset_at_next_file:
@@ -430,36 +456,26 @@ class SedMachine:
                 self._reset_at_next_file = self.opts.separate
             if not self._open_next_file():
                 return False
-        line = self._lines[self._line_idx]
-        self._line_idx += 1
+        line, self._next_line = self._next_line, None
+        assert line is not None
         self._pattern = self._pattern + line.text if append else line.text
         self._chomped = line.chomped
         self._line_number += 1
         return True
 
-    def _test_eof(self) -> bool:
+    async def _test_eof(self) -> bool:
         """GNU's test_eof for ``$``, ``n`` and ``N``.
 
         This operand has no more lines and, unless files are separate,
         neither has any later one. The later operands are opened on the
         way, so their errors are reported now.
         """
-        if self._line_idx < len(self._lines):
+        if await self._more():
             return False
         if self.opts.separate:
             return True
-        while self._file_idx < len(self._inputs):
-            nxt = self._inputs[self._file_idx]
-            self._file_idx += 1
-            self._file_name = nxt.name
-            if nxt.text is None:
-                if not nxt.fatal:
-                    self.stderr_lines.append(nxt.error)
-                    self.bad_code = max(self.bad_code, nxt.code)
-                continue
-            self._lines = _split_lines(nxt.text)
-            self._line_idx = 0
-            if self._lines:
+        while self._open_next_file(ignore_fatal=True):
+            if await self._more():
                 return False
         return True
 
@@ -481,7 +497,7 @@ class SedMachine:
             self._compiled[key] = hit
         return hit
 
-    def _match_one(self, addr: SedAddr, index: int) -> bool:
+    async def _match_one(self, addr: SedAddr, index: int) -> bool:
         kind = addr.kind
         if kind == "null":
             return True
@@ -497,10 +513,10 @@ class SedMachine:
         if kind in ("step", "stepmod"):
             return self._a2_number[index] <= self._line_number
         if kind == "last":
-            return self._test_eof()
+            return await self._test_eof()
         return addr.n == self._line_number
 
-    def _match_address(self, cmd: SedCommand, index: int) -> bool:
+    async def _match_address(self, cmd: SedCommand, index: int) -> bool:
         """GNU's match_address_p, range states and all.
 
         Args:
@@ -514,11 +530,11 @@ class SedMachine:
         line = self._line_number
         if self._range_state[index] != _RANGE_ACTIVE:
             if a2 is None:
-                return self._match_one(a1, index)
+                return await self._match_one(a1, index)
             if a1.kind == "num":
                 if self._range_state[index] == _RANGE_CLOSED or line < a1.n:
                     return False
-            elif not self._match_one(a1, index):
+            elif not await self._match_one(a1, index):
                 return False
             self._range_state[index] = _RANGE_ACTIVE
             if a2.kind == "regex":
@@ -526,7 +542,7 @@ class SedMachine:
             if a2.kind == "num":
                 if line >= a2.n:
                     self._range_state[index] = _RANGE_CLOSED
-                return line <= a2.n or self._match_one(a1, index)
+                return line <= a2.n or await self._match_one(a1, index)
             if a2.kind == "step":
                 self._a2_number[index] = line + a2.n
                 return True
@@ -539,7 +555,7 @@ class SedMachine:
             if line >= a2.n:
                 self._range_state[index] = _RANGE_CLOSED
             return line <= a2.n
-        if self._match_one(a2, index):
+        if await self._match_one(a2, index):
             self._range_state[index] = _RANGE_CLOSED
         return True
 
@@ -634,18 +650,21 @@ class SedMachine:
         table = dict(zip(cmd.y_src, cmd.y_dst))
         self._pattern = "".join(table.get(ch, ch) for ch in self._pattern)
 
-    def _execute_program(self) -> int:
+    async def _execute_program(self) -> AsyncIterator[int]:
         """One cycle of the script.
 
-        Returns -1 to go on to the next line, or the exit status ``q`` or
-        ``Q`` stops with.
+        Yields -1 wherever the output so far may go out (before each
+        command, and before ``n`` or ``N`` reads on), or the exit status
+        ``q`` or ``Q`` stops with.
         """
         commands = self.program.commands
         pc = 0
         while pc < len(commands):
+            await self._budget.run()
+            yield -1
             cmd = commands[pc]
             c = cmd.cmd
-            if self._match_address(cmd, pc) == cmd.bang:
+            if await self._match_address(cmd, pc) == cmd.bang:
                 pc += 1
                 continue
             if c == "a":
@@ -660,13 +679,13 @@ class SedMachine:
                     and cmd.text is not None
                 ):
                     self._main.line(cmd.text[:-1], True)
-                return -1
+                return
             elif c == "d":
-                return -1
+                return
             elif c == "D":
                 nl = self._pattern.find("\n")
                 if nl < 0:
-                    return -1
+                    return
                 self._pattern = self._pattern[nl + 1 :]
                 pc = 0
                 continue
@@ -694,15 +713,27 @@ class SedMachine:
             elif c == "n":
                 if not self.no_default_output:
                     self._main.line(self._pattern, self._chomped)
-                if self._test_eof() or not self._read_pattern_space(False):
-                    return -1
+                if self._append_queue:
+                    self._dump_append_queue()
+                yield -1
+                if (
+                    await self._test_eof()
+                    or not await self._read_pattern_space(False)
+                ):
+                    return
             elif c == "N":
                 self._pattern += "\n"
-                if self._test_eof() or not self._read_pattern_space(True):
+                if self._append_queue:
+                    self._dump_append_queue()
+                yield -1
+                if (
+                    await self._test_eof()
+                    or not await self._read_pattern_space(True)
+                ):
                     self._pattern = self._pattern[:-1]
                     if not self.no_default_output:
                         self._main.line(self._pattern, self._chomped)
-                    return -1
+                    return
             elif c == "p":
                 self._main.line(self._pattern, self._chomped)
             elif c == "P":
@@ -715,9 +746,11 @@ class SedMachine:
                 if not self.no_default_output:
                     self._main.line(self._pattern, self._chomped)
                 self._dump_append_queue()
-                return 0 if cmd.int_arg == -1 else cmd.int_arg
+                yield 0 if cmd.int_arg == -1 else cmd.int_arg
+                return
             elif c == "Q":
-                return 0 if cmd.int_arg == -1 else cmd.int_arg
+                yield 0 if cmd.int_arg == -1 else cmd.int_arg
+                return
             elif c == "r":
                 if cmd.prepend:
                     self._main.flush_newline()
@@ -766,4 +799,3 @@ class SedMachine:
             pc += 1
         if not self.no_default_output:
             self._main.line(self._pattern, self._chomped)
-        return -1

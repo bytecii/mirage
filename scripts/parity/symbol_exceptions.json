@@ -1,6 +1,33 @@
 {
   "baseline": 3861,
  "modules": {
+  "concurrency/worker": {
+   "python_only": {
+    "HEADER": "Python frames pickle requests over process pipes; Web Workers use structured messages."
+   },
+   "typescript_only": {
+    "Port": "Browser and Node worker transports share this private typed interface.",
+    "Reply": "Structured-clone reply shape; Python unpickles a tuple from its private pipe.",
+    "createPort": "Selects browser Worker or Node worker_threads; Python always uses an owned subprocess."
+   }
+  },
+  "concurrency/worker_entry": {
+   "python_only": {
+    "main": "Python subprocess entry point reads framed requests synchronously."
+   },
+   "typescript_only": {
+    "computations": "Literal imports keep browser worker computations in the bundler graph; Python resolves importable functions at runtime.",
+    "Request": "Structured-clone message shape; Python uses a tuple on its private pipe.",
+    "execute": "Web Worker message callback dispatches a computation asynchronously.",
+    "node": "Selects the Node worker port or browser message handler."
+   }
+  },
+  "utils/regex": {
+   "python_only": {
+    "Pattern": "Python union of a native pattern and its prepared asynchronous facade; TypeScript subclasses RegExp.",
+    "RegexMatch": "Python union of re.Match and its serializable twin; TypeScript RegExpExecArray is structured-cloneable."
+   }
+  },
   "fuse/constants": {
    "python_only": {
     "UTIME_NOW": "mfusepy hands utimens the raw timespecs, whose nanosecond field carries utimensat's markers; fuse-native converts the times to milliseconds in its C binding and libfuse 2 sends it no marker.",

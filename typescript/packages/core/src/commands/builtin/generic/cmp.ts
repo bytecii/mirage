@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { readPrefix } from '../../../io/cooperative.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
@@ -334,9 +335,13 @@ export async function cmpGeneric(
   // name it, which is the same file at the same offset and so equal unread.
   const data: Uint8Array[] = []
   let unread: unknown = null
-  for (const p of [p0, p1]) {
+  for (const [index, p] of [p0, p1].entries()) {
     try {
-      data.push(await materialize(read(p)))
+      data.push(
+        isStdin(p) && parsed.limit !== null
+          ? await readPrefix(read(p), (skip[index] ?? 0) + parsed.limit, opts.signal)
+          : await materialize(read(p)),
+      )
     } catch (err) {
       if (isEisdir(err)) {
         unread ??= err

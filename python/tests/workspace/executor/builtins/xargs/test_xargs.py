@@ -5,7 +5,9 @@ import pytest
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.workspace.evaluation import EvaluationContext
-from mirage.workspace.executor.builtins.xargs import handle_xargs
+from mirage.workspace.executor.builtins.xargs import (
+    handle_xargs as stream_xargs,
+)
 from mirage.workspace.session import (
     get_current_session,
     reset_current_session,
@@ -13,6 +15,11 @@ from mirage.workspace.session import (
 )
 from mirage.workspace.session.session import SessionState, vars_from_env
 from mirage.workspace.session.state import env_snapshot, seed_var, session_view
+
+
+async def handle_xargs(*args, **kwargs):
+    out, io, node = await stream_xargs(*args, **kwargs)
+    return await materialize(out), io, node
 
 
 class FakeShell:
@@ -970,3 +977,32 @@ async def test_parallel_mode_restores_parent_after_single_invocation_raises():
         assert parent.env["X"] == "outer"
     finally:
         reset_current_session(token)
+
+
+@pytest.mark.asyncio
+async def test_parallel_abort_stops_an_open_input_and_joins_started_commands():
+    closed = asyncio.Event()
+
+    async def input_stream():
+        try:
+            yield b"a b "
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    shell = SlowShell(
+        delays={"echo a": 0.01, "echo b": 0.1}, exit_codes={"echo a": 255}
+    )
+    _, io, _ = await asyncio.wait_for(
+        handle_xargs(
+            shell,
+            ["-P2", "-n1", "echo"],
+            EvaluationContext(make_session()),
+            input_stream(),
+        ),
+        1,
+    )
+    assert io.exit_code == 124
+    assert shell.active == 0
+    assert shell.lines == ["echo a", "echo b"]
+    assert closed.is_set()

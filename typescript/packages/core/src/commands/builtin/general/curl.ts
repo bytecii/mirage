@@ -445,6 +445,7 @@ async function curl(
         formData: { [key]: value },
         headers,
         timeoutMs,
+        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
         followRedirects: location,
         verify,
       })
@@ -460,6 +461,7 @@ async function curl(
         headers: wire,
         ...(body !== null ? { body } : {}),
         timeoutMs,
+        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
         followRedirects: location,
         verify,
       })

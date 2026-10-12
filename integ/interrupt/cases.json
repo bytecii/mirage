@@ -1,0 +1,147 @@
+{
+  "cpu": [
+    {
+      "id": "awk-loop",
+      "command": "awk 'BEGIN { while (1) {} }'",
+      "canceled": true
+    },
+    {
+      "id": "sed-loop",
+      "command": "printf 'x\\n' | sed ':a;ba'",
+      "canceled": true
+    },
+    {
+      "id": "jq-loop",
+      "command": "jq -n 'until(false; .)'",
+      "canceled": true
+    },
+    {
+      "id": "grep-regex",
+      "command": "printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | grep -E '^(a+)+$'",
+      "canceled": true
+    },
+    {
+      "id": "rg-regex",
+      "command": "printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | rg '^(a+)+$'",
+      "canceled": true
+    },
+    {
+      "id": "diff-repeated",
+      "command": "diff /left /right > /difference",
+      "canceled": false
+    },
+    {
+      "id": "sort-numeric",
+      "command": "sort -n /numbers > /sorted",
+      "canceled": false
+    }
+  ],
+  "stream": [
+    {
+      "id": "sed-first",
+      "command": "seq inf | sed 1q",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "sed-loop-output",
+      "command": "printf 'x\\n' | sed ':a;p;ba' | head -n1",
+      "stdout": "x\n",
+      "exit_code": 0
+    },
+    {
+      "id": "xargs-first",
+      "command": "seq inf | xargs -n1 echo | head -n1",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "xargs-close-status",
+      "command": "printf x | xargs sh -c 'echo row; exit 1' sh | head -n1; echo ${PIPESTATUS[1]}",
+      "stdout": "row\n123\n",
+      "exit_code": 0
+    },
+    {
+      "id": "xargs-parallel",
+      "command": "seq inf | xargs -P2 -n1 echo | head -n1",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "cmp-prefix",
+      "command": "printf 1 > /one; seq inf | cmp -n 1 - /one",
+      "stdout": "",
+      "exit_code": 0
+    },
+    {
+      "id": "bc-quit",
+      "command": "{ printf 'quit\\n'; seq inf; } | bc",
+      "stdout": "",
+      "exit_code": 0
+    },
+    {
+      "id": "bc-output",
+      "command": "seq inf | bc | head -n1",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "sed-write-close",
+      "command": "printf 'x\\n' | sed 'w /saved' | head -n1; cat /saved",
+      "stdout": "x\nx\n",
+      "exit_code": 0
+    },
+    {
+      "id": "rg-multiline-context",
+      "command": "printf 'before\\nhit\\n' | rg -U -o -B1 hit",
+      "stdout": "before\nhit\n",
+      "exit_code": 0
+    },
+    {
+      "id": "rg-empty-restart",
+      "command": "printf 'bbb\\n' | rg --count-matches 'a*|b+'",
+      "stdout": "4\n",
+      "exit_code": 0
+    },
+    {
+      "id": "rg-multiline-invert",
+      "command": "printf 'hit\\nhit\\n' | rg -U -v -q hit",
+      "stdout": "",
+      "exit_code": 1
+    },
+    {
+      "id": "grep-match-before-slow-line",
+      "command": "printf 'ok\\n%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | grep -E 'ok|^(a+)+$' | head -n1",
+      "stdout": "ok\n",
+      "exit_code": 0
+    },
+    {
+      "id": "search-skips-slow-unread-line",
+      "command": "for s in 'grep -E' rg; do printf 'ok\\n%s\\nok2\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | $s 'ok|^(a+)+zz$' | head -n2; done",
+      "stdout": "ok\nok2\nok\nok2\n",
+      "exit_code": 0
+    }
+  ],
+  "http": [
+    {
+      "id": "curl-cancel",
+      "command": "curl --max-time 0 -o /download {url}"
+    },
+    {
+      "id": "wget-cancel",
+      "command": "wget --timeout=0 -O /download {url}"
+    }
+  ],
+  "input": [
+    {
+      "id": "sed-next-flush",
+      "command": "sed n",
+      "stdout": "x\n"
+    },
+    {
+      "id": "sed-append-flush",
+      "command": "sed -n 'a appended'",
+      "stdout": "appended\n"
+    }
+  ]
+}

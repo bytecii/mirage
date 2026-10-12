@@ -10,11 +10,13 @@ from mirage.commands.builtin.grep_prefilter import required_needles
 from mirage.commands.builtin.grep_select import WalkFilters
 from mirage.commands.builtin.types import RegexSyntax
 from mirage.commands.builtin.utils.pcre import match_start, match_text
+from mirage.concurrency.worker import Worker
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import close_quietly
 from mirage.io.types import IOResult, materialize
 from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import byte_view, encode_text, from_byte_view
+from mirage.utils.regex import AsyncRegex
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +231,7 @@ async def grep_input(
     after_output: bool = False,
     utf8: bool = False,
     size: int | None = None,
+    worker: Worker | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Scan one input, yielding grep's output for it.
 
@@ -250,6 +253,7 @@ async def grep_input(
         utf8 (bool): match characters rather than bytes.
         size (int | None): the input's size, which -T sizes its fields
             to; None for a pipe.
+        worker (Worker | None): shared worker for a multi-file invocation.
     """
     budget = YieldBudget()
     io.exit_code = 1
@@ -301,6 +305,7 @@ async def grep_input(
         else None
     )
     fold = bool(pat.flags & re.IGNORECASE)
+    matcher = AsyncRegex(pat, all_matches=f.only_matching, worker=worker)
     input_stream = binary.read(source)
     lines = AsyncLineIterator(input_stream)
     try:
@@ -320,7 +325,21 @@ async def grep_input(
             line_start = byte_pos
             byte_pos += len(raw) + 1
             line = byte_view(raw, utf8)
-            hit = bool(pat.search(line)) != f.invert
+            await matcher.prepare(
+                line,
+                lambda: (
+                    (
+                        byte_view(item, utf8)
+                        for item in lines.buffered_lines(
+                            eol, needles=needles, ignore_case=fold
+                        )
+                    )
+                    if f.max_count is None
+                    and not (f.quiet or f.files_only or f.files_without_match)
+                    else ()
+                ),
+            )
+            hit = bool(matcher.search(line)) != f.invert
             if f.max_count is not None and count >= f.max_count:
                 hit = False
             if hit:
@@ -376,7 +395,7 @@ async def grep_input(
                 after_until = number + after
                 if f.only_matching:
                     if not f.invert:
-                        for m in pat.finditer(line):
+                        for m in matcher.finditer(line):
                             await budget.run()
                             text = match_text(m)
                             start = match_start(m)
@@ -455,6 +474,7 @@ async def grep_input(
             ):
                 break
     finally:
+        await matcher.close()
         await close_quietly(input_stream)
         await close_quietly(source)
 

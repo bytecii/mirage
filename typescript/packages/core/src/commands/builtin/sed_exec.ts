@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import { YieldBudget } from '../../io/yield_budget.ts'
+import type { ByteSource } from '../../io/types.ts'
 import { byteView, fromByteView, textView } from '../../shell/bytes.ts'
 import { compilePosixRegex } from '../../utils/posix.ts'
 import {
@@ -107,7 +110,7 @@ export type SedFileContent = { text: string } | { error: string } | null
  * run there, as GNU panics; any other is reported and skipped.
  */
 export type SedInput =
-  | { name: string; text: string }
+  | { name: string; text?: string; source?: ByteSource }
   | { name: string; error: string; code: number; fatal: boolean }
 
 export interface SedRunOptions {
@@ -146,16 +149,6 @@ const RANGE_INACTIVE = 0
 const RANGE_ACTIVE = 1
 const RANGE_CLOSED = 2
 
-function splitLines(text: string): InputLine[] {
-  if (text === '') return []
-  const parts = text.split('\n')
-  if (text.endsWith('\n')) {
-    parts.pop()
-    return parts.map((p) => ({ text: p, chomped: true }))
-  }
-  return parts.map((p, i) => ({ text: p, chomped: i < parts.length - 1 }))
-}
-
 function readerLines(text: string): string[] {
   const out: string[] = []
   let start = 0
@@ -178,6 +171,9 @@ function readerLines(text: string): string[] {
  * output, which is stdout itself unless -i sends it to the file.
  */
 export class SedMachine {
+  private reader: AsyncLineIterator | undefined
+  private budget = new YieldBudget()
+  private signal: AbortSignal | undefined
   readonly stdout = new SedOutput()
   readonly stderrLines: string[] = []
   readonly wfiles = new Map<string, SedOutput>()
@@ -201,8 +197,7 @@ export class SedMachine {
   private main = this.stdout
   private inputs: SedInput[] = []
   private fileIdx = 0
-  private lines: InputLine[] = []
-  private lineIdx = 0
+  private nextLine: InputLine | undefined
   private fileName = '-'
   private resetAtNextFile = true
   private lineNumber = 0
@@ -243,28 +238,50 @@ export class SedMachine {
 
   /**
    * Run the program over `inputs` as one stream (or file by file with
-   * `separate`), writing the main output to stdout or, when `toStdout` is
-   * false, to a fresh stream whose text is returned (-i's per-file output).
+   * `separate`), yielding the main output as it is reached: stdout's or,
+   * when `toStdout` is false, a fresh stream's (-i's per-file output).
    */
-  process(inputs: SedInput[], toStdout: boolean): string {
+  async *process(
+    inputs: SedInput[],
+    toStdout: boolean,
+    signal?: AbortSignal,
+  ): AsyncGenerator<string> {
+    this.budget = new YieldBudget(signal)
+    this.signal = signal
     const out = toStdout ? this.stdout : new SedOutput()
     this.main = out
     this.inputs = inputs
     this.fileIdx = 0
-    this.lines = []
-    this.lineIdx = 0
+    this.nextLine = undefined
     this.resetAtNextFile = true
     try {
-      while (!this.stopped() && this.readPatternSpace(false)) {
-        const status = this.executeProgram()
-        if (status !== -1) this.quitCode = status
+      while (!this.stopped()) {
+        if (this.appendQueue.length > 0) this.dumpAppendQueue()
+        if (out.chunks.length > 0) {
+          const chunk = out.chunks.join('')
+          out.chunks.length = 0
+          yield chunk
+        }
+        if (!(await this.readPatternSpace(false))) break
+        for await (const status of this.executeProgram()) {
+          if (status !== -1) this.quitCode = status
+          if (out.chunks.length > 0) {
+            yield out.chunks.join('')
+            out.chunks.length = 0
+          }
+        }
       }
     } catch (err) {
       if (!(err instanceof SedPanic)) throw err
       this.panicCode = err.code
       this.stderrLines.push(err.message)
+    } finally {
+      await this.reader?.discard()
     }
-    return toStdout ? '' : out.chunks.join('')
+    if (out.chunks.length > 0) {
+      yield out.chunks.join('')
+      out.chunks.length = 0
+    }
   }
 
   private resetAddresses(): void {
@@ -274,30 +291,41 @@ export class SedMachine {
   }
 
   // Open the next operand; false when there is none.
-  private openNextFile(): boolean {
+  private openNextFile(ignoreFatal = false): boolean {
     for (;;) {
       const next = this.inputs[this.fileIdx]
       if (next === undefined) return false
       this.fileIdx += 1
       this.fileName = next.name
       if ('error' in next) {
-        if (next.fatal) throw new SedPanic(next.error)
-        this.stderrLines.push(next.error)
-        this.badCode = Math.max(this.badCode, next.code)
-        this.lines = []
-        this.lineIdx = 0
+        if (next.fatal) {
+          if (!ignoreFatal) throw new SedPanic(next.error)
+        } else {
+          this.stderrLines.push(next.error)
+          this.badCode = Math.max(this.badCode, next.code)
+        }
         continue
       }
-      this.lines = splitLines(next.text)
-      this.lineIdx = 0
+      this.reader = new AsyncLineIterator(
+        next.source ?? fromByteView(next.text ?? '', this.opts.utf8 ?? false),
+      )
+      this.nextLine = undefined
       return true
     }
   }
 
-  private readPatternSpace(append: boolean): boolean {
-    if (this.appendQueue.length > 0) this.dumpAppendQueue()
+  private async more(): Promise<boolean> {
+    if (this.nextLine !== undefined) return true
+    if (this.reader === undefined) return false
+    const [raw, chomped] = await this.reader.readUntil(10, this.signal)
+    if (raw.length > 0 || chomped)
+      this.nextLine = { text: byteView(raw, this.opts.utf8 ?? false), chomped }
+    return this.nextLine !== undefined
+  }
+
+  private async readPatternSpace(append: boolean): Promise<boolean> {
     this.replaced = false
-    while (this.lineIdx >= this.lines.length) {
+    while (!(await this.more())) {
       if (this.fileIdx >= this.inputs.length) return false
       if (this.resetAtNextFile) {
         this.lineNumber = 0
@@ -308,8 +336,8 @@ export class SedMachine {
       }
       if (!this.openNextFile()) return false
     }
-    const line = this.lines[this.lineIdx]
-    this.lineIdx += 1
+    const line = this.nextLine
+    this.nextLine = undefined
     if (line === undefined) return false
     this.pattern = append ? this.pattern + line.text : line.text
     this.chomped = line.chomped
@@ -320,27 +348,13 @@ export class SedMachine {
   // GNU's test_eof for `$`, `n` and `N`: this operand has no more lines
   // and, unless files are separate, neither has any later one. The later
   // operands are opened on the way, so their errors are reported now.
-  private testEof(): boolean {
-    if (this.lineIdx < this.lines.length) return false
+  private async testEof(): Promise<boolean> {
+    if (await this.more()) return false
     if (this.opts.separate) return true
-    for (;;) {
-      const next = this.inputs[this.fileIdx]
-      if (next === undefined) return true
-      if ('error' in next) {
-        this.fileIdx += 1
-        this.fileName = next.name
-        if (!next.fatal) {
-          this.stderrLines.push(next.error)
-          this.badCode = Math.max(this.badCode, next.code)
-        }
-        continue
-      }
-      this.fileIdx += 1
-      this.fileName = next.name
-      this.lines = splitLines(next.text)
-      this.lineIdx = 0
-      if (this.lines.length > 0) return false
+    while (this.openNextFile(true)) {
+      if (await this.more()) return false
     }
+    return true
   }
 
   private compiled(re: SedRegex | null, global: boolean): RegExp {
@@ -358,7 +372,7 @@ export class SedMachine {
     return hit
   }
 
-  private matchOne(addr: SedAddr, index: number): boolean {
+  private async matchOne(addr: SedAddr, index: number): Promise<boolean> {
     switch (addr.kind) {
       case 'null':
         return true
@@ -380,7 +394,7 @@ export class SedMachine {
   }
 
   // GNU's match_address_p, range states and all.
-  private matchAddress(cmd: SedCommand, index: number): boolean {
+  private async matchAddress(cmd: SedCommand, index: number): Promise<boolean> {
     const a1 = cmd.a1
     const a2 = cmd.a2
     if (a1 === null) return true
@@ -388,14 +402,14 @@ export class SedMachine {
       if (a2 === null) return this.matchOne(a1, index)
       if (a1.kind === 'num') {
         if (this.rangeState[index] === RANGE_CLOSED || this.lineNumber < a1.n) return false
-      } else if (!this.matchOne(a1, index)) return false
+      } else if (!(await this.matchOne(a1, index))) return false
       this.rangeState[index] = RANGE_ACTIVE
       switch (a2.kind) {
         case 'regex':
           return true
         case 'num':
           if (this.lineNumber >= a2.n) this.rangeState[index] = RANGE_CLOSED
-          return this.lineNumber <= a2.n || this.matchOne(a1, index)
+          return this.lineNumber <= a2.n || (await this.matchOne(a1, index))
         case 'step':
           this.a2Number[index] = this.lineNumber + a2.n
           return true
@@ -411,7 +425,7 @@ export class SedMachine {
       if (this.lineNumber >= a2.n) this.rangeState[index] = RANGE_CLOSED
       return this.lineNumber <= a2.n
     }
-    if (this.matchOne(a2, index)) this.rangeState[index] = RANGE_CLOSED
+    if (await this.matchOne(a2, index)) this.rangeState[index] = RANGE_CLOSED
     return true
   }
 
@@ -509,15 +523,18 @@ export class SedMachine {
     this.pattern = out
   }
 
-  // One cycle of the script; -1 to go on to the next line, or the exit
+  // One cycle of the script. Yields -1 wherever the output so far may go out
+  // (before each command, and before `n` or `N` reads on), or the exit
   // status `q` or `Q` stops with.
-  private executeProgram(): number {
+  private async *executeProgram(): AsyncGenerator<number> {
     const commands = this.program.commands
     let pc = 0
     while (pc < commands.length) {
+      await this.budget.run()
+      yield -1
       const cmd = commands[pc]
       if (cmd === undefined) break
-      if (this.matchAddress(cmd, pc) !== cmd.bang) {
+      if ((await this.matchAddress(cmd, pc)) !== cmd.bang) {
         switch (cmd.cmd) {
           case 'a':
             if (cmd.text !== null && cmd.text !== undefined)
@@ -538,12 +555,12 @@ export class SedMachine {
             ) {
               this.main.line(cmd.text.slice(0, -1), true)
             }
-            return -1
+            return
           case 'd':
-            return -1
+            return
           case 'D': {
             const nl = this.pattern.indexOf('\n')
-            if (nl < 0) return -1
+            if (nl < 0) return
             this.pattern = this.pattern.slice(nl + 1)
             pc = 0
             continue
@@ -577,14 +594,18 @@ export class SedMachine {
             throw new SedPanic('sed: INTERNAL ERROR: Bad cmd L\n')
           case 'n':
             if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
-            if (this.testEof() || !this.readPatternSpace(false)) return -1
+            if (this.appendQueue.length > 0) this.dumpAppendQueue()
+            yield -1
+            if ((await this.testEof()) || !(await this.readPatternSpace(false))) return
             break
           case 'N':
             this.pattern += '\n'
-            if (this.testEof() || !this.readPatternSpace(true)) {
+            if (this.appendQueue.length > 0) this.dumpAppendQueue()
+            yield -1
+            if ((await this.testEof()) || !(await this.readPatternSpace(true))) {
               this.pattern = this.pattern.slice(0, -1)
               if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
-              return -1
+              return
             }
             break
           case 'p':
@@ -599,9 +620,11 @@ export class SedMachine {
           case 'q':
             if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
             this.dumpAppendQueue()
-            return cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
+            yield cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
+            return
           case 'Q':
-            return cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
+            yield cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
+            return
           case 'r':
             if (cmd.fname !== undefined) {
               if (cmd.prepend === true) {
@@ -670,7 +693,6 @@ export class SedMachine {
       pc += 1
     }
     if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
-    return -1
   }
 }
 

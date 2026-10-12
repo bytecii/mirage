@@ -14,7 +14,7 @@
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator
 from typing import Any
 
 from mirage.commands.quote import quote_text
@@ -28,6 +28,7 @@ from mirage.commands.spec.usage import (
     unknown_option_error,
     usage_hint,
 )
+from mirage.concurrency.limiter import bounded_map_stream
 from mirage.context import (
     reset_current_session,
     reset_program_invocation,
@@ -37,7 +38,8 @@ from mirage.context import (
 from mirage.errors.constants import FS_ERRORS
 from mirage.errors.fs import enoent, fs_strerror
 from mirage.io import IOResult
-from mirage.io.stream import SharedStdin, async_chain, materialize, yield_bytes
+from mirage.io.cooperative import chunks
+from mirage.io.stream import SharedStdin, materialize, yield_bytes
 from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import decode_text, encode_text
@@ -241,7 +243,7 @@ class _Builder:
     after the events before it.
 
     Args:
-        data (bytes): the whole input.
+        data (bytes): the initial input chunk.
         command (list[bytes]): the command and its initial arguments.
         delim (int | None): the -0/-d delimiter byte, None for lines.
         eof (bytes | None): the logical end-of-file word.
@@ -301,15 +303,15 @@ class _Builder:
         self.nul_warned = False
         self.line = b""
 
-    def build(self) -> None:
-        """Read the whole input into ``events``; raises ``_Fatal``."""
+    def build(self) -> Generator[str | list[bytes] | None, None, None]:
+        """Yield commands/messages or None to request the next input chunk."""
         if self.replace is None:
             for word in self.command:
                 self._push(word, len(word) + 1)
             self.initial = False
             self.initial_argc = len(self.args)
             self.initial_chars = self.chars
-            while self._read() != -1:
+            while (yield from self._read()) != -1:
                 if self.max_lines and self.lineno >= self.max_lines:
                     self._exec()
                     self.lineno = 0
@@ -319,7 +321,7 @@ class _Builder:
                 self._exec()
             return
         head, rest = self.command[0], self.command[1:]
-        while (length := self._read()) != -1:
+        while (length := (yield from self._read())) != -1:
             line = _c_string(self.line)
             self.args, self.chars = [], 0
             self._push(head, len(head) + 1)
@@ -328,8 +330,12 @@ class _Builder:
                 self._insert(arg, line, length - 1)
             self._exec()
 
-    def _read(self) -> int:
-        return self._read_line() if self.delim is None else self._read_item()
+    def _read(self) -> Generator[str | list[bytes] | None, None, int]:
+        return (
+            yield from (
+                self._read_line() if self.delim is None else self._read_item()
+            )
+        )
 
     def _take(self, word: bytes) -> int:
         self.line = word
@@ -340,16 +346,28 @@ class _Builder:
     def _is_eof(self, word: bytes) -> bool:
         return self.eof_word is not None and _c_string(word) == self.eof_word
 
-    def _read_line(self) -> int:
+    def _read_char(self) -> Generator[str | list[bytes] | None, None, int]:
         if self.eof:
             return -1
+        while self.events:
+            yield self.events.pop(0)
+        if self.pos >= len(self.data):
+            yield None
+        if self.pos >= len(self.data):
+            self.eof = True
+            return -1
+        char = self.data[self.pos]
+        self.pos += 1
+        return char
+
+    def _read_line(self) -> Generator[str | list[bytes] | None, None, int]:
         state, quote, c, first, seen = _SPACE, 0, -1, True, False
         buf = bytearray()
         room = self.arg_max - self.initial_chars - 1
         while True:
             prev = c
-            if self.pos >= len(self.data):
-                self.eof = True
+            c = yield from self._read_char()
+            if c == -1:
                 if not buf:
                     return -1
                 if state == _QUOTE:
@@ -358,8 +376,6 @@ class _Builder:
                 if first and self._is_eof(bytes(buf)):
                     return -1
                 return self._take(bytes(buf))
-            c = self.data[self.pos]
-            self.pos += 1
             if state == _SPACE:
                 if c in _SPACES:
                     continue
@@ -406,17 +422,13 @@ class _Builder:
                 raise _Fatal("xargs: argument line too long\n")
             buf.append(c)
 
-    def _read_item(self) -> int:
-        if self.eof:
-            return -1
+    def _read_item(self) -> Generator[str | list[bytes] | None, None, int]:
         buf = bytearray()
         room = self.arg_max - self.initial_chars - 1
         while True:
-            if self.pos >= len(self.data):
-                self.eof = True
+            c = yield from self._read_char()
+            if c == -1:
                 return self._take(bytes(buf)) if buf else -1
-            c = self.data[self.pos]
-            self.pos += 1
             if c == self.delim:
                 self.lineno += 1
                 return self._take(bytes(buf))
@@ -535,7 +547,7 @@ def xargs_missing(name: str) -> str:
 
 async def _run_lines(
     execute_fn: Callable[..., Any],
-    events: list[str | list[bytes]],
+    events: AsyncGenerator[str | list[bytes], None],
     context: EvaluationContext,
     procs: int,
     *,
@@ -543,8 +555,9 @@ async def _run_lines(
     slot_var: str | None = None,
     registry: MountRegistry | None = None,
     stdin: ByteSource | None = None,
-) -> tuple[list[IOResult], int | None]:
-    """Run the builder's command lines, at most ``procs`` at a time.
+) -> AsyncGenerator[tuple[list[IOResult], int | None], None]:
+    """Run the builder's command lines as they arrive, at most ``procs`` at
+    a time.
 
     Messages keep their place among the runs. A command nobody provides
     stops xargs with GNU's 127 before it runs, and one exiting 255 stops
@@ -552,12 +565,14 @@ async def _run_lines(
     commands already running finish. Parallel mode, and a slot variable,
     give every command a fork of the session, so one cannot see
     another's variables, and each drains inside its fork, since a stream
-    can still read the ambient session. The results come back in input
-    order, which is the order their output is written in.
+    can still read the ambient session. Each event's results come back
+    in input order, which is the order their output is written in, with
+    the stop status so far.
 
     Args:
         execute_fn (Callable): shell evaluator for each line.
-        events (list[str | list[bytes]]): messages and command lines.
+        events (AsyncGenerator[str | list[bytes], None]): messages and
+            command lines, pulled only while a slot is free.
         context (EvaluationContext): the session the lines run in.
         procs (int): the -P count; 0 runs every line at once.
         trace (bool): -t, print each command line before it runs.
@@ -568,9 +583,8 @@ async def _run_lines(
         stdin (ByteSource | None): input shared by all commands (-a).
     """
     session = context.session
-    results: list[list[IOResult]] = [[] for _ in events]
-    upcoming = iter(range(len(events)))
     stop: int | None = None
+    stopping = asyncio.Event()
     forked = procs != 1 or slot_var is not None
     taken: set[int] = set()
     feed = SharedStdin(stdin) if stdin is not None else b""
@@ -610,49 +624,71 @@ async def _run_lines(
             reset_current_session(token)
             taken.discard(slot)
 
-    async def worker() -> None:
+    async def invoke(event: str | list[bytes]) -> list[IOResult]:
         nonlocal stop
-        while stop is None:
-            index = next(upcoming, None)
-            if index is None:
-                return
-            event = events[index]
-            if isinstance(event, str):
-                results[index].append(IOResult(stderr=encode_text(event)))
-                continue
-            words = [decode_text(word) for word in event]
-            if trace:
-                results[index].append(
-                    IOResult(stderr=encode_text(_trace(event)))
+        results: list[IOResult] = []
+        if isinstance(event, str):
+            return [IOResult(stderr=encode_text(event))]
+        words = [decode_text(word) for word in event]
+        if trace:
+            results.append(IOResult(stderr=encode_text(_trace(event))))
+        if registry is not None and not execs(words[0], session, registry):
+            results.append(
+                IOResult(
+                    stderr=encode_text(xargs_missing(words[0])),
+                    exit_code=127,
                 )
-            if registry is not None and not execs(words[0], session, registry):
-                results[index].append(
-                    IOResult(
-                        stderr=encode_text(xargs_missing(words[0])),
-                        exit_code=127,
-                    )
-                )
-                stop = 127
-                return
-            try:
-                io = await run(words)
-            except BaseException:
-                stop = 1 if stop is None else stop
-                raise
-            results[index].append(io)
-            if io.exit_code == 255 and stop is None:
-                aborted = (
-                    f"xargs: {words[0]}: exited with status 255; aborting\n"
-                )
-                results[index].append(
-                    IOResult(stderr=encode_text(aborted), exit_code=255)
-                )
-                stop = 124
+            )
+            stop = 127
+            stopping.set()
+            return results
+        try:
+            io = await run(words)
+        except BaseException:
+            stop = 1 if stop is None else stop
+            raise
+        results.append(io)
+        if io.exit_code == 255 and stop is None:
+            aborted = f"xargs: {words[0]}: exited with status 255; aborting\n"
+            results.append(
+                IOResult(stderr=encode_text(aborted), exit_code=255)
+            )
+            stop = 124
+            stopping.set()
+        return results
 
-    runs = sum(1 for event in events if not isinstance(event, str))
-    width = (min(procs, runs) if procs else runs) if procs != 1 else 1
-    await asyncio.gather(*(worker() for _ in range(max(width, 1))))
-    return [io for ios in results for io in ios], stop
+    async def admitted() -> AsyncIterator[str | list[bytes]]:
+        stopped = asyncio.create_task(stopping.wait())
+        pull: asyncio.Future[str | list[bytes]] | None = None
+        try:
+            while stop is None:
+                pull = asyncio.ensure_future(anext(events))
+                await asyncio.wait(
+                    {pull, stopped}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if stopped.done():
+                    return
+                try:
+                    yield pull.result()
+                except StopAsyncIteration:
+                    return
+        finally:
+            stopped.cancel()
+            if pull is not None:
+                pull.cancel()
+            await asyncio.gather(
+                stopped,
+                *([pull] if pull is not None else []),
+                return_exceptions=True,
+            )
+
+    mapped = bounded_map_stream(admitted(), invoke, procs)
+    try:
+        async for results in mapped:
+            yield results, stop
+    finally:
+        await mapped.aclose()
+        await events.aclose()
 
 
 async def handle_xargs(
@@ -820,7 +856,7 @@ async def handle_xargs(
 
     child_stdin: ByteSource | None = None
     if arg_file == "-":
-        data = await materialize(stdin) or b""
+        data = stdin if stdin is not None else b""
     else:
         try:
             if dispatch is None:
@@ -836,7 +872,7 @@ async def handle_xargs(
         warnings += _limits(env_size, posix_max, arg_max)
 
     builder = _Builder(
-        data,
+        b"",
         [encode_text(word) for word in parse.operands or ["echo"]],
         delim=delim,
         eof=encode_text(eof) if eof is not None else None,
@@ -851,39 +887,73 @@ async def handle_xargs(
         open_tty="o" in toggles,
     )
     fatal: _Fatal | None = None
-    try:
-        builder.build()
-    except _Fatal as caught:
-        fatal = caught
 
-    ios, stop = await _run_lines(
-        execute_fn,
-        builder.events,
-        context,
-        procs,
-        trace="t" in toggles,
-        slot_var=slot_var,
-        registry=registry,
-        stdin=child_stdin,
-    )
-    stdouts: list[ByteSource] = []
+    async def events() -> AsyncGenerator[str | list[bytes], None]:
+        nonlocal fatal
+        source = chunks(data)
+        steps = builder.build()
+        try:
+            while True:
+                try:
+                    event = next(steps)
+                except StopIteration:
+                    break
+                except _Fatal as caught:
+                    fatal = caught
+                    break
+                if event is None:
+                    builder.data = await anext(source, b"")
+                    builder.pos = 0
+                else:
+                    yield event
+            for event in builder.events:
+                yield event
+            builder.events.clear()
+        finally:
+            steps.close()
+            await source.aclose()
+
     merged = IOResult(stderr=encode_text(warnings) or None)
-    for io in ios:
-        if io.stdout is not None:
-            stdouts.append(io.stdout)
-        merged = await merged.merge(io)
-    if stop is not None:
-        exit_code = stop
-    elif fatal is not None:
-        merged = await merged.merge(
-            IOResult(stderr=encode_text(fatal.message))
+    node = ExecutionNode(command="xargs")
+
+    async def output() -> AsyncIterator[bytes]:
+        stop = None
+        failed = False
+        results = _run_lines(
+            execute_fn,
+            events(),
+            context,
+            procs,
+            trace="t" in toggles,
+            slot_var=slot_var,
+            registry=registry,
+            stdin=child_stdin,
         )
-        exit_code = fatal.code
-    else:
-        exit_code = 123 if any(io.exit_code != 0 for io in ios) else 0
-    merged.exit_code = exit_code
-    out = async_chain(stdouts) if stdouts else None
-    return out, merged, ExecutionNode(command="xargs", exit_code=exit_code)
+        try:
+            async for ios, stop in results:
+                for io in ios:
+                    failed = failed or io.exit_code != 0
+                    combined = await merged.merge(IOResult(stderr=io.stderr))
+                    merged.stderr = combined.stderr
+                    raw = await materialize(io.stdout)
+                    if raw:
+                        yield raw
+        finally:
+            await results.aclose()
+            # A reader that stops early still sees the runs it reached.
+            if stop is not None:
+                merged.exit_code = stop
+            elif fatal is not None:
+                combined = await merged.merge(
+                    IOResult(stderr=encode_text(fatal.message))
+                )
+                merged.stderr = combined.stderr
+                merged.exit_code = fatal.code
+            else:
+                merged.exit_code = 123 if failed else 0
+            node.exit_code = merged.exit_code
+
+    return output(), merged, node
 
 
 async def xargs_builtin(call: BuiltinCall) -> Result:

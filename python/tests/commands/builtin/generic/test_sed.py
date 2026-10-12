@@ -1,6 +1,7 @@
 import pytest
 
 from mirage.commands.builtin.generic.sed import sed
+from mirage.io.types import materialize
 from mirage.types import PathSpec
 
 
@@ -55,7 +56,7 @@ async def test_sed_scripts_over_stdin(script, stdin, out):
     output, _ = await sed(
         [], script, read_bytes=rb, write_bytes=wb, stdin=stdin
     )
-    assert output == out
+    assert await materialize(output) == out
 
 
 @pytest.mark.asyncio
@@ -123,6 +124,35 @@ async def test_sed_reads_nothing_after_a_directory(script, separate, out):
         suppress=True,
         separate=separate,
     )
-    assert output == out
+    assert await materialize(output) == out
     assert io.exit_code == 4
     assert reads == ["/f", "/d"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script,code", [("w /saved", 0), ("w /saved\nq7", 7)])
+async def test_reached_writes_and_status_survive_early_output_close(
+    script, code
+):
+    rb, wb, store = _make_backend({})
+    output, io = await sed(
+        [], script, read_bytes=rb, write_bytes=wb, stdin=b"x\n"
+    )
+    assert await anext(output) == b"x\n"
+    await output.aclose()
+    assert store["/saved"] == b"x\n"
+    assert io.exit_code == code
+
+
+@pytest.mark.asyncio
+async def test_repeated_stdin_operands_share_one_byte_cursor():
+    rb, wb, _ = _make_backend({})
+    output, io = await sed(
+        [_spec("-"), _spec("-")],
+        "",
+        read_bytes=rb,
+        write_bytes=wb,
+        stdin=b"x\n",
+    )
+    assert await materialize(output) == b"x\n"
+    assert io.exit_code == 0

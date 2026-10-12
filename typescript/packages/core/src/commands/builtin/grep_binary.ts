@@ -12,7 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { compilePosixRegex } from '../../utils/posix.ts'
+import type { Worker } from '../../concurrency/worker.ts'
+import { AsyncRegex } from '../../utils/regex.ts'
 import { YieldBudget } from '../../io/yield_budget.ts'
 import { closeQuietly } from '../../io/stream.ts'
 import { prefixOf } from './grep_offsets.ts'
@@ -212,6 +213,7 @@ export async function* grepInput(
   utf8 = false,
   // The input's size, which -T sizes its fields to; null for a pipe.
   size: number | null = null,
+  worker?: Worker,
 ): AsyncIterable<Uint8Array> {
   const budget = new YieldBudget(signal)
   io.exitCode = 1
@@ -253,6 +255,8 @@ export async function* grepInput(
     !f.invert && (!hasContext || f.countOnly || f.quiet || f.filesOnly || f.filesWithoutMatch)
       ? requiredNeedles(pat)
       : null
+  const pattern = new AsyncRegex(pat, signal, f.onlyMatching, worker)
+  pat = pattern
   const input = binary.read(source)
   const lines = new AsyncLineIterator(input)
   try {
@@ -269,6 +273,13 @@ export async function* grepInput(
       const lineStart = bytePos
       bytePos += raw.length + 1
       const line = byteView(raw, utf8)
+      await pattern.prepare(line, () =>
+        f.maxCount === null && !(f.quiet || f.filesOnly || f.filesWithoutMatch)
+          ? lines
+              .bufferedLines(eol, 31, needles, pat.ignoreCase)
+              .map((item) => byteView(item, utf8))
+          : [],
+      )
       let hit = pat.test(line) !== f.invert
       if (f.maxCount !== null && count >= f.maxCount) hit = false
       if (hit) {
@@ -312,11 +323,7 @@ export async function* grepInput(
         afterUntil = number + after
         if (f.onlyMatching) {
           if (!f.invert) {
-            const re = compilePosixRegex(
-              pat.source,
-              pat.flags.includes('g') ? pat.flags : pat.flags + 'g',
-            )
-            for (const m of line.matchAll(re)) {
+            for (const m of pattern.matches(line)) {
               const pending = budget.run()
               if (pending !== undefined) await pending
               const text = matchText(m)
@@ -366,6 +373,7 @@ export async function* grepInput(
       if (f.maxCount !== null && count >= f.maxCount && number >= afterUntil) break
     }
   } finally {
+    await pattern.close()
     await closeQuietly(input)
     await closeQuietly(source)
   }

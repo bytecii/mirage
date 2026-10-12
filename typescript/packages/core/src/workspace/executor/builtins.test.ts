@@ -64,7 +64,7 @@ import {
   handleTimeout,
   handleUnset,
   handleWhoami,
-  handleXargs,
+  handleXargs as streamXargs,
 } from './builtins/index.ts'
 import { parseDuration, parseSignal, signalName } from './builtins/timeout/timeout.ts'
 import { ExitSignal, ReturnSignal } from '../../shell/errors.ts'
@@ -93,6 +93,13 @@ async function readBody(out: ByteSource | null): Promise<string> {
 function decode(b: Uint8Array | null): string {
   if (b === null) return ''
   return new TextDecoder().decode(b)
+}
+
+async function handleXargs(
+  ...args: Parameters<typeof streamXargs>
+): ReturnType<typeof streamXargs> {
+  const [out, io, node] = await streamXargs(...args)
+  return [await materialize(out), io, node]
 }
 
 describe('handleExport / handleUnset / handlePrintenv', () => {

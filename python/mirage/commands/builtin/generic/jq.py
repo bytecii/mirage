@@ -21,6 +21,7 @@ from mirage.commands.spec.constants import OPERAND, REFUSED
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.standard import help_page, version_line
 from mirage.commands.spec.types import FlagValue
+from mirage.concurrency.worker import Worker
 from mirage.core.jq import (
     args_text,
     decode_utf8,
@@ -532,6 +533,7 @@ class MainLoop:
         args: str | None,
         io: IOResult,
     ) -> None:
+        self._worker = Worker()
         self._reports: list[str] = []
         self._reader = InputReader(sources, opts, self._reports.append)
         self._expr = expr
@@ -574,6 +576,7 @@ class MainLoop:
             )
             if self._reports:
                 self._io.stderr = "".join(self._reports).encode()
+            await self._worker.close()
             await self._reader.close()
 
     async def _run(self, doc: str, position: str) -> tuple[JqRun[str], str]:
@@ -599,8 +602,13 @@ class MainLoop:
         """
         reads = self._reads
         if not (reads.input or reads.inputs):
-            run = jq_run_texts(
-                doc, self._expr, self._opts.named_args, None, self._args
+            run = await self._worker.call(
+                jq_run_texts,
+                doc,
+                self._expr,
+                self._opts.named_args,
+                None,
+                self._args,
             )
             return printable(run, self._opts), position
         docs: list[str] = []
@@ -616,7 +624,8 @@ class MainLoop:
             docs.append(item)
             if not reads.inputs:
                 break
-        run = jq_run_texts(
+        run = await self._worker.call(
+            jq_run_texts,
             doc,
             self._expr,
             self._opts.named_args,
