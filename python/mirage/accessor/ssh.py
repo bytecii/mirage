@@ -73,6 +73,26 @@ class SSHAccessor(Accessor):
                 self._conn = conn
             return self._sftp
 
+    async def run(self, command: str) -> tuple[int | None, bytes, bytes]:
+        """Run ``command`` on the server over the mount's connection: its
+        exit status (None when a signal ended it), its output and its
+        error output.
+
+        Args:
+            command (str): the command line, as the server's shell reads it.
+        """
+        await self.sftp()
+        conn = self._conn
+        if conn is None:
+            raise ConnectionError("the ssh connection closed")
+        done = await conn.run(command, check=False, encoding=None)
+        out, err = done.stdout, done.stderr
+        return (
+            done.exit_status,
+            out if isinstance(out, bytes) else b"",
+            err if isinstance(err, bytes) else b"",
+        )
+
     async def close(self) -> None:
         async with self._lock:
             if self._conn is not None:

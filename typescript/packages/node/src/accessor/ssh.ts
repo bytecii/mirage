@@ -100,6 +100,41 @@ export class SSHAccessor extends Accessor {
     })
   }
 
+  /**
+   * Run `command` on the server over the mount's connection: its exit status
+   * (null when a signal ended it), its output and its error output. Mirrors
+   * Python's `run`.
+   */
+  async run(command: string): Promise<[number | null, Uint8Array, Uint8Array]> {
+    await this.sftp()
+    const client = this.client
+    if (client === null) throw new Error('the ssh connection closed')
+    return new Promise((resolveFn, rejectFn) => {
+      client.exec(command, (err, channel) => {
+        if (err !== undefined) {
+          rejectFn(err)
+          return
+        }
+        const chunks: Buffer[] = []
+        const errors: Buffer[] = []
+        let status: number | null = null
+        channel.on('data', (chunk: Buffer) => chunks.push(chunk))
+        channel.stderr.on('data', (chunk: Buffer) => errors.push(chunk))
+        channel.on('exit', (code: number | null) => {
+          status = code
+        })
+        channel.on('error', rejectFn)
+        channel.on('close', () => {
+          resolveFn([
+            status,
+            new Uint8Array(Buffer.concat(chunks)),
+            new Uint8Array(Buffer.concat(errors)),
+          ])
+        })
+      })
+    })
+  }
+
   close(): Promise<void> {
     if (this.client !== null) {
       this.client.end()

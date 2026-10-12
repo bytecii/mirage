@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "id": "ssh_search_follows_a_server_link",
+      "seq": 923370,
+      "targets": [
+        "ssh"
+      ],
+      "command": "grep -r violets /links; rg -l sugar /links; grep -rc roses /links; grep -r nowhere /links; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "/links/poem_link.txt:violets are blue\n/links/poem_link.txt\n/links/poem_link.txt:1\nrc=1\n",
+        "stderr": ""
+      }
+    }
+  ]
+}
