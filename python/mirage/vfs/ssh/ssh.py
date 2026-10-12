@@ -32,6 +32,7 @@ from mirage.core.ssh.readdir import readdir as _readdir
 from mirage.core.ssh.rename import rename as _rename
 from mirage.core.ssh.rm import rm_r as _rm_r
 from mirage.core.ssh.rmdir import rmdir as _rmdir
+from mirage.core.ssh.search import files_containing as _files_containing
 from mirage.core.ssh.set_attrs import set_attrs as _set_attrs
 from mirage.core.ssh.stat import stat as _stat
 from mirage.core.ssh.stream import read_stream as _read_stream
@@ -104,6 +105,17 @@ class SSHVFS(BaseVFS):
         **predicates: Any,
     ) -> list[str]:
         return await _find(self.accessor, path, index=index, **predicates)
+
+    async def files_containing(
+        self,
+        text: str,
+        under: list[PathSpec],
+        *,
+        whole_word: bool,
+        ignore_case: bool,
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec] | None:
+        return await _files_containing(self.accessor, text, under, ignore_case)
 
     async def du_size(
         self, path: PathSpec, index: IndexCacheStore = NULL_INDEX

@@ -196,6 +196,41 @@ def test_a_search_never_changes_what_grep_and_rg_print(line, mount):
     assert _run(SearchRAM(**MOUNTS[mount]), line) == _run(RAMVFS(), line)
 
 
+# rg drops a byte-order mark only where a file starts, which a line answer
+# cannot say it does, so an answer that starts with one is not used, and the
+# file is read as one no search answered.
+MARKED = {
+    "/m/mid.txt": b"skip\n\xef\xbb\xbfada\n",
+    "/m/top.txt": b"\xef\xbb\xbfada\n",
+}
+
+
+def _marked(vfs: RAMVFS) -> RAMVFS:
+    vfs._store.dirs.add("/m")
+    vfs._store.files.update(MARKED)
+    return vfs
+
+
+@pytest.mark.parametrize("lines", ["bytes", "stream"])
+def test_rg_reads_a_file_whose_line_answer_starts_with_a_mark(lines):
+    line = "rg -x ada /m"
+    vfs = SearchRAM(files=False, lines=lines)
+    searched = _run(_marked(vfs), line)
+    assert searched == _run(_marked(RAMVFS()), line)
+    assert searched[0] == b"/m/top.txt:ada\n"
+    assert vfs.scans == [ScanReason.UNANSWERED]
+
+
+# Under -E none rg keeps the mark, so the answer stands and nothing is read.
+@pytest.mark.parametrize("lines", ["bytes", "stream"])
+def test_rg_keeps_a_marked_line_answer_under_no_encoding(lines):
+    line = "rg -E none ada /m"
+    vfs = SearchRAM(files=False, lines=lines)
+    searched = _run(_marked(vfs), line)
+    assert searched == _run(_marked(RAMVFS()), line)
+    assert (vfs.reads, vfs.scans) == ([], [])
+
+
 EVERY = "a.txt b.txt c.txt sub/d.txt z.txt"
 
 
@@ -323,6 +358,8 @@ def test_a_hidden_path_is_walked_without_the_search():
         ("grep -rin ada /d", False),
         ("grep -ril ada /d", False),
         ("grep -riq ada /d", False),
+        ("rg -i ada /d", True),
+        ("rg -iq ada /d", False),
     ],
 )
 def test_a_streamed_answer_is_pulled_as_far_as_needed(line, pulls_every_line):
@@ -341,6 +378,24 @@ def test_a_streamed_answer_is_pulled_as_far_as_needed(line, pulls_every_line):
             await ws.close()
 
     assert asyncio.run(run()) == (pulls_every_line, 0)
+
+
+# rg -q stops on a long first line of a streamed answer, which it closes all
+# the same.
+def test_rg_closes_a_streamed_answer_it_stops_inside():
+    vfs = SearchRAM(files=False, lines="stream")
+
+    async def run() -> tuple[int, int]:
+        ws = Workspace({"/": vfs})
+        vfs._store.dirs.add("/big")
+        vfs._store.files["/big/x.txt"] = b"ada" * 50_000 + b"\nada\n" * 9
+        try:
+            await ws.shell("rg -q ada /big/x.txt")
+            return len(vfs.pulled), vfs.open
+        finally:
+            await ws.close()
+
+    assert asyncio.run(run()) == (1, 0)
 
 
 def _refused(reason: ScanReason) -> bytes:

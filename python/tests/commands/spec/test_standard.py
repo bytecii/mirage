@@ -18,6 +18,7 @@ from mirage.commands.spec.builtins import registered_spec
 from mirage.commands.spec.standard import (
     has_injected_version,
     help_page,
+    pcre2_line,
     standard_request,
     version_line,
 )
@@ -181,6 +182,31 @@ class TestStandardRequest:
             assert (
                 standard_request(name, spec, ["--bogus", "--version"]) is None
             )
+
+    # Both answer once their loop is done: grep 3.11 tests show_version
+    # before show_help, and ripgrep 14.1.1 keeps the special mode it read
+    # last, --pcre2-version among them.
+    def test_the_deferred_family_picks_its_own_answer(self):
+        grep = registered_spec("grep", SPECS["grep"])
+        for argv in (["--help", "--version"], ["--version", "--help"]):
+            assert standard_request("grep", grep, argv) == version_line("grep")
+        assert standard_request("grep", grep, ["--help", "-V"]) == (
+            version_line("grep")
+        )
+        rg = registered_spec("rg", SPECS["rg"])
+        page = help_page("rg", SPECS["rg"])
+        assert standard_request("rg", rg, ["--version", "--help"]) == page
+        assert standard_request("rg", rg, ["-Vh"]) == page
+        assert standard_request("rg", rg, ["-hV"]) == version_line("rg")
+        assert standard_request("rg", rg, ["-h", "--pcre2-version"]) == (
+            pcre2_line()
+        )
+        assert standard_request("rg", rg, ["--pcre2-version", "-V"]) == (
+            version_line("rg")
+        )
+        assert (
+            standard_request("rg", rg, ["--pcre2-version", "--bogus"]) is None
+        )
 
     # zgrep is a shell script whose own loop answers before it ever
     # builds a grep command, so no refusal outranks it (measured on gzip

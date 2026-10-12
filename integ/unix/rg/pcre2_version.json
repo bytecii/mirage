@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "id": "rg_pcre2_version_answers_like_version",
+      "seq": 14490237,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "rg --pcre2-version | grep -c 'is available'; rg --pcre2-version foo /nonexistent | grep -c 'is available'; rg -V --pcre2-version | grep -c 'is available'; rg --pcre2-version -V | grep -c 'is available'; rg -h --pcre2-version | grep -ci '^usage'; rg --pcre2-version -h | grep -ci '^usage'; rg --pcre2-version -E bad; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n1\n1\n0\n0\n1\nrc=2\n",
+        "stderr": "rg: error parsing flag -E: grep config error: unknown encoding: bad\n"
+      },
+      "flags": [
+        "pcre2_version",
+        "V",
+        "h",
+        "help",
+        "version",
+        "E"
+      ]
+    },
+    {
+      "id": "rg_answers_the_last_standard_option",
+      "seq": 14490238,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "rg --version --help | grep -ci '^usage'; rg --help --version | grep -ci '^usage'; rg -hV | grep -ci '^usage'; rg -Vh | grep -ci '^usage'; rg -V -h | grep -ci '^usage'; rg --help -V | grep -ci '^usage'",
+      "expect": {
+        "exit": 1,
+        "stdout": "1\n0\n0\n1\n1\n0\n",
+        "stderr": ""
+      },
+      "flags": [
+        "h",
+        "V",
+        "help",
+        "version"
+      ]
+    }
+  ]
+}

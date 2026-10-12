@@ -33,6 +33,7 @@ from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.helpers import byte_offset
 from mirage.types import JsonValue
+from mirage.utils.encoding import BOMS, bom_of, decoder_for
 from mirage.utils.regex import AsyncRegex, Pattern, RegexMatch, prepare
 
 # ripgrep's words for a line -M will not print whole (ripgrep 14.1.1).
@@ -55,7 +56,8 @@ class RgFlags:
     order; type_selections pairs each type name with an exclusion bit.
     threads is -j, None when the line left ripgrep to pick. text is -a,
     which turns binary detection off; binary is -a, --binary or -uuu,
-    which also searches the files a walk would skip as binary.
+    which also searches the files a walk would skip as binary. encoding is
+    -E: auto, none, or the WHATWG name of the encoding a label named.
     """
 
     ignore_case: bool
@@ -121,6 +123,7 @@ class RgFlags:
     threads: int | None = None
     text: bool = False
     unicode: bool = True
+    encoding: str = "auto"
 
 
 def record_end(f: RgFlags) -> bytes:
@@ -1893,6 +1896,61 @@ async def _multiline(
         await budget.run()
 
 
+async def _framed(
+    head: bytes, source: AsyncIterator[bytes]
+) -> AsyncIterator[tuple[bytes, bool]]:
+    yield head, False
+    async for chunk in source:
+        yield chunk, False
+    yield b"", True
+
+
+async def transcoded(
+    source: AsyncIterator[bytes], encoding: str
+) -> AsyncIterator[bytes]:
+    """A haystack's bytes as ripgrep searches them under -E auto or a
+    named encoding.
+
+    A leading byte-order mark is dropped, and a UTF-16 one picks UTF-16
+    whatever -E said, where a UTF-8 one leaves the choice alone. Under
+    auto with no UTF-16 mark the rest passes as it is, invalid UTF-8
+    included. Otherwise it is decoded to UTF-8, a sequence the encoding
+    does not map becoming U+FFFD, and a UTF encoding drops a second mark
+    of its own too (encoding_rs_io, ripgrep 14.1.1).
+
+    Args:
+        source (AsyncIterator[bytes]): the haystack's bytes.
+        encoding (str): auto, or the WHATWG name -E gave.
+    """
+    head = b""
+    try:
+        async for chunk in source:
+            head += chunk
+            if len(head) >= 3:
+                break
+        named = None if encoding == "auto" else encoding
+        bom = bom_of(head)
+        if bom is not None:
+            head = head[len(bom[0]) :]
+            named = named if bom[1] == "UTF-8" else bom[1]
+        if named is None:
+            if head:
+                yield head
+            async for chunk in source:
+                yield chunk
+            return
+        decode = decoder_for(named)
+        marked = any(named == name for _, name in BOMS)
+        async for chunk, last in _framed(head, source):
+            text = decode(chunk, last)
+            if marked and text:
+                text, marked = text.removeprefix("\ufeff"), False
+            if text:
+                yield encode_text(text)
+    finally:
+        await close_quietly(source)
+
+
 async def search_haystack(
     source: AsyncIterator[bytes],
     pat: re.Pattern[str],
@@ -1948,7 +2006,10 @@ async def search_haystack(
         restart=True,
         worker=worker,
     )
-    reader = binary.read(source, pipe)
+    reader = binary.read(
+        source if f.encoding == "none" else transcoded(source, f.encoding),
+        pipe,
+    )
     lines = AsyncLineIterator(reader)
     try:
         if f.multiline:

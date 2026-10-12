@@ -103,6 +103,23 @@ def test_command_entry_is_the_first_registration_found():
     assert _command_entry("nope", _mk_registry([m1, m2])) is None
 
 
+def test_a_wrapper_has_the_page_of_the_program_it_runs():
+    # Debian links egrep's page to grep's; a mount's own egrep still wins.
+    spec = CommandSpec(description="print lines that match patterns")
+    grep = _mk_mount("/a/", "ram", cmds={"grep": _mk_cmd("grep", spec)})
+    reg = _mk_registry([grep])
+    assert _command_entry("egrep", reg) == ManEntry(name="egrep", spec=spec)
+    assert _command_entry("zegrep", reg) is None
+    assert "- egrep — print lines that match patterns" in (
+        _render_man_index(reg)
+    )
+    own = CommandSpec(description="custom")
+    egrep = _mk_mount("/b/", "ram", cmds={"egrep": _mk_cmd("egrep", own)})
+    assert _command_entry("egrep", _mk_registry([grep, egrep])) == ManEntry(
+        name="egrep", spec=own
+    )
+
+
 def test_render_page_no_options():
     spec = CommandSpec(description="Concatenate files.")
     out = _render_page(ManEntry(name="cat", spec=spec))

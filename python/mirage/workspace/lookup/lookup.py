@@ -24,6 +24,7 @@ from mirage.runtime.routing.types import RouteDecision
 from mirage.utils.quote import shell_quote
 from mirage.workspace.lookup.constants import (
     CAPTURABLE_BUILTINS,
+    EXEC_WRAPPERS,
     INTERPRETER_NAMES,
     KEYWORDS,
     NAMESPACE_COMMANDS,
@@ -126,7 +127,10 @@ def _layers(
     if (native or refused) and name not in SHELL_NAMES:
         found = True
         yield Consumer.EXTERNAL
-    if name in ROUTED_COMMANDS or registry.mount_for_command(name) is not None:
+    if (
+        name in ROUTED_COMMANDS
+        or registry.mount_for_command(runs_as(name, registry)) is not None
+    ):
         found = True
         yield Consumer.MOUNT
     fallback = (
@@ -308,17 +312,31 @@ def program_note(
     help_line = f" Help: {shell_quote(name)} --help"
     if consumer is Consumer.CLI:
         return f"{name} is a CLI registered with this workspace.{help_line}"
+    runs = runs_as(name, registry)
     mount = (
-        registry.mount_for_command(name)
+        registry.mount_for_command(runs)
         if consumer is Consumer.MOUNT
         else None
     )
-    spec = mount.spec_for(name) if mount is not None else None
+    spec = mount.spec_for(runs) if mount is not None else None
     if spec is not None and any(
         "--help" in o.names for o in compile_spec(spec).options
     ):
         return f"{name} is built into mirage.{help_line}"
     return f"{name} is built into mirage."
+
+
+def runs_as(name: str, registry: "MountRegistry") -> str:
+    """The program a command word runs: a wrapper no mount registers
+    (``egrep``) runs the program it names, any other word itself.
+
+    Args:
+        name (str): the command word.
+        registry (MountRegistry): mount registry (command registration).
+    """
+    if name in EXEC_WRAPPERS and registry.mount_for_command(name) is None:
+        return EXEC_WRAPPERS[name][0]
+    return name
 
 
 def programs(session: SessionState, registry: "MountRegistry") -> list[str]:
@@ -337,7 +355,7 @@ def programs(session: SessionState, registry: "MountRegistry") -> list[str]:
         registry (MountRegistry): mount registry (command registration).
     """
     names = set(SHELL_NAMES) | NAMESPACE_COMMANDS | set(registry.clis.names())
-    names |= ROUTED_COMMANDS
+    names |= ROUTED_COMMANDS | set(EXEC_WRAPPERS)
     names |= {n for n in registry.runtime_bindings if n != EXTERNAL_COMMANDS}
     for mount in registry.mounts():
         names |= {cmd.name.split()[0] for cmd in mount.all_commands()}

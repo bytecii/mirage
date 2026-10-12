@@ -17,9 +17,11 @@ import { pathsScoped } from '../../../view/namespace_view.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 
 import { ScanReason } from '../../../vfs/types.ts'
-import { ensureStream } from '../../../io/stream.ts'
+import { closeQuietly, ensureStream } from '../../../io/stream.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { byteView, utf8Locale } from '../../../shell/bytes.ts'
+import { concat } from '../../../utils/bytes.ts'
+import { bomOf } from '../../../utils/encoding.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../utils/filetype.ts'
 import { globPrefixMatch } from '../../../utils/path.ts'
 import { isFsError } from '../../../errors/fs.ts'
@@ -31,7 +33,7 @@ import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 
 import { directoriesAction, parseFlags as parseGrepFlags } from '../generic/grep.ts'
-import { foldsCase, parseFlags as parseRgFlags, rgMatcher } from '../generic/rg.ts'
+import { encodingFlag, foldsCase, parseFlags as parseRgFlags, rgMatcher } from '../generic/rg.ts'
 import { searchTerms } from '../grep_pushdown.ts'
 import { compilePattern, patternArg } from '../grep_pattern.ts'
 import type { SearchTerms } from '../types.ts'
@@ -105,7 +107,13 @@ export function rgTerms(
   }
   if (f.stats === true || f.json === true) return ScanReason.EVERY_FILE
   if (f.follow) return ScanReason.LINKS
-  if (f.searchZip === true || (f.pre ?? null) !== null) return ScanReason.TRANSFORMED
+  if (
+    f.searchZip === true ||
+    (f.pre ?? null) !== null ||
+    !['auto', 'none'].includes(f.encoding ?? 'auto')
+  ) {
+    return ScanReason.TRANSFORMED
+  }
   if (pattern === null || fl.raw('file') !== undefined) return ScanReason.NO_TEXT
   const ignoreCase = foldsCase(pattern, f.fixedString, f)
   const found = searchTerms(
@@ -155,6 +163,42 @@ export function candidateReads(
     for await (const chunk of data === null ? stream(p) : ensureStream(data)) {
       if (chunk.length > 0) yield chunk
     }
+  }
+}
+
+/**
+ * rg's `linesContaining` answer as it stands, or null, so the file is read,
+ * when it starts with a byte-order mark: rg drops a mark only where the file
+ * starts, which an answer cannot say it does. Under `-E none` rg keeps the
+ * mark, so its answer is not asked here. Mirrors Python's `_unmarked`.
+ */
+async function unmarked(found: ByteSource): Promise<ByteSource | null> {
+  if (found instanceof Uint8Array) return bomOf(found) === null ? found : null
+  const rest = found[Symbol.asyncIterator]()
+  let head: Uint8Array = new Uint8Array(0)
+  while (head.length < 3) {
+    const step = await rest.next()
+    if (step.done === true) break
+    head = concat([head, step.value])
+  }
+  if (bomOf(head) !== null) {
+    await closeQuietly(found)
+    return null
+  }
+  return replayed(head, rest)
+}
+
+async function* replayed(
+  head: Uint8Array,
+  rest: AsyncIterator<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+  try {
+    if (head.length > 0) yield head
+    for (let step = await rest.next(); step.done !== true; step = await rest.next()) {
+      yield step.value
+    }
+  } finally {
+    await rest.return?.()
   }
 }
 
@@ -257,6 +301,7 @@ export async function searchReads<A extends Accessor>(
     return stream
   }
   const asked = terms
+  const dropsMark = name === 'rg' && encodingFlag(fl) !== 'none'
   let hits: Set<string> | null = null
   if (files !== undefined && dirs.length > 0) {
     const answers = await Promise.all(
@@ -307,7 +352,8 @@ export async function searchReads<A extends Accessor>(
     const ignoreCase = { ignoreCase: asked.ignoreCase }
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {
-      const answer = await lines(accessor, path, only, ignoreCase, index)
+      const found = await lines(accessor, path, only, ignoreCase, index)
+      const answer = found !== null && dropsMark ? await unmarked(found) : found
       if (answer === null) await readUnanswered()
       return answer
     }

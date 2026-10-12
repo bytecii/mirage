@@ -208,7 +208,8 @@ export type SearchManyOp<A extends Accessor = Accessor> = (
  * LINKS: rg -L follows links out of the walk. BINARY:
  * -a, --binary-files=text, rg -a, --binary or -uuu reads every
  * binary-extension file, which a search that answered does not rule out.
- * TRANSFORMED: rg -z or --pre searches bytes the mount does not store.
+ * TRANSFORMED: rg -z, --pre or -E naming an encoding searches bytes the
+ * mount does not store.
  * UNANSWERED: `filesContaining` resolved null, or `linesContaining` resolved
  * null for a file.
  */

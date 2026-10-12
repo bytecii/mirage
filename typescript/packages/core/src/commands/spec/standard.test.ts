@@ -15,7 +15,13 @@ import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../io/types.ts'
 import { command } from '../config.ts'
 import { BUILTIN_SPECS, registeredSpec } from './builtins.ts'
-import { hasInjectedVersion, standardRequest } from './standard.ts'
+import {
+  hasInjectedVersion,
+  helpPage,
+  pcre2Line,
+  standardRequest,
+  versionLine,
+} from './standard.ts'
 import { CommandSpec, Argument } from './types.ts'
 
 const noopFn = (): Promise<[Uint8Array, IOResult]> =>
@@ -128,6 +134,28 @@ describe('standardRequest', () => {
       expect(standardRequest(name, builtinSpec(name), ['--version', '--bogus'])).toBeNull()
       expect(standardRequest(name, builtinSpec(name), ['--bogus', '--version'])).toBeNull()
     }
+  })
+
+  // Both answer once their loop is done: grep 3.11 tests show_version before
+  // show_help, and ripgrep 14.1.1 keeps the special mode it read last,
+  // --pcre2-version among them.
+  it('lets the deferred family pick its own answer', () => {
+    const answer = (name: string, argv: string[]): string | null =>
+      decode(standardRequest(name, builtinSpec(name), argv))
+    for (const argv of [
+      ['--help', '--version'],
+      ['--version', '--help'],
+      ['--help', '-V'],
+    ]) {
+      expect(answer('grep', argv)).toBe(versionLine('grep'))
+    }
+    const page = helpPage('rg', builtinSpec('rg'))
+    expect(answer('rg', ['--version', '--help'])).toBe(page)
+    expect(answer('rg', ['-Vh'])).toBe(page)
+    expect(answer('rg', ['-hV'])).toBe(versionLine('rg'))
+    expect(answer('rg', ['-h', '--pcre2-version'])).toBe(pcre2Line())
+    expect(answer('rg', ['--pcre2-version', '-V'])).toBe(versionLine('rg'))
+    expect(answer('rg', ['--pcre2-version', '--bogus'])).toBeNull()
   })
 
   // zgrep is a shell script whose own loop answers before it ever builds a grep

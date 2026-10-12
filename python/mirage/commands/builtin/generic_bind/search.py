@@ -25,6 +25,7 @@ from mirage.commands.builtin.generic.grep import (
     parse_flags as parse_grep_flags,
 )
 from mirage.commands.builtin.generic.rg import (
+    encoding_flag,
     folds_case,
     rg_matcher,
 )
@@ -47,6 +48,7 @@ from mirage.io.types import ByteSource, materialize
 from mirage.observe.context import revision_for
 from mirage.shell.bytes import byte_view, utf8_locale
 from mirage.types import FileType, PathSpec
+from mirage.utils.encoding import bom_of
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
 from mirage.utils.path import glob_prefix_match
 from mirage.vfs.types import ScanReason
@@ -137,7 +139,7 @@ def rg_terms(
         return ScanReason.EVERY_FILE
     if f.follow:
         return ScanReason.LINKS
-    if f.search_zip or f.pre is not None:
+    if f.search_zip or f.pre is not None or f.encoding not in ("auto", "none"):
         return ScanReason.TRANSFORMED
     if pattern is None or fl.raw("file"):
         return ScanReason.NO_TEXT
@@ -221,6 +223,40 @@ def candidate_reads(
             await close_quietly(chunks)
 
     return read, stream
+
+
+async def _unmarked(found: ByteSource) -> ByteSource | None:
+    """rg's ``lines_containing`` answer as it stands, or None, so the file
+    is read, when it starts with a byte-order mark: rg drops a mark only
+    where the file starts, which an answer cannot say it does. Under
+    ``-E none`` rg keeps the mark, so its answer is not asked here.
+
+    Args:
+        found (ByteSource): the answer.
+    """
+    if isinstance(found, bytes):
+        return None if bom_of(found) is not None else found
+    head = b""
+    async for chunk in found:
+        head += chunk
+        if len(head) >= 3:
+            break
+    if bom_of(head) is not None:
+        await close_quietly(found)
+        return None
+    return _replayed(head, found)
+
+
+async def _replayed(
+    head: bytes, rest: AsyncIterator[bytes]
+) -> AsyncIterator[bytes]:
+    try:
+        if head:
+            yield head
+        async for chunk in rest:
+            yield chunk
+    finally:
+        await close_quietly(rest)
 
 
 async def _holds_line(found: ByteSource) -> bool:
@@ -326,6 +362,7 @@ async def search_reads(
     if isinstance(terms, ScanReason):
         await _full_scan(io, name, accessor, dirs, terms, index)
         return read_bytes, read_stream
+    drops_mark = name == "rg" and encoding_flag(fl) != "none"
     hits: set[str] | None = None
     if files is not None and dirs:
         answers = await asyncio.gather(
@@ -406,6 +443,8 @@ async def search_reads(
                 ignore_case=terms.ignore_case,
                 index=index,
             )
+            if found is not None and drops_mark:
+                found = await _unmarked(found)
             if found is None:
                 await read_unanswered()
             return found

@@ -18,6 +18,7 @@ import { materialize } from '../../io/types.ts'
 import { specOf } from '../spec/builtins.ts'
 import { FlagView } from '../spec/flag_view.ts'
 import type { FlagValue } from '../spec/types.ts'
+import { UsageError } from '../errors.ts'
 import { parseFlags, rgMatcher } from './generic/rg.ts'
 import {
   ByteCursor,
@@ -29,6 +30,7 @@ import {
   rustMatches,
   searchHaystack,
   smartCaseFolds,
+  transcoded,
 } from './rg_search.ts'
 
 const ENC = new TextEncoder()
@@ -382,5 +384,99 @@ describe('RgBinary', () => {
     const binary = new RgBinary('quit')
     expect(await readAll(binary, source())).toEqual(['y'.repeat(163840) + '\nz\n'])
     expect(binary.offset).toBeNull()
+  })
+})
+
+async function* parts(...chunks: number[][]): AsyncGenerator<Uint8Array> {
+  for (const chunk of chunks) {
+    await Promise.resolve()
+    yield new Uint8Array(chunk)
+  }
+}
+
+async function bytesOf(stream: AsyncIterable<Uint8Array>): Promise<number[]> {
+  const out: number[] = []
+  for await (const chunk of stream) out.push(...chunk)
+  return out
+}
+
+describe('transcoded', () => {
+  // encoding_rs_io as ripgrep 14.1.1 runs it: a mark is dropped wherever the
+  // chunks split it, a UTF-16 mark overrides -E and a UTF-8 one does not, and
+  // only a decoder drops a second mark of its own.
+  it.each<[string, number[][], number[]]>([
+    ['auto', [[0xef], [0xbb, 0xbf, 0x63, 0x61, 0x66, 0xe9]], [0x63, 0x61, 0x66, 0xe9]],
+    [
+      'auto',
+      [
+        [0xff, 0xfe, 0x68, 0x00],
+        [0x69, 0x00],
+      ],
+      [0x68, 0x69],
+    ],
+    ['windows-1252', [[0xef, 0xbb, 0xbf, 0x63, 0x61, 0x66, 0xe9]], [...ENC.encode('café')]],
+    ['UTF-16LE', [[0xfe, 0xff, 0x00, 0x68]], [0x68]],
+    ['UTF-8', [[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x68, 0x69]], [0x68, 0x69]],
+    ['auto', [[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x68, 0x69]], [0xef, 0xbb, 0xbf, 0x68, 0x69]],
+    ['UTF-8', [[0x63, 0x61, 0x66, 0xe9]], [...ENC.encode('caf\ufffd')]],
+    ['auto', [], []],
+  ])('reads marks as ripgrep under %s', async (encoding, chunks, want) => {
+    expect(await bytesOf(transcoded(parts(...chunks), encoding))).toEqual(want)
+  })
+
+  it('closes its source', async () => {
+    const closed: boolean[] = []
+    async function* input(): AsyncGenerator<Uint8Array> {
+      try {
+        await Promise.resolve()
+        yield ENC.encode('abc')
+        yield ENC.encode('def')
+      } finally {
+        closed.push(true)
+      }
+    }
+    const stream = transcoded(input(), 'auto')
+    expect(DEC.decode((await stream.next()).value as Uint8Array)).toBe('abc')
+    await stream.return(undefined)
+    expect(closed).toEqual([true])
+    // An iterable that hands out a fresh iterator has that one closed.
+    const fresh = transcoded({ [Symbol.asyncIterator]: () => input() }, 'auto')
+    expect(DEC.decode((await fresh.next()).value as Uint8Array)).toBe('abc')
+    await fresh.return(undefined)
+    expect(closed).toEqual([true, true])
+  })
+
+  it('feeds the search what -E names', async () => {
+    async function found(data: number[], pattern: string, flags: Record<string, FlagValue>) {
+      const f = flagsOf(flags)
+      const tally = { selected: false }
+      const out = await bytesOf(
+        searchHaystack(parts(data), rgMatcher(pattern, false, f), f, 'f', null, tally),
+      )
+      return [DEC.decode(new Uint8Array(out)), tally.selected]
+    }
+    expect(await found([0xff, 0xfe, 0x68, 0, 0x69, 0, 0x0a, 0], 'hi', {})).toEqual(['hi\n', true])
+    expect(await found([0x63, 0x61, 0x66, 0xe9, 0x0a], 'café', { encoding: 'latin1' })).toEqual([
+      'café\n',
+      true,
+    ])
+    expect(await found([0xef, 0xbb, 0xbf, 0x68, 0x69, 0x0a], '^hi', { encoding: 'none' })).toEqual([
+      '',
+      false,
+    ])
+  })
+
+  it.each<[Record<string, FlagValue>, string]>([
+    [{}, 'auto'],
+    [{ encoding: 'latin1' }, 'windows-1252'],
+    [{ encoding: 'none' }, 'none'],
+    [{ encoding: 'latin1', no_encoding: true }, 'auto'],
+  ])('resolves -E from %j', (flags, want) => {
+    expect(flagsOf(flags).encoding).toBe(want)
+  })
+
+  it('refuses a label naming no encoding', () => {
+    expect(() => flagsOf({ encoding: 'utf16le' })).toThrow(UsageError)
+    expect(() => flagsOf({ encoding: 'utf16le' })).toThrow(/unknown encoding: utf16le$/)
   })
 })

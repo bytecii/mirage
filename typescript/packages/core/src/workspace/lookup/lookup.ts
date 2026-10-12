@@ -22,6 +22,7 @@ import type { MountRegistry } from '../mount/registry.ts'
 import type { SessionState } from '../session/session.ts'
 import {
   CAPTURABLE_BUILTINS,
+  EXEC_WRAPPERS,
   INTERPRETER_NAMES,
   KEYWORDS,
   NAMESPACE_COMMANDS,
@@ -115,7 +116,7 @@ function* layers(
     found = true
     yield Consumer.EXTERNAL
   }
-  if (ROUTED_COMMANDS.has(name) || registry.mountForCommand(name) !== null) {
+  if (ROUTED_COMMANDS.has(name) || registry.mountForCommand(runsAs(name, registry)) !== null) {
     found = true
     yield Consumer.MOUNT
   }
@@ -273,8 +274,9 @@ export function programNote(
   if (consumer === Consumer.CLI) {
     return `${name} is a CLI registered with this workspace.${helpLine}`
   }
+  const runs = runsAs(name, registry)
   const spec =
-    consumer === Consumer.MOUNT ? (registry.mountForCommand(name)?.specFor(name) ?? null) : null
+    consumer === Consumer.MOUNT ? (registry.mountForCommand(runs)?.specFor(runs) ?? null) : null
   if (
     spec !== null &&
     compileSpec(spec).options.some((option) => option.names.includes('--help'))
@@ -282,6 +284,15 @@ export function programNote(
     return `${name} is built into mirage.${helpLine}`
   }
   return `${name} is built into mirage.`
+}
+
+/**
+ * The program a command word runs: a wrapper no mount registers (`egrep`)
+ * runs the program it names, any other word itself.
+ */
+export function runsAs(name: string, registry: MountRegistry): string {
+  const wrapped = EXEC_WRAPPERS.get(name)
+  return wrapped !== undefined && registry.mountForCommand(name) === null ? wrapped[0] : name
 }
 
 /**
@@ -297,6 +308,7 @@ export function programs(session: SessionState, registry: MountRegistry): string
     ...SHELL_NAMES,
     ...NAMESPACE_COMMANDS,
     ...ROUTED_COMMANDS,
+    ...EXEC_WRAPPERS.keys(),
     ...registry.clis.names(),
   ])
   for (const entry of registry.runtimeEntries) {

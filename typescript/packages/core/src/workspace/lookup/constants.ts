@@ -48,6 +48,17 @@ export const ROUTED_COMMANDS: ReadonlySet<string> = new Set([
   'mount',
 ])
 
+// The programs Debian ships as a script that runs another one with an option
+// put first: egrep is `exec grep -E "$@"`, so grep is what parses the line and
+// answers it, its refusals and --help included (grep 3.11, gzip 1.13). Each
+// is a program wherever the one it runs is a mount command.
+export const EXEC_WRAPPERS: ReadonlyMap<string, readonly [string, string]> = new Map([
+  ['egrep', ['grep', '-E']],
+  ['fgrep', ['grep', '-F']],
+  ['zegrep', ['zgrep', '-E']],
+  ['zfgrep', ['zgrep', '-F']],
+])
+
 // Interpreter names select runtime adapters; session builtins stay in Mirage.
 export const INTERPRETER_NAMES: ReadonlySet<string> = new Set(
   [...BUILTIN_GROUP]
@@ -274,10 +285,12 @@ const SUBTREE_READ_FLAGS: Record<string, [string, string[]]> = {
   cp: ['rR', ['recursive']],
 }
 
-// Whether a command's traversal enters descendant mounts.
+// Whether a command's traversal enters descendant mounts; a wrapper walks as
+// the program it runs.
 export function walksMounts(name: string, words: readonly (string | PathSpec)[]): boolean {
-  if (WALK_COMMANDS.has(name)) return true
-  const spec = WALK_FLAGS[name]
+  const runs = EXEC_WRAPPERS.get(name)?.[0] ?? name
+  if (WALK_COMMANDS.has(runs)) return true
+  const spec = WALK_FLAGS[runs]
   return spec !== undefined && hasOption(words, spec[0], spec[1])
 }
 

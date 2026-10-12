@@ -21,6 +21,7 @@ import { Runtime } from '../../runtime/base.ts'
 import { EXTERNAL_COMMANDS } from '../../runtime/constants.ts'
 import { PROCESS_EXECUTOR, type ProcessExecutor } from '../../runtime/mixin.ts'
 import type { RunResult } from '../../runtime/types.ts'
+import { headAllowed } from '../../policy/match/allow.ts'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode } from '../../types.ts'
 import {
@@ -227,6 +228,8 @@ describe('walkers and subtree readers', () => {
     expect(walksMounts('grep', ['grep', '-rn', 'x', '/data'])).toBe(true)
     expect(walksMounts('grep', ['grep', '--recursive', 'x'])).toBe(true)
     expect(walksMounts('grep', ['grep', '--', '-r'])).toBe(false)
+    expect(walksMounts('egrep', ['egrep', '-r', 'x'])).toBe(true)
+    expect(walksMounts('fgrep', ['fgrep', 'x', '/data'])).toBe(false)
     expect(walksMounts('ls', ['ls', '-R', '/data'])).toBe(true)
     expect(walksMounts('ls', ['ls', '-l', '/data'])).toBe(false)
     expect(walksMounts('cat', ['cat', '/data/x'])).toBe(false)
@@ -315,6 +318,25 @@ describe('program', () => {
       commands: { allow: ['cat'], ask: [], deny: [] },
     })
     expect(programs(narrow, ws.registry)).toEqual(programs(session, ws.registry))
+  })
+
+  // Debian's egrep is `exec grep -E "$@"`, so it is a program wherever grep is
+  // one, and an allow list naming only grep refuses it when it runs.
+  it('makes a wrapper a program where what it runs is', () => {
+    const { session, ws } = fixture()
+    for (const name of ['egrep', 'fgrep', 'zegrep', 'zfgrep']) {
+      expect(lookup(name, session, ws.registry)).toBe(Consumer.MOUNT)
+      expect(programs(session, ws.registry)).toContain(name)
+    }
+    expect(programNote('egrep', session, ws.registry)).toBe(
+      'egrep is built into mirage. Help: egrep --help',
+    )
+    const narrow = new SessionState({
+      sessionId: 'n',
+      commands: { allow: ['grep'], ask: [], deny: [] },
+    })
+    expect(lookup('egrep', narrow, ws.registry)).toBe(Consumer.MOUNT)
+    expect(headAllowed('egrep', narrow.commands)).toBe(false)
   })
 
   // An interpreter is a program only where a language runtime runs it; a

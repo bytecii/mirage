@@ -84,6 +84,7 @@ from mirage.workspace.lookup import (
     is_tool,
     lookup,
     reads_subtrees,
+    runs_as,
     walks_mounts,
     word_policy,
 )
@@ -650,11 +651,13 @@ def _word_hints(
         or joined in INTERPRETER_NAMES
     ):
         return None, None
-    spec = spec_for_command(joined, registry, session.cwd)
+    # A wrapper's words are the program's it runs.
+    runs = runs_as(joined, registry)
+    spec = spec_for_command(runs, registry, session.cwd)
     if not spec:
         return None, None
     extra: list[ValueType | None] = ["str"] * (consumed - 1)
-    word_kinds = extra + spec_word_kinds(spec, line[consumed:], joined)
+    word_kinds = extra + spec_word_kinds(spec, line[consumed:], runs)
     bases = spec_word_bases(spec, line[consumed:], session.cwd)
     head: list[str | None] = [None] * (consumed - 1)
     word_bases = None if bases is None else head + bases

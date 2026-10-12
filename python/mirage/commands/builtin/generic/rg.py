@@ -80,6 +80,7 @@ from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.join import shell_join
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.compress import GzipDataError, gunzip_stream
+from mirage.utils.encoding import encoding_for
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.view.types import MountView
 
@@ -222,6 +223,33 @@ def number_flag(fl: FlagView, dest: str) -> int | None:
             f"value is not a valid number: {reason}"
         )
     return int(digits)
+
+
+def encoding_flag(fl: FlagView) -> str:
+    """-E resolved in line order: auto, none, or the WHATWG encoding a
+    label names, --no-encoding going back to auto. ripgrep checks every
+    label as it reads it, so an earlier bad one is refused too (14.1.1).
+
+    Args:
+        fl (FlagView): the flag view.
+
+    Raises:
+        UsageError: a label that names no encoding.
+    """
+    found = "auto"
+    for name, value in fl.occurrences("encoding", "no_encoding"):
+        if name == "no_encoding":
+            found = "auto" if value else found
+            continue
+        label = str(value)
+        named = label if label in ("auto", "none") else encoding_for(label)
+        if named is None:
+            raise UsageError(
+                "rg: error parsing flag -E: grep config error: unknown "
+                f"encoding: {label}"
+            )
+        found = named
+    return found
 
 
 def size_flag(fl: FlagView, dest: str) -> int | None:
@@ -620,6 +648,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         UsageError: a value ripgrep refuses, in its words.
     """
     threads = number_flag(fl, "threads")
+    encoding = encoding_flag(fl)
     _choice(fl, "color", "--color", COLOR_CHOICES)
     check_display_flags(fl)
     case = _last(fl, "ignore_case", "case_sensitive", "smart_case")
@@ -774,6 +803,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         no_messages=_last(fl, "no_messages", "messages") == "no_messages",
         threads=threads,
         text=binary_mode == "text",
+        encoding=encoding,
     )
 
 

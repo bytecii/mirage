@@ -1,0 +1,150 @@
+{
+  "cases": [
+    {
+      "id": "egrep_and_fgrep_run_grep",
+      "seq": 14490240,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/egr/sub; printf 'a|b\\nx\\none two\\n' > /data/egr/e.txt; printf 'a|b\\n' > /data/egr/sub/f.txt; cd /data/egr; egrep 'a|x' e.txt; fgrep 'a|b' e.txt; egrep -c 'o|x' e.txt sub/f.txt; fgrep -r 'a|b' . | sort; egrep -w 'one|two' e.txt; fgrep -x x e.txt; egrep -F 'a|b' e.txt; echo rc=$?; fgrep -G x e.txt; echo rc=$?; cd /; rm -rf /data/egr",
+      "expect": {
+        "exit": 0,
+        "stdout": "a|b\nx\na|b\ne.txt:2\nsub/f.txt:0\n./e.txt:a|b\n./sub/f.txt:a|b\none two\nx\nrc=2\nrc=2\n",
+        "stderr": "grep: conflicting matchers specified\ngrep: conflicting matchers specified\n"
+      },
+      "flags": [
+        "E",
+        "F",
+        "c",
+        "r"
+      ]
+    },
+    {
+      "id": "egrep_answers_in_greps_words",
+      "seq": 14490241,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/egr/sub; printf 'a|b\\nx\\none two\\n' > /data/egr/e.txt; printf 'a|b\\n' > /data/egr/sub/f.txt; cd /data/egr; egrep --bogus x e.txt; echo rc=$?; egrep; echo rc=$?; fgrep; echo rc=$?; egrep --version | head -1 | cut -d' ' -f1; fgrep -V | head -1 | cut -d' ' -f1; egrep --help | grep -ci '^usage: grep'; egrep -e; echo rc=$?; cd /; rm -rf /data/egr",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\nrc=2\nrc=2\ngrep\ngrep\n1\nrc=2\n",
+        "stderr": "grep: unrecognized option '--bogus'\nTry 'grep --help' for more information.\nUsage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\nUsage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\ngrep: option requires an argument -- 'e'\nTry 'grep --help' for more information.\n"
+      },
+      "flags": [
+        "V",
+        "help"
+      ]
+    },
+    {
+      "id": "egrep_is_a_program",
+      "seq": 14490242,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "type egrep; type fgrep; command -v zegrep; command -v zfgrep; egrep() { echo function; }; egrep x; unset -f egrep; egrep x /dev/null; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "egrep is /usr/bin/egrep\nfgrep is /usr/bin/fgrep\n/usr/bin/zegrep\n/usr/bin/zfgrep\nfunction\nrc=1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "egrep_and_fgrep_have_greps_manual",
+      "seq": 14490244,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "[ \"$(man egrep | sed 1d)\" = \"$(man grep | sed 1d)\" ] && echo same; man fgrep | head -1; man | grep -cE '^- (egrep|fgrep) '",
+      "expect": {
+        "exit": 0,
+        "stdout": "same\n# fgrep\n2\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

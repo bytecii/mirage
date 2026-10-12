@@ -147,6 +147,8 @@ def test_walkers_are_read_off_the_raw_line():
     assert walks_mounts("grep", ["grep", "-rn", "x", "/data"]) is True
     assert walks_mounts("grep", ["grep", "--recursive", "x"]) is True
     assert walks_mounts("grep", ["grep", "--", "-r"]) is False
+    assert walks_mounts("egrep", ["egrep", "-r", "x"]) is True
+    assert walks_mounts("fgrep", ["fgrep", "x", "/data"]) is False
     assert walks_mounts("ls", ["ls", "-R", "/data"]) is True
     assert walks_mounts("ls", ["ls", "-l", "/data"]) is False
     assert walks_mounts("cat", ["cat", "/data/x"]) is False

@@ -163,7 +163,7 @@ SPECS: dict[str, CommandSpec] = {
             Argument("-.", "--hidden", action="store_true"),
             Argument("--no-hidden", action="store_true"),
             Argument("-u", "--unrestricted", action="count"),
-            Argument("-d", "--max-depth"),
+            Argument("-d", "--max-depth", "--maxdepth"),
             Argument("--max-filesize"),
             # -L follows a link the walk meets; one named on the line is
             # followed either way (ripgrep 14.1.1).
@@ -244,6 +244,7 @@ SPECS: dict[str, CommandSpec] = {
             # their programs are missing.
             Argument("-z", "--search-zip", action="store_true"),
             Argument("--no-search-zip", action="store_true"),
+            Argument("-E", "--encoding"),
             Argument("--no-encoding", action="store_true"),
             # --pre runs COMMAND PATH for each file, its contents on stdin,
             # and searches what it prints; --pre-glob picks the files.
@@ -271,10 +272,11 @@ SPECS: dict[str, CommandSpec] = {
             Argument("--regex-size-limit"),
             Argument("--debug", action="store_true"),
             Argument("--trace", action="store_true"),
-            # The help page and the version, like the --help and --version
-            # the registration supplies.
+            # The help page, the version and the PCRE2 version, answered
+            # like the --help and --version the registration supplies.
             Argument("-h", action="store_true"),
             Argument("-V", action="store_true"),
+            Argument("--pcre2-version", action="store_true"),
             # --files and --type-list search nothing, so the first operand is
             # a path rather than the pattern.
             Argument(

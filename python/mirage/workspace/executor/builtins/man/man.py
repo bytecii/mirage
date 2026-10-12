@@ -24,6 +24,7 @@ from mirage.shell.bytes import encode_text
 from mirage.workspace.cli.types import CLIInstall
 from mirage.workspace.executor.builtins.man.types import ManEntry
 from mirage.workspace.executor.builtins.types import BuiltinCall, Result
+from mirage.workspace.lookup.constants import EXEC_WRAPPERS
 from mirage.workspace.mount.registry import DEV_PREFIX, MountRegistry
 from mirage.workspace.types import ExecutionNode
 
@@ -48,7 +49,9 @@ def _command_entry(name: str, registry: MountRegistry) -> ManEntry | None:
 
     A name has one spec however many mounts register it (spec parity
     holds every registration of a name to one spec), so the first
-    registration found is the page.
+    registration found is the page. A wrapper no mount registers
+    (``egrep``) has the page of the program it runs, as Debian links
+    one to the other.
 
     Args:
         name (str): the word to document.
@@ -60,6 +63,10 @@ def _command_entry(name: str, registry: MountRegistry) -> ManEntry | None:
         cmd = mount.resolve_command(name)
         if cmd is not None:
             return ManEntry(name=name, spec=cmd.spec)
+    if name in EXEC_WRAPPERS:
+        runs = _command_entry(EXEC_WRAPPERS[name][0], registry)
+        if runs is not None:
+            return ManEntry(name=name, spec=runs.spec)
     return None
 
 
@@ -78,7 +85,7 @@ def _builtin_entry(name: str) -> ManEntry | None:
 
 def _command_entries(registry: MountRegistry) -> list[ManEntry]:
     """One entry per name registered on any mount, first registration
-    wins.
+    wins, and one per wrapper of a listed program.
 
     Args:
         registry (MountRegistry): registry holding the mounts.
@@ -90,6 +97,9 @@ def _command_entries(registry: MountRegistry) -> list[ManEntry]:
         for cmd in mount.all_commands():
             if cmd.name not in seen:
                 seen[cmd.name] = ManEntry(name=cmd.name, spec=cmd.spec)
+    for wrapper, (runs, _) in EXEC_WRAPPERS.items():
+        if wrapper not in seen and runs in seen:
+            seen[wrapper] = ManEntry(name=wrapper, spec=seen[runs].spec)
     return list(seen.values())
 
 

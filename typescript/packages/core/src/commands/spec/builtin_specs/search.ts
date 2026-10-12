@@ -262,7 +262,7 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument(['-.', '--hidden'], { action: 'store_true' }),
       new Argument('--no-hidden', { action: 'store_true' }),
       new Argument(['-u', '--unrestricted'], { action: 'count' }),
-      new Argument(['-d', '--max-depth']),
+      new Argument(['-d', '--max-depth', '--maxdepth']),
       new Argument('--max-filesize'),
       new Argument(['-L', '--follow'], { action: 'store_true' }),
       new Argument('--one-file-system', { action: 'store_true' }),
@@ -332,6 +332,7 @@ export const SPECS: Record<string, CommandSpec> = {
       // are missing.
       new Argument(['-z', '--search-zip'], { action: 'store_true' }),
       new Argument('--no-search-zip', { action: 'store_true' }),
+      new Argument(['-E', '--encoding']),
       new Argument('--no-encoding', { action: 'store_true' }),
       // --pre runs COMMAND PATH for each file, its contents on stdin, and
       // searches what it prints; --pre-glob picks the files.
@@ -357,10 +358,11 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument('--regex-size-limit'),
       new Argument('--debug', { action: 'store_true' }),
       new Argument('--trace', { action: 'store_true' }),
-      // The help page and the version, like the --help and --version the
-      // registration supplies.
+      // The help page, the version and the PCRE2 version, answered like the
+      // --help and --version the registration supplies.
       new Argument('-h', { action: 'store_true' }),
       new Argument('-V', { action: 'store_true' }),
+      new Argument('--pcre2-version', { action: 'store_true' }),
       new Argument('text', {
         metavar: '',
         nargs: '?',
