@@ -15,6 +15,7 @@
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.spec.types import CommandSpec
 from mirage.io import IOResult
+from mirage.policy.match.allow import head_allowed
 from mirage.policy.types import AdmissionRules
 from mirage.runtime.base import Runtime
 from mirage.runtime.constants import EXTERNAL_COMMANDS
@@ -232,6 +233,24 @@ def test_programs_lists_every_program_whatever_the_allow_list():
         session_id="n", commands=AdmissionRules(allow=("cat",))
     )
     assert programs(narrow, ws._registry) == programs(session, ws._registry)
+
+
+# Debian's egrep is `exec grep -E "$@"`, so it is a program wherever grep
+# is one, and an allow list naming only grep refuses it when it runs.
+def test_a_wrapper_is_a_program_where_what_it_runs_is():
+    session, ws = _fixture()
+    registry = ws._registry
+    for name in ("egrep", "fgrep", "zegrep", "zfgrep"):
+        assert lookup(name, session, registry) is Consumer.MOUNT
+        assert name in programs(session, registry)
+    assert program_note("egrep", session, registry) == (
+        "egrep is built into mirage. Help: egrep --help"
+    )
+    narrow = SessionState(
+        session_id="n", commands=AdmissionRules(allow=("grep",))
+    )
+    assert lookup("egrep", narrow, registry) is Consumer.MOUNT
+    assert not head_allowed("egrep", narrow.commands)
 
 
 # An interpreter is a program only where a language runtime runs it; a

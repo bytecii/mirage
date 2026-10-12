@@ -45,6 +45,7 @@ from mirage.workspace.lookup import (
     WordPolicy,
     end_options_after_program,
     lookup,
+    runs_as,
     runtime_refused,
     word_policy,
 )
@@ -185,14 +186,16 @@ async def expand_argv(
         or consumer is Consumer.EXTERNAL
         or in_process
     ):
-        spec = spec_for_command(name, registry, session.cwd)
+        # A wrapper's words are the program's it runs.
+        runs = runs_as(name, registry)
+        spec = spec_for_command(runs, registry, session.cwd)
         if spec:
             # Before anything reads the line: an option carrying a
             # program hands the words after it to that program, and
             # POSIX's own `--` is how that is said.
             extra: list[ValueType | None] = ["str"] * (consumed - 1)
             word_kinds = extra + spec_word_kinds(
-                spec, expanded[consumed:], name
+                spec, expanded[consumed:], runs
             )
             bases = spec_word_bases(spec, expanded[consumed:], session.cwd)
             if bases is not None:

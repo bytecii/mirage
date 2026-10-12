@@ -33,7 +33,7 @@ const TREE: Record<string, string> = {
   '/d/z.txt': '\0noise\n',
 }
 const ENC = new TextEncoder()
-const DEC = new TextDecoder()
+const DEC = new TextDecoder('utf-8', { ignoreBOM: true })
 
 function holds(data: string, text: string, ignoreCase: boolean): boolean {
   return ignoreCase ? data.toLowerCase().includes(text.toLowerCase()) : data.includes(text)
@@ -200,6 +200,44 @@ it.each(LINES.flatMap((line) => Object.keys(MOUNTS).map((mount) => [line, mount]
   },
 )
 
+// rg drops a byte-order mark only where a file starts, which a line answer
+// cannot say it does, so an answer that starts with one is not used, and the
+// file is read as one no search answered. Twin of
+// test_rg_reads_a_file_whose_line_answer_starts_with_a_mark.
+const MARKED: Record<string, number[]> = {
+  '/m/mid.txt': [...ENC.encode('skip\n'), 0xef, 0xbb, 0xbf, ...ENC.encode('ada\n')],
+  '/m/top.txt': [0xef, 0xbb, 0xbf, ...ENC.encode('ada\n')],
+}
+
+function marked(vfs: RAMVFS): RAMVFS {
+  vfs.store.dirs.add('/m')
+  for (const [key, data] of Object.entries(MARKED)) vfs.store.files.set(key, new Uint8Array(data))
+  return vfs
+}
+
+it.each(['bytes', 'stream'] as const)(
+  'reads a file whose rg line answer starts with a mark (%s)',
+  async (lines) => {
+    const vfs = new SearchRAM({ files: false, lines })
+    const searched = await run(marked(vfs), 'rg -x ada /m')
+    expect(searched).toEqual(await run(marked(new RAMVFS()), 'rg -x ada /m'))
+    expect(searched[0]).toBe('/m/top.txt:ada\n')
+    expect(vfs.scans).toEqual([ScanReason.UNANSWERED])
+  },
+)
+
+// Under -E none rg keeps the mark, so the answer stands and nothing is read.
+// Twin of test_rg_keeps_a_marked_line_answer_under_no_encoding.
+it.each(['bytes', 'stream'] as const)(
+  'keeps a marked rg line answer under -E none (%s)',
+  async (lines) => {
+    const vfs = new SearchRAM({ files: false, lines })
+    const searched = await run(marked(vfs), 'rg -E none ada /m')
+    expect(searched).toEqual(await run(marked(new RAMVFS()), 'rg -E none ada /m'))
+    expect([vfs.reads, vfs.scans]).toEqual([[], []])
+  },
+)
+
 const EVERY = 'a.txt b.txt c.txt sub/d.txt z.txt'
 
 // Twin of test_what_a_search_reads_asks_and_scans.
@@ -278,10 +316,22 @@ it.each([
   ['grep -rin ada /d', false],
   ['grep -ril ada /d', false],
   ['grep -riq ada /d', false],
+  ['rg -i ada /d', true],
+  ['rg -iq ada /d', false],
 ] as const)('pulls a streamed answer as far as %s needs', async (line, pullsEveryLine) => {
   const vfs = new SearchRAM(MOUNTS.stream)
   await run(vfs, line)
   expect([vfs.pulled.includes('ada lovelace\n'), vfs.open]).toEqual([pullsEveryLine, 0])
+})
+
+// Twin of test_rg_closes_a_streamed_answer_it_stops_inside: rg -q stops on a
+// long first line of a streamed answer, which it closes all the same.
+it('closes a streamed answer rg stops inside', async () => {
+  const vfs = new SearchRAM(MOUNTS.stream)
+  vfs.store.dirs.add('/big')
+  vfs.store.files.set('/big/x.txt', ENC.encode('ada'.repeat(50_000) + '\nada'.repeat(9) + '\n'))
+  await run(vfs, 'rg -q ada /big/x.txt')
+  expect([vfs.pulled.length, vfs.open]).toEqual([1, 0])
 })
 
 const refused = (reason: ScanReason): string => `grep: ${reason}; narrow the path\n`

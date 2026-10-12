@@ -41,6 +41,17 @@ NAMESPACE_COMMANDS = frozenset({"getfattr", "ln", "readlink", "setfattr"})
 # for `type`, `command -v` and the /usr/bin listing.
 ROUTED_COMMANDS = frozenset({"chgrp", "chmod", "chown", "df", "mount"})
 
+# The programs Debian ships as a script that runs another one with an option
+# put first: egrep is `exec grep -E "$@"`, so grep is what parses the line
+# and answers it, its refusals and --help included (grep 3.11, gzip 1.13).
+# Each is a program wherever the one it runs is a mount command.
+EXEC_WRAPPERS = {
+    "egrep": ("grep", "-E"),
+    "fgrep": ("grep", "-F"),
+    "zegrep": ("zgrep", "-E"),
+    "zfgrep": ("zgrep", "-F"),
+}
+
 # bash reserved words that mirage's grammar implements. The parser, not
 # the executor, consumes them, so they never reach route; `type` reports
 # them and the CLI registry refuses them as head words. `coproc` is omitted
@@ -396,16 +407,18 @@ SUBTREE_READ_FLAGS = {
 
 
 def walks_mounts(name: str, words: Sequence[str | PathSpec]) -> bool:
-    """Whether a command's traversal enters descendant mounts.
+    """Whether a command's traversal enters descendant mounts; a
+    wrapper walks as the program it runs.
 
     Args:
         name (str): command name.
         words (Sequence[str | PathSpec]): the command's raw words,
             name first.
     """
-    if name in WALK_COMMANDS:
+    runs = EXEC_WRAPPERS.get(name, (name,))[0]
+    if runs in WALK_COMMANDS:
         return True
-    spec = WALK_FLAGS.get(name)
+    spec = WALK_FLAGS.get(runs)
     return spec is not None and _has_option(words, spec[0], spec[1])
 
 

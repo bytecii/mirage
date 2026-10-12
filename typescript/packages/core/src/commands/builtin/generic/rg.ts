@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
+import { encodingFor } from '../../../utils/encoding.ts'
 import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
@@ -175,6 +176,31 @@ export function numberFlag(fl: FlagView, dest: string): number | null {
     )
   }
   return Number(digits)
+}
+
+/**
+ * -E resolved in line order: auto, none, or the WHATWG encoding a label
+ * names, --no-encoding going back to auto. ripgrep checks every label as it
+ * reads it, so an earlier bad one is refused too (14.1.1). Mirrors Python's
+ * `encoding_flag`.
+ */
+export function encodingFlag(fl: FlagView): string {
+  let found = 'auto'
+  for (const [name, value] of fl.occurrences('encoding', 'no_encoding')) {
+    if (name === 'no_encoding') {
+      if (value === true) found = 'auto'
+      continue
+    }
+    const label = String(value)
+    const named = label === 'auto' || label === 'none' ? label : encodingFor(label)
+    if (named === null) {
+      throw new UsageError(
+        `rg: error parsing flag -E: grep config error: unknown encoding: ${label}`,
+      )
+    }
+    found = named
+  }
+  return found
 }
 
 /**
@@ -453,6 +479,7 @@ function pathSeparator(fl: FlagView): string | null {
  */
 export function parseFlags(fl: FlagView): RgFlags {
   const threads = numberFlag(fl, 'threads')
+  const encoding = encodingFlag(fl)
   choice(fl, 'color', '--color', COLOR_CHOICES)
   checkDisplayFlags(fl)
   const caseMode = last(fl, 'ignore_case', 'case_sensitive', 'smart_case')
@@ -573,6 +600,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     noMessages: last(fl, 'no_messages', 'messages') === 'no_messages',
     threads,
     text: binaryMode === 'text',
+    encoding,
   }
 }
 

@@ -27,6 +27,7 @@ import {
   WordPolicy,
   endOptionsAfterProgram,
   lookup,
+  runsAs,
   runtimeRefused,
   wordPolicy,
 } from '../lookup/index.ts'
@@ -158,10 +159,12 @@ export async function expandArgv(
   // Native captures and interpreters still need the spec's path roles
   // for admission.
   if (policy === WordPolicy.MOUNT || consumer === Consumer.EXTERNAL || inProcess) {
-    spec = specForCommand(name, registry, session.cwd)
+    // A wrapper's words are the program's it runs.
+    const runs = runsAs(name, registry)
+    spec = specForCommand(runs, registry, session.cwd)
     if (spec !== null) {
       const extra: (ValueType | null)[] = new Array<ValueType | null>(consumed - 1).fill('str')
-      wordKinds = [...extra, ...specWordKinds(spec, lineWords.slice(consumed), name)]
+      wordKinds = [...extra, ...specWordKinds(spec, lineWords.slice(consumed), runs)]
       const bases = specWordBases(spec, lineWords.slice(consumed), session.cwd)
       if (bases !== null) {
         wordBases = [...new Array<string | null>(consumed - 1).fill(null), ...bases]

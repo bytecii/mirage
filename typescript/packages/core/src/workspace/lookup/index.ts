@@ -32,6 +32,7 @@ export {
   program,
   programNote,
   programs,
+  runsAs,
   runtimeRefused,
 } from './lookup.ts'
 export { Consumer, SHELL_CONSUMERS, WordPolicy, wordPolicy } from './types.ts'

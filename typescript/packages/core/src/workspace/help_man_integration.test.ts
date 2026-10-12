@@ -150,6 +150,17 @@ describe('--help and man through the executor', () => {
     expect(out).not.toContain('# general')
   })
 
+  it('man documents a wrapper with the page of the program it runs', async () => {
+    // Twin of test_a_wrapper_has_the_page_of_the_program_it_runs: Debian
+    // links egrep's page to grep's.
+    const ws = await makeWs()
+    const grep = stdoutStr(await ws.shell('man grep'))
+    const io = await ws.shell('man egrep')
+    expect(io.exitCode).toBe(0)
+    expect(stdoutStr(io)).toBe(grep.replace('# grep\n', '# egrep\n'))
+    expect(stdoutStr(await ws.shell('man'))).toContain('- egrep ')
+  })
+
   it('man on an unknown command exits 1', async () => {
     const ws = await makeWs()
     const io = await ws.shell('man definitely-not-a-real-command')

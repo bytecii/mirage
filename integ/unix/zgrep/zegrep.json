@@ -1,0 +1,69 @@
+{
+  "cases": [
+    {
+      "id": "zegrep_and_zfgrep_run_zgrep",
+      "seq": 14490243,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/egr/sub; printf 'a|b\\nx\\none two\\n' > /data/egr/e.txt; printf 'a|b\\n' > /data/egr/sub/f.txt; cd /data/egr; gzip -c e.txt > e.txt.gz; zegrep 'a|x' e.txt.gz; zfgrep 'a|b' e.txt.gz; zegrep -c 'o|x' e.txt.gz; zfgrep -c 'a|b' e.txt.gz e.txt; zegrep -F 'a|b' e.txt.gz; echo rc=$?; cd /; rm -rf /data/egr",
+      "expect": {
+        "exit": 0,
+        "stdout": "a|b\nx\na|b\n2\ne.txt.gz:1\ne.txt:1\nrc=2\n",
+        "stderr": "grep: conflicting matchers specified\n"
+      },
+      "flags": [
+        "E",
+        "F",
+        "c"
+      ]
+    },
+    {
+      "id": "zegrep_and_zfgrep_have_zgreps_manual",
+      "seq": 14490245,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "[ \"$(man zegrep | sed 1d)\" = \"$(man zgrep | sed 1d)\" ] && echo same; man zfgrep | head -1; man | grep -cE '^- (zegrep|zfgrep) '",
+      "expect": {
+        "exit": 0,
+        "stdout": "same\n# zfgrep\n2\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

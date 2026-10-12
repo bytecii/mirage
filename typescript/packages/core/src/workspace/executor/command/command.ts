@@ -34,7 +34,8 @@ import type { MountEntry } from '../../mount/mount.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../../mount/registry.ts'
 import { makeCheckUnlink, makeStorageKey } from '../../mount/storage.ts'
-import { Consumer, JOB_BUILTINS, dereferences, lookup } from '../../lookup/index.ts'
+import { Consumer, JOB_BUILTINS, dereferences, lookup, runsAs } from '../../lookup/index.ts'
+import { EXEC_WRAPPERS } from '../../lookup/constants.ts'
 import { type Runtime } from '../../../runtime/base.ts'
 import type { RouteDecision } from '../../../runtime/routing/index.ts'
 import type { SessionState } from '../../session/session.ts'
@@ -203,7 +204,7 @@ export async function handleCommand(
   if (head === undefined) {
     return [null, new IOResult(), new ExecutionNode({ command: '', exitCode: 0 })]
   }
-  const cmdName = typeof head === 'string' ? head : head.virtual
+  let cmdName = typeof head === 'string' ? head : head.virtual
   const cmdStr = parts.map((p) => (typeof p === 'string' ? p : p.virtual)).join(' ')
 
   if (JOB_BUILTINS.has(cmdName) && jobTable !== null) {
@@ -300,6 +301,16 @@ export async function handleCommand(
     )
   }
 
+  // A wrapper execs the program it names, past every function and CLI; the
+  // session's allow list judges the name it typed.
+  const typed = cmdName
+  const wrapped = runsAs(cmdName, registry) !== cmdName ? EXEC_WRAPPERS.get(cmdName) : undefined
+  if (wrapped !== undefined) {
+    const [runs, option] = wrapped
+    cmdName = runs
+    parts = [runs, option, ...parts.slice(1)]
+  }
+
   // Every op the command issues from here carries its gate to the dispatcher.
   dispatch = withDispatchRuleGuard(dispatch)
 
@@ -328,8 +339,8 @@ export async function handleCommand(
   // backend work. The admission policies (fired upstream at the
   // dispatch chokepoint) stay ahead of this so
   // protective refusals keep their specific messages.
-  if (lookup(cmdName, session, registry) === Consumer.UNKNOWN) {
-    const errBytes = encodeText(`${cmdName}: command not found\n`)
+  if (lookup(typed, session, registry) === Consumer.UNKNOWN) {
+    const errBytes = encodeText(`${typed}: command not found\n`)
     return [
       null,
       new IOResult({ exitCode: 127, stderr: errBytes }),

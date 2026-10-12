@@ -22,6 +22,7 @@ import { requiredNeedles } from './grep_prefilter.ts'
 import { matchStart, matchText, userGroups } from './utils/pcre.ts'
 import type { TypeChange, TypeSelection } from './rg_filetypes.ts'
 import type { JsonValue } from '../../types.ts'
+import { BOMS, bomOf, decoderFor } from '../../utils/encoding.ts'
 
 // ripgrep's words for a line -M will not print whole (ripgrep 14.1.1).
 export const OMITTED_MATCHING = '[Omitted long matching line]'
@@ -111,6 +112,9 @@ export interface RgFlags {
   // -a, which turns binary detection off; `binary` is -a, --binary or -uuu,
   // which also searches the files a walk would skip as binary.
   text: boolean
+  // -E: auto (when unset), none, or the WHATWG name of the encoding a label
+  // named.
+  encoding?: string
 }
 
 /**
@@ -1596,6 +1600,70 @@ async function* multiline(
   }
 }
 
+async function* framed(
+  head: Uint8Array,
+  rest: AsyncIterator<Uint8Array>,
+): AsyncGenerator<readonly [Uint8Array, boolean]> {
+  yield [head, false]
+  for (let step = await rest.next(); step.done !== true; step = await rest.next()) {
+    yield [step.value, false]
+  }
+  yield [new Uint8Array(0), true]
+}
+
+/**
+ * A haystack's bytes as ripgrep searches them under -E auto or a named
+ * encoding.
+ *
+ * A leading byte-order mark is dropped, and a UTF-16 one picks UTF-16
+ * whatever -E said, where a UTF-8 one leaves the choice alone. Under auto
+ * with no UTF-16 mark the rest passes as it is, invalid UTF-8 included.
+ * Otherwise it is decoded to UTF-8, a sequence the encoding does not map
+ * becoming U+FFFD, and a UTF encoding drops a second mark of its own too
+ * (encoding_rs_io, ripgrep 14.1.1). Mirrors Python's `transcoded`.
+ */
+export async function* transcoded(
+  source: AsyncIterable<Uint8Array>,
+  encoding: string,
+): AsyncGenerator<Uint8Array> {
+  const rest = source[Symbol.asyncIterator]()
+  try {
+    let head: Uint8Array = new Uint8Array(0)
+    while (head.length < 3) {
+      const step = await rest.next()
+      if (step.done === true) break
+      head = concat([head, step.value])
+    }
+    let named = encoding === 'auto' ? null : encoding
+    const bom = bomOf(head)
+    if (bom !== null) {
+      head = head.subarray(bom[0].length)
+      if (bom[1] !== 'UTF-8') named = bom[1]
+    }
+    if (named === null) {
+      if (head.length > 0) yield head
+      for (let step = await rest.next(); step.done !== true; step = await rest.next()) {
+        yield step.value
+      }
+      return
+    }
+    const decode = decoderFor(named)
+    let marked = BOMS.some(([, name]) => name === named)
+    for await (const [chunk, last] of framed(head, rest)) {
+      let text = decode(chunk, last)
+      if (marked && text !== '') {
+        if (text.startsWith('\ufeff')) text = text.slice(1)
+        marked = false
+      }
+      if (text !== '') yield encodeText(text)
+    }
+  } finally {
+    // The iterator started here, which an iterable handing out a fresh one
+    // does not close for it.
+    await rest.return?.()
+  }
+}
+
 /**
  * One haystack's output as ripgrep prints it, read no further than the
  * answer needs: -q, -l and --files-without-match stop at the first selected
@@ -1634,7 +1702,8 @@ export async function* searchHaystack(
           ? 'convert'
           : 'quit',
   )
-  const reader = binary.read(source, pipe)
+  const encoding = f.encoding ?? 'auto'
+  const reader = binary.read(encoding === 'none' ? source : transcoded(source, encoding), pipe)
   const lines = new AsyncLineIterator(reader)
   try {
     if (f.multiline === true) {

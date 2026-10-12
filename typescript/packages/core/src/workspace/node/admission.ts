@@ -67,6 +67,7 @@ import {
   isTool,
   readsSubtrees,
   lookup,
+  runsAs,
   walksMounts,
   wordPolicy,
 } from '../lookup/index.ts'
@@ -559,10 +560,12 @@ function wordHints(
   ) {
     return [null, null]
   }
-  const spec = specForCommand(joined, registry, session.cwd)
+  // A wrapper's words are the program's it runs.
+  const runs = runsAs(joined, registry)
+  const spec = specForCommand(runs, registry, session.cwd)
   if (spec === null) return [null, null]
   const extra: (ValueType | null)[] = new Array<ValueType | null>(consumed - 1).fill('str')
-  const wordKinds = [...extra, ...specWordKinds(spec, [...line.slice(consumed)], joined)]
+  const wordKinds = [...extra, ...specWordKinds(spec, [...line.slice(consumed)], runs)]
   const bases = specWordBases(spec, [...line.slice(consumed)], session.cwd)
   const wordBases =
     bases === null ? null : [...new Array<string | null>(consumed - 1).fill(null), ...bases]
