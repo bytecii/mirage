@@ -275,7 +275,9 @@ export async function* grepInput(
       const line = byteView(raw, utf8)
       await pattern.prepare(line, () =>
         f.maxCount === null && !(f.quiet || f.filesOnly || f.filesWithoutMatch)
-          ? lines.bufferedLines(eol).map((item) => byteView(item, utf8))
+          ? lines
+              .bufferedLines(eol, 31, needles, pat.ignoreCase)
+              .map((item) => byteView(item, utf8))
           : [],
       )
       let hit = pat.test(line) !== f.invert

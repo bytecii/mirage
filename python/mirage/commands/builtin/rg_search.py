@@ -1506,7 +1506,9 @@ async def _records(
                 lambda: (
                     (
                         read_line(item, f)[0]
-                        for item in lines.buffered_lines(delimiter)
+                        for item in lines.buffered_lines(
+                            delimiter, needles=needles, ignore_case=fold
+                        )
                     )
                     if f.max_count is None
                     and not (

@@ -84,6 +84,15 @@ async def test_pipeline_first_stage_to_trip_wins(restore_defaults):
 
 
 @pytest.mark.asyncio
+async def test_a_streamed_builtin_keeps_its_deadline(restore_defaults):
+    sg.DEFAULT_COMMAND_LIMITS["xargs"] = Limit(timeout_seconds=0.05)
+    ws = _ws()
+    r = await ws.shell("printf '2\\n' | xargs sleep")
+    assert r.exit_code == 124
+    assert "xargs: timed out after 0.05s" in (await r.stderr_str())
+
+
+@pytest.mark.asyncio
 async def test_timeout_zero_disables(restore_defaults):
     sg.DEFAULT_COMMAND_LIMITS["sleep"] = Limit(timeout_seconds=0)
     ws = _ws()

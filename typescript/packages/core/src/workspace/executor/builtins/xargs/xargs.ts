@@ -881,26 +881,32 @@ export async function handleXargs(
   async function* output(): AsyncGenerator<Uint8Array> {
     let stopped: number | null = null
     let failed = false
-    for await (const [ios, stop] of runLines(executeFn, events, context, procs, {
-      trace: toggles.has('t'),
-      slotVar,
-      registry: options.registry ?? null,
-      stdin: childStdin,
-    })) {
-      stopped = stop
-      for (const io of ios) {
-        failed ||= io.exitCode !== 0
-        merged.stderr = (await merged.merge(new IOResult({ stderr: io.stderr }))).stderr
-        const raw = await materialize(io.stdout)
-        if (raw.length > 0) yield raw
+    try {
+      for await (const [ios, stop] of runLines(executeFn, events, context, procs, {
+        trace: toggles.has('t'),
+        slotVar,
+        registry: options.registry ?? null,
+        stdin: childStdin,
+      })) {
+        stopped = stop
+        for (const io of ios) {
+          failed ||= io.exitCode !== 0
+          merged.stderr = (await merged.merge(new IOResult({ stderr: io.stderr }))).stderr
+          const raw = await materialize(io.stdout)
+          if (raw.length > 0) yield raw
+        }
       }
+    } finally {
+      // A reader that stops early still sees the runs it reached.
+      if (stopped !== null) merged.exitCode = stopped
+      else if (fatal !== null) {
+        merged.stderr = (
+          await merged.merge(new IOResult({ stderr: encodeText(fatal.text) }))
+        ).stderr
+        merged.exitCode = fatal.code
+      } else merged.exitCode = failed ? 123 : 0
+      node.exitCode = merged.exitCode
     }
-    if (stopped !== null) merged.exitCode = stopped
-    else if (fatal !== null) {
-      merged.stderr = (await merged.merge(new IOResult({ stderr: encodeText(fatal.text) }))).stderr
-      merged.exitCode = fatal.code
-    } else merged.exitCode = failed ? 123 : 0
-    node.exitCode = merged.exitCode
   }
   return [output(), merged, node]
 }

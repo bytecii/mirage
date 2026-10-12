@@ -330,7 +330,9 @@ async def grep_input(
                 lambda: (
                     (
                         byte_view(item, utf8)
-                        for item in lines.buffered_lines(eol)
+                        for item in lines.buffered_lines(
+                            eol, needles=needles, ignore_case=fold
+                        )
                     )
                     if f.max_count is None
                     and not (f.quiet or f.files_only or f.files_without_match)

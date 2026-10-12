@@ -938,6 +938,9 @@ async def handle_xargs(
                     raw = await materialize(io.stdout)
                     if raw:
                         yield raw
+        finally:
+            await results.aclose()
+            # A reader that stops early still sees the runs it reached.
             if stop is not None:
                 merged.exit_code = stop
             elif fatal is not None:
@@ -949,8 +952,6 @@ async def handle_xargs(
             else:
                 merged.exit_code = 123 if failed else 0
             node.exit_code = merged.exit_code
-        finally:
-            await results.aclose()
 
     return output(), merged, node
 

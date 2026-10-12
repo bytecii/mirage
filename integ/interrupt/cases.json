@@ -56,6 +56,12 @@
       "exit_code": 0
     },
     {
+      "id": "xargs-close-status",
+      "command": "printf x | xargs sh -c 'echo row; exit 1' sh | head -n1; echo ${PIPESTATUS[1]}",
+      "stdout": "row\n123\n",
+      "exit_code": 0
+    },
+    {
       "id": "xargs-parallel",
       "command": "seq inf | xargs -P2 -n1 echo | head -n1",
       "stdout": "1\n",
@@ -107,6 +113,12 @@
       "id": "grep-match-before-slow-line",
       "command": "printf 'ok\\n%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | grep -E 'ok|^(a+)+$' | head -n1",
       "stdout": "ok\n",
+      "exit_code": 0
+    },
+    {
+      "id": "search-skips-slow-unread-line",
+      "command": "for s in 'grep -E' rg; do printf 'ok\\n%s\\nok2\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | $s 'ok|^(a+)+zz$' | head -n2; done",
+      "stdout": "ok\nok2\nok\nok2\n",
       "exit_code": 0
     }
   ],

@@ -1262,6 +1262,7 @@ async function readRecord(
   lines: AsyncLineIterator,
   f: RgFlags,
   pat: RegExp,
+  needles: string[] | null,
   signal?: AbortSignal,
 ): Promise<[Uint8Array, boolean] | null> {
   let record: [Uint8Array, boolean]
@@ -1277,7 +1278,9 @@ async function readRecord(
   if (pat instanceof AsyncRegex) {
     await pat.prepare(readLine(raw, f)[0], () =>
       f.maxCount === null && !(f.quiet || f.filesOnly || f.filesWithoutMatch || f.stopOnNonmatch)
-        ? lines.bufferedLines(f.nullData ? 0 : 0x0a).map((item) => readLine(item, f)[0])
+        ? lines
+            .bufferedLines(f.nullData ? 0 : 0x0a, 31, needles, pat.ignoreCase)
+            .map((item) => readLine(item, f)[0])
         : [],
     )
   }
@@ -1297,7 +1300,7 @@ async function listing(
   let selected = 0
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const record = await readRecord(lines, f, pat, signal)
+    const record = await readRecord(lines, f, pat, needles, signal)
     if (record === null) break
     const [text] = readLine(record[0], f)
     if (await selects(pat, text, f.invert)) {
@@ -1325,7 +1328,7 @@ async function count(
   const needles = recordNeedles(pat, f)
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const record = await readRecord(lines, f, pat, signal)
+    const record = await readRecord(lines, f, pat, needles, signal)
     if (record === null) break
     const [text] = readLine(record[0], f)
     if (!(await selects(pat, text, f.invert))) {
@@ -1391,7 +1394,7 @@ async function* printedLines(
     const [skipped, bytes] = skipRecords(lines, needles, pat, f)
     index += skipped
     position += bytes
-    const record = await readRecord(lines, f, pat, signal)
+    const record = await readRecord(lines, f, pat, needles, signal)
     if (record === null) break
     const [raw, terminated] = record
     index += 1
