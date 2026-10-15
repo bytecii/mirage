@@ -762,6 +762,13 @@
    "typescript_only": {
     "TEXT_PROBE": "A browser mount takes any driver, so TypeScript asks whether its driver reads date and time types as Postgres text before a LIKE over their cast; Python's one driver always does (read_as_text in accessor/postgres.py)."
    }
+  },
+  "workspace/mount/mount": {
+   "python_only": {
+    "_handed_on": "Python passes a wrapped backend function the stats and the index its signature names; TypeScript passes them where the function takes its index, as each VFS declares in `handed`.",
+    "_takes_index": "Python reads whether a backend function takes the index off its signature; a TypeScript VFS declares `index` for it in `handed`.",
+    "_wants": "Python reads the stats a backend function takes off its parameter names; a TypeScript VFS declares them by method in `handed`, which the mount's `wants` reads."
+   }
   }
  }
 }
