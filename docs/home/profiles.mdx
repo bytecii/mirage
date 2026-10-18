@@ -46,9 +46,89 @@ profile: researcher
 
 Replace RAM with your [VFS](/home/setup/vfs). `profile: researcher` selects
 the default for new sessions; another session can use a different named
-profile. Settings you omit add no restriction, and a profile cannot grant
-access beyond the workspace's permissions.
+profile. A profile cannot grant access beyond the workspace's permissions.
 
-Use [Explain](/home/policy/explain) to inspect why an action is allowed or
-refused. For rules that depend on the command's content or other conditions,
-attach a [policy script](/home/policy/scripts).
+## Choose commands
+
+Command patterns are whitespace-separated token prefixes. `git push`
+matches `git push origin main`, while `git pull` does not. The spelling and
+token positions matter: `rm -rf` does not match `rm -r -f` or
+`rm --recursive --force`. A `*` token matches one token in that position;
+a trailing `*` is redundant because every pattern already matches the rest
+of the line.
+
+`commands.allow` is an allow list for the session:
+
+| Configuration | Effect |
+| --- | --- |
+| omit `commands` or `allow` | add no allow-list restriction |
+| `allow: []` | admit no commands |
+| `allow: ["*"]` | admit every command |
+| `allow: [ls, cat, "git status"]` | admit `ls`, `cat` and lines beginning with `git status` |
+
+An unlisted command appears unavailable to the session. `allow` only admits
+a command for further checking; a matching ask or deny can still stop it.
+
+## Ask and deny rules
+
+An ask or deny entry can name commands, paths, or map each command pattern to
+the paths it covers:
+
+```yaml
+commands:
+  allow: [cat, ls, rm]
+  ask:
+    - {commands: [rm], reason: deletes are reviewed}
+    - {commands: {cat: ["/data/review/*"]}, reason: review data needs approval}
+  deny:
+    - {paths: ["/data/private"], reason: private data is sealed}
+    - {commands: {rm: ["/data/archive/*"]}, reason: archives are retained}
+```
+
+A rule with only `paths` applies to every command and to direct VFS calls.
+A literal path covers that path and its subtree. A path containing `*`, `?`
+or `[` is a glob; a slashless pattern such as `*.pem` matches that name at
+any depth. Paths in the top-level `commands` block are absolute. Paths in a
+mount's profile block are still written as absolute paths, except slashless
+name patterns.
+
+When several rules match one path, the rule with the deeper literal anchor
+wins; deny wins only when two rules have the same depth. Rules without paths
+use deny before ask. Each operand is checked independently, so a deny for
+one input still refuses a multi-path command.
+
+For example:
+
+```yaml
+commands:
+  allow: [rm]
+  ask:
+    - {commands: {rm: ["/data/*"]}, reason: deletes are reviewed}
+  deny:
+    - {commands: {rm: ["/data/private/*"]}, reason: private data is sealed}
+```
+
+| Line | `explain` outcome | Why |
+| --- | --- | --- |
+| `rm /data/draft.txt` | ask: `deletes are reviewed` | only the `/data` rule matches |
+| `rm /data/private/key.txt` | deny: `private data is sealed` | `/data/private` is the deeper anchor |
+
+Use [Explain](/home/policy/explain) to inspect the matched source and reason
+before running a line. The complete
+[Python](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/permissions.py)
+and [TypeScript](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/permissions.ts)
+examples exercise command, path and mount-scoped rules.
+
+## Hide paths or refuse operations
+
+`paths.hide` removes a path from the session's namespace, so it appears not
+to exist. `paths.show` reopens a more specific path inside hidden content.
+Ask and deny rules leave paths visible and control operations on them. Use
+hiding when the agent should not discover a path; use ask or deny when it
+may know the path exists but needs an operation reviewed or refused.
+
+Settings you omit add no restriction. An explicitly empty allow list is the
+exception described above.
+
+For rules that depend on the command's content or other conditions, attach a
+[policy script](/home/policy/scripts).

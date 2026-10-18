@@ -10,7 +10,9 @@ containerized or remote runtimes.
 
 Use `route_policy` to choose a runtime for each command line with a script
 or a function. Here, `monty` runs `python3` in-process, while `docker` runs
-it in a container with your packages:
+it in a container with your packages. This configuration excerpt assumes
+the `my-box` container already exists and contains `/jobs/train.py` and its
+dependencies:
 
 ```yaml
 mode: exec

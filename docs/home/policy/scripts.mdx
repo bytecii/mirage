@@ -16,6 +16,49 @@ reads, as JSON, and prints its answer. Two places take a program:
 
 ## A profile's policy
 
+This complete example mounts writable RAM at `/data`, selects `reviewer` as
+the default profile, and runs `guard.py` before every command. Monty must be
+installed as described in [Runtimes](#runtimes).
+
+```yaml workspace.yaml
+mode: write
+mounts:
+  /data:
+    vfs: ram
+
+profiles:
+  reviewer:
+    policy:
+      pre_command:
+        - {script: ./guard.py, runtime: monty}
+
+profile: reviewer
+```
+
+```python guard.py
+import json
+import os
+
+ctx = json.loads(os.environ["MIRAGE_POLICY_CTX"])
+if ctx["command"] == "rm":
+    print(json.dumps({"kind": "deny", "reason": "deletes are disabled"}))
+```
+
+```bash
+mirage workspace create workspace.yaml --id policy-demo
+mirage shell -w policy-demo -c 'echo hello > /data/note.txt'
+mirage shell -w policy-demo -c 'rm /data/note.txt'
+# rm: Permission denied
+mirage workspace delete policy-demo
+```
+
+The first line succeeds and creates the file. The second is refused before
+`rm` runs.
+
+For a larger policy, each method can name its own program and runtime. This
+configuration excerpt expects `guard.py`, `credentials.py` and `locked.py`
+beside `workspace.yaml`:
+
 ```yaml workspace.yaml
 profiles:
   reviewer:
@@ -101,7 +144,7 @@ it:
 | --- | --- |
 | nothing | no opinion |
 | `{"kind": "deny", "reason": "..."}` | refuses |
-| `{"kind": "ask", "reason": "..."}` | holds the action until a host approves it |
+| `{"kind": "ask", "reason": "..."}` | asks the host; an inline answer may continue this request, otherwise the caller retries after an answer |
 | `{"kind": "route", "runtime": "docker"}` | at `pre_execute`: runs the line on that runtime |
 
 A deny or an ask without a `reason` gets the default one. Anything else on
