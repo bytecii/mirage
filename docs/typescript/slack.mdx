@@ -161,13 +161,17 @@ mounted tree stays read-oriented.
 
 ## grep and rg
 
-With `contentSearch: true` (YAML `content_search: true`) and a user token,
-`grep -rw` and `rg -w` read only the channel days Slack search names, and
-print what reading every day would. Search covers message text, file names
-and titles (`search.files`) and reactions (`has::name:`); listing a day already
-fetches its history, so this saves the second fetch of each day it rules out.
-A file hit names each day the file was shared. DMs, users, file blobs and a day
-searched on its own are always read.
+By default, recursive `grep` and `rg` walk the mounted files with the bot
+token; they do not need `searchToken`. With `contentSearch: true` (YAML
+`content_search: true`) and a user token, whole-word `grep -rw` and `rg -w`
+may first use Slack search to rule out channel and DM days, then read the
+remaining files normally. If the token cannot search, Slack search fails, or
+the query cannot be narrowed safely, Mirage falls back to the ordinary full
+walk. Search covers message text, file names and titles (`search.files`) and
+reactions (`has::name:`); listing a day already fetches its history, so the
+optimization saves the second fetch of each day it rules out. A file hit names
+each day the file was shared. Users, file blobs and a day searched on its own
+are always read.
 
 Every day is read when the word is a key or fixed value of the message JSON, a
 file-type or URL word, a join or leave message word, or part of a user's name
@@ -182,23 +186,16 @@ bot's username, an unfurled link) is not searched.
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="`not_allowed_token_type` on slack search / rg /slack/">
-    `search.messages` requires a **user token** (`xoxp-…`) with `search:read` scope. Set `searchToken` on the `SlackConfig`:
-
-    ```ts
-    new SlackVFS({
-      token: process.env.SLACK_BOT_TOKEN!,
-      searchToken: process.env.SLACK_USER_TOKEN,
-    })
-    ```
-
-    Without it, workspace-scope `rg` and `slack search` fail; channel-scope `rg` (e.g. `rg foo /slack/channels/general__C…/`) still works since it streams the JSONL files directly.
+  <Accordion title="`not_allowed_token_type` on `slack search`">
+    The account CLI's `slack search` command calls `search.messages`, which requires a **user token** (`xoxp-…`) with `search:read` scope. Include `searchToken` in the config passed to `ws.registerCli`; see the [Slack CLI setup](/typescript/cli/slack). Without it, `slack search` fails. VFS `grep` and `rg` still scan the mounted files; they simply skip the optional Slack-search optimization.
   </Accordion>
   <Accordion title="CORS error in browser">
     The browser cannot call `https://slack.com/api/*` directly, Slack does not set permissive CORS headers. You must run the proxy server shown above (or your own equivalent) and point `proxyUrl` at it.
   </Accordion>
   <Accordion title="`rate_limited` from Slack">
-    `SlackVFS` uses an `IndexCacheStore` (default TTL 600s) to deduplicate channel / user / date listings, but high-volume reads of `.jsonl` files can still hit Slack's per-method rate limits. Cache hits avoid the API entirely; raise the index `ttl` (`index: { ttl }`) together with the mount's `ttl` if your workspace changes slowly. Per [Slack docs](https://api.slack.com/docs/rate-limits), Tier 3 methods like `conversations.history` allow ~50 requests / minute / workspace.
+    `SlackVFS` uses an `IndexCacheStore` (default TTL 600s) to deduplicate channel / user / date listings, but high-volume reads of `.jsonl` files can still hit Slack's per-method rate limits. Cache hits avoid the API entirely; raise the index `ttl` (`index: { ttl }`) together with the mount's `ttl` if your workspace changes slowly.
+
+    Slack applies different `conversations.history` limits by app distribution. Internal customer-built and Marketplace apps retain Tier 3 (50+ requests per minute, with up to 1,000 objects per request). Affected new installations of commercially distributed apps outside the Marketplace are limited to one request per minute and 15 objects; existing installations are exempt from those newer posted limits. Check the current [`conversations.history` method limits](https://docs.slack.dev/reference/methods/conversations.history/) for the app you installed.
   </Accordion>
 </AccordionGroup>
 

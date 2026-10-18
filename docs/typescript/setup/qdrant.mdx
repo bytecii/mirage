@@ -39,8 +39,10 @@ const fashion = new QdrantVFS({
 const ws = new Workspace({ "/fashion/": fashion }, { mode: MountMode.READ });
 
 await ws.shell("ls /fashion/Men/Shoes/White");
-await ws.shell('search "red running shoes" /fashion'); // ranked paths + score + content
 ```
+
+This first setup supports filesystem browsing. Configure query embedding in
+[Search embedding](#search-embedding) before running `search`.
 
 ### Document and chunk lineage
 

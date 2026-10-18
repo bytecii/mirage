@@ -82,7 +82,7 @@ Example:
 
 ### Traces
 
-`/langfuse/traces/` lists recent traces (capped at `default_trace_limit`,
+`/langfuse/traces/` lists traces (capped at `default_trace_limit`,
 from `default_from_timestamp` on). The cap bounds the listing, not the tree:
 `stat` and `cat` still reach an older trace by its id, and `sessions/<id>/`
 serves only that session's traces.
@@ -105,31 +105,15 @@ and metadata.
 `/langfuse/datasets/` lists dataset names as directories. Each contains
 `items.jsonl` (dataset items) and `runs/` with run results.
 
-## Smart Commands
-
-### grep and rg
+## grep and rg
 
 grep and rg read each file as `cat` renders it, at every scope; `grep -r`
-and `rg` walk a directory. Langfuse's filter API matches names, tags and
-metadata rather than a trace's text, so it cannot say which files hold a
-text, and a search over `traces/` reads every trace the listing returns.
+and `rg` walk a directory. No provider-side content search is used, so a
+search over `traces/` reads every trace the listing returns.
 
 ```bash
 grep -r "error" "/langfuse/traces/"
 rg -l "classify" "/langfuse/prompts/"
-```
-
-### head / tail
-
-`head` and `tail` on `traces/` use Langfuse API pagination with sort order
-instead of downloading all traces:
-
-```bash
-# Returns 10 most recent traces
-head -n 10 "/langfuse/traces/"
-
-# Returns 10 oldest traces
-tail -n 10 "/langfuse/traces/"
 ```
 
 ## Limits
@@ -173,7 +157,7 @@ async def main():
     r = await ws.shell("ls /langfuse/")
     print(await r.stdout_str())
 
-    # List recent traces
+    # List traces
     r = await ws.shell("ls /langfuse/traces/")
     print(await r.stdout_str())
 
@@ -207,8 +191,8 @@ if __name__ == "__main__":
 | --------------- | ------------------------------------------------------ |
 | `ls`            | List traces, sessions, prompts, datasets               |
 | `cat`           | Read trace JSON, prompt version, dataset items         |
-| `head` / `tail` | Paginated trace listing with sort                      |
-| `grep` / `rg`   | Smart: uses Langfuse filter API at directory scope     |
+| `head` / `tail` | Read the beginning/end of a file; directories are rejected |
+| `grep` / `rg`   | Lexically search files; recursive forms walk listed files |
 | `jq`            | Query JSON trace/prompt data                           |
 | `stat`          | Metadata (trace count, prompt versions, dataset items) |
 | `find`          | Search across resources with `-name`                   |

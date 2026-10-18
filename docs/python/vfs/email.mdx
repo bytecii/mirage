@@ -204,10 +204,17 @@ extracted from the filesystem:
 ls /email/INBOX/2026-04-14/
 # -> Meeting_Notes__12345.email.json   <- uid = 12345
 
-# Read a message then reply
-himalaya message read --uid 12345 --folder INBOX
-himalaya message reply --uid 12345 --folder INBOX --body "Thanks for the notes"
+# Read a message, then send a reply
+himalaya message read -m INBOX 12345
+himalaya message reply -m INBOX 12345 --body "Thanks for the notes" --send
 ```
+
+Message IDs are positional, and `-m`/`--mailbox` selects the mailbox. Use
+`message compose` for a message built from `--to`, `--subject` and `--body`;
+`message send` instead accepts an already composed RFC 5322 message through
+its operand or standard input. Compose, reply and forward print MIME without
+sending unless you pass `--send`. See the [Himalaya CLI](/python/cli/himalaya)
+for its complete grammar.
 
 ## Shell Commands
 
