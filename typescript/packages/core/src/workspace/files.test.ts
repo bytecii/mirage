@@ -212,7 +212,12 @@ describe('fresh stat', () => {
     try {
       await ws.vfs.write('/data/f.txt', 'old')
       await ws.vfs.symlink('/data/link', 'f.txt')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
       vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      expect((await ws.vfs.stat('/data/link')).size).toBe(3)
       const row = await ws.vfs.stat('/data/link', undefined, { fresh: true })
       expect(row.type).toBe(FileType.FILE)
       expect(row.size).toBe(6)

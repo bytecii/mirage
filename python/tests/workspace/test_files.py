@@ -196,7 +196,14 @@ class TestFreshStat:
         try:
             await ws.vfs.write("/data/f.txt", b"old")
             await ws.vfs.symlink("/data/link", "f.txt")
+            listed = await ws.vfs.stat("/data/f.txt")
+            await ws.mount("/data").index.set_dir(
+                "/data",
+                [("f.txt", listed)],
+                datetime.now(timezone.utc) + timedelta(hours=1),
+            )
             vfs._store.files["/f.txt"] = b"grown\n"
+            assert (await ws.vfs.stat("/data/link")).size == 3
             row = await ws.vfs.stat("/data/link", fresh=True)
             assert row.type is FileType.FILE
             assert row.size == 6
