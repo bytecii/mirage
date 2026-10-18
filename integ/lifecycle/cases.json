@@ -4938,7 +4938,7 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
@@ -4948,7 +4948,7 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
@@ -4958,7 +4958,7 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
@@ -4968,12 +4968,12 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
           "command": "sed 's/first/yes/' /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -4983,7 +4983,7 @@
         {
           "op": "exec",
           "command": "fold /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -4993,7 +4993,7 @@
         {
           "op": "exec",
           "command": "expand /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5003,7 +5003,7 @@
         {
           "op": "exec",
           "command": "unexpand /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5013,7 +5013,7 @@
         {
           "op": "exec",
           "command": "strings /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5023,7 +5023,7 @@
         {
           "op": "exec",
           "command": "paste /data/log.txt /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5033,7 +5033,7 @@
         {
           "op": "exec",
           "command": "comm /data/log.txt /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5043,7 +5043,7 @@
         {
           "op": "exec",
           "command": "join /data/log.txt /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true

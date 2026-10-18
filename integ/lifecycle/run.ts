@@ -98,6 +98,7 @@ type Step = (
       command: string
       session?: string
       cancel_after_ms?: number
+      cancel_on_stall?: string
       sink_delay_ms?: number
       env?: Record<string, string>
       cwd?: string
@@ -259,6 +260,7 @@ class CachedRAMVFS extends RAMVFS {
 class TrackedStreamVFS extends CachedRAMVFS {
   pulls = 0
   closed = 0
+  onStall: (() => void) | undefined
 
   constructor(
     private readonly chunkSize: number,
@@ -279,6 +281,7 @@ class TrackedStreamVFS extends CachedRAMVFS {
       for (let offset = 0; offset < data.byteLength; offset += this.chunkSize) {
         this.pulls++
         if (this.stallAfter !== undefined && offset / this.chunkSize >= this.stallAfter) {
+          if (this.onStall !== undefined) queueMicrotask(this.onStall)
           await sleep(Infinity, signal)
         }
         if (this.failAfter !== undefined && offset / this.chunkSize >= this.failAfter) {
@@ -618,6 +621,12 @@ async function action(
     }
     case 'exec': {
       const abort = new AbortController()
+      const stalled =
+        step.cancel_on_stall === undefined ? undefined : ws.mount(step.cancel_on_stall).vfs
+      if (stalled !== undefined && !(stalled instanceof TrackedStreamVFS)) {
+        throw new Error('cancel_on_stall requires a tracked-stream mount')
+      }
+      if (stalled !== undefined) stalled.onStall = () => abort.abort()
       const timer =
         step.cancel_after_ms === undefined
           ? undefined
@@ -637,6 +646,7 @@ async function action(
           return { aborted: true }
         throw error
       } finally {
+        if (stalled !== undefined) stalled.onStall = undefined
         clearTimeout(timer)
       }
       return {

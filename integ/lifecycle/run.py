@@ -22,6 +22,7 @@ import asyncio
 import errno
 import json
 import sys
+from collections.abc import Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,7 @@ class TrackedStreamVFS(CachedRAMVFS):
         self.stall_after = stall_after
         self.pulls = 0
         self.closed = 0
+        self.on_stall: Callable[[], None] | None = None
 
     async def read_stream(self, path: PathSpec):
         data = await super().read(path)
@@ -121,6 +123,8 @@ class TrackedStreamVFS(CachedRAMVFS):
                     self.stall_after is not None
                     and offset // self.chunk_size >= self.stall_after
                 ):
+                    if self.on_stall is not None:
+                        asyncio.get_running_loop().call_soon(self.on_stall)
                     await asyncio.Event().wait()
                 if (
                     self.fail_after is not None
@@ -492,7 +496,18 @@ async def action(
             **value,
         }
     elif op == "exec":
-        cancel = asyncio.Event() if "cancel_after_ms" in step else None
+        cancel = (
+            asyncio.Event()
+            if "cancel_after_ms" in step or "cancel_on_stall" in step
+            else None
+        )
+        stalled: TrackedStreamVFS | None = None
+        if "cancel_on_stall" in step:
+            vfs = ws.mount(step["cancel_on_stall"]).vfs
+            assert isinstance(vfs, TrackedStreamVFS)
+            assert cancel is not None
+            stalled = vfs
+            stalled.on_stall = cancel.set
         sink = (
             SlowSink(step["sink_delay_ms"] / 1000)
             if "sink_delay_ms" in step
@@ -502,7 +517,7 @@ async def action(
             asyncio.get_running_loop().call_later(
                 step["cancel_after_ms"] / 1000, cancel.set
             )
-            if cancel is not None
+            if cancel is not None and "cancel_after_ms" in step
             else None
         )
         try:
@@ -517,6 +532,8 @@ async def action(
         except MirageAbortError:
             return {"aborted": True}
         finally:
+            if stalled is not None:
+                stalled.on_stall = None
             if timer is not None:
                 timer.cancel()
         value = {
