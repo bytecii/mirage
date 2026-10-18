@@ -32,6 +32,7 @@ register them on an existing `ws`. Commands: [Python](/python/cli/gws) ·
   </Tab>
 </Tabs>
 
-Forms is CLI-only. Enable its API and grant
-`https://www.googleapis.com/auth/forms.body` plus
-`https://www.googleapis.com/auth/forms.responses.readonly`; creation also needs the Drive scope.
+Forms is CLI-only. Enable the Google Forms API and grant
+`https://www.googleapis.com/auth/forms.body` to create or edit forms. Reading
+responses needs `https://www.googleapis.com/auth/forms.responses.readonly`.
+Creating forms inside a configured folder also needs the Drive API and scope.

@@ -40,7 +40,8 @@ initial sign-in makes it a development bootstrap, not an unattended credential.
 1. Under **API permissions** -> **Microsoft Graph** -> **Delegated**, add
    `Files.Read` for your own drive or `Files.ReadWrite` for writes. Other drives
    or SharePoint may require the corresponding `Files.*.All` or `Sites.*` scope.
-1. Run the device-code flow with your **Application (client) ID**:
+1. Run the device-code flow with your **Application (client) ID**. For writes,
+   replace `Files.Read` with `Files.ReadWrite` in the request below:
 
 ```bash
 CLIENT_ID="<your app client id>"
@@ -48,7 +49,7 @@ CLIENT_ID="<your app client id>"
 # 1) request a device code
 curl -s -X POST "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode" \
   -d "client_id=$CLIENT_ID" \
-  -d "scope=Files.ReadWrite offline_access"
+  -d "scope=Files.Read offline_access"
 #   -> open https://microsoft.com/devicelogin and enter the user_code it prints
 
 # 2) after you sign in, exchange the device_code for a token
@@ -62,16 +63,25 @@ The response includes access and refresh tokens. Mirage accepts an access
 token or provider callback but does not refresh Microsoft tokens itself, so a
 long-running application must refresh through that callback.
 
+### Save the token for the examples
+
+```bash
+# .env.development
+MS_GRAPH_DRIVE_TOKEN=<token>
+MS_GRAPH_DRIVE_ID=<drive id>   # optional; use at most one drive selector
+```
+
+For SDK configuration and the other drive selectors, see [Python OneDrive](/python/vfs/onedrive) or [TypeScript OneDrive](/typescript/setup/onedrive).
+
+### Get your drive ID (optional)
+
 <Note>
 App-only tokens cannot use `/me/drive`; set one of `drive_id`, `site_id`,
 `group_id`, or `user_id`. Delegated tokens can use `/me/drive` directly.
 </Note>
 
-### Get your drive ID
-
-Only needed when you use the `drive_id` selector. App-only auth can instead
-target a drive through `site_id`, `group_id`, or `user_id`. With your token
-exported as `TOKEN`:
+Only needed when you use the `drive_id` selector. With your token exported as
+`TOKEN`:
 
 ```bash
 # your personal OneDrive drive id
@@ -91,19 +101,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 The drive ID looks like `b!a1B2c3...`.
 
-### Save the token for the examples
-
-```bash
-# .env.development
-MS_GRAPH_DRIVE_TOKEN=<token>
-MS_GRAPH_DRIVE_ID=<drive id>   # optional; use at most one drive selector
-```
-
 <Note>
 Snapshots and version pinning rely on OneDrive/SharePoint **version history**,
 which is on by default. Older versions are only readable while the library
 retains them (the version cap is configurable, and an admin can disable
 versioning).
 </Note>
-
-For SDK configuration and the other drive selectors, see [Python OneDrive](/python/vfs/onedrive) or [TypeScript OneDrive](/typescript/setup/onedrive).

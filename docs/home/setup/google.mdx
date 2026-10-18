@@ -6,14 +6,9 @@ description: Set up Google OAuth2 credentials for Google mounts and the GWS CLI.
 
 ## Overview
 
-Google mounts and the `gws` CLI use OAuth2 with a refresh token. Enable only
-the Google services you plan to use; each service needs both its API enabled
-and its OAuth scope granted.
-
-Authentication takes either a pre-minted `access_token` (a token, or a provider
-callable that returns one, for a caller that already owns the OAuth dance) or the
-refresh-token grant: `client_id`, `client_secret`, and `refresh_token`. The steps
-below obtain the latter.
+Google mounts and the `gws` CLI accept an access token or OAuth refresh
+credentials. The steps below obtain refresh credentials for the services you
+enable.
 
 ## Setup
 
@@ -40,8 +35,8 @@ Enable the API for each service you plan to use:
 | Calendar | Google Calendar API | `https://www.googleapis.com/auth/calendar` |
 
 Keep the Drive API and scope when using Google file mounts. The `gws` create
-commands also use Drive to place newly created Docs, Sheets, and Slides. For
-read-only use, select the corresponding read-only scopes.
+commands also need Drive when placing new files inside a configured folder.
+For read-only use, select the corresponding read-only scopes.
 
 ### 3. Configure Google Auth Platform
 
@@ -63,11 +58,6 @@ The OAuth settings are under **Google Auth Platform** in the Cloud Console left 
 1. Click **Add or Remove Scopes**
 1. Add the scopes for the services you enabled in [Step 2](#2-enable-apis).
 1. Select them -> Save
-
-**D) Publish** (to avoid 7-day token expiry):
-
-1. Go to **Audience** -> click **Publish App**
-1. See [Token Lifetime](#token-lifetime) for details
 
 ### 4. Create OAuth2 Client
 
@@ -121,7 +111,8 @@ GOOGLE_REFRESH_TOKEN=1//0abc...
 | Testing (default) | External-user grants expire after 7 days unless only basic profile scopes are requested |
 | In production | Long-lived while the grant remains valid |
 
-To publish, go to **Audience** and click **Publish App**.
+You can complete setup in Testing mode. To publish, go to **Audience** and
+click **Publish App**.
 
 The `TokenManager` exchanges a valid refresh token for short-lived access
 tokens automatically. Refresh tokens can still be revoked or expire; repeat

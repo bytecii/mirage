@@ -25,7 +25,7 @@ an existing `ws`. Commands: [Python](/python/cli/hf) ·
   </Tab>
 </Tabs>
 
-A Hub mount reads; `hf` writes. Use a write token for upload, delete, tag, and
-repository commands; a read token is enough for download-only agents. Editing a
-Hub file is download into a local mount, edit it there, then upload, because a
-Hub write is a commit and the filesystem has no way to say where one ends.
+A Hub mount reads; `hf` also writes. Use a write token to upload, delete,
+create repositories, or create/delete tags. A read token is enough to download
+files or list tags. To edit a Hub file, download it into a local mount, edit it
+there, then upload it. A Hub write is a commit, so edits happen through the CLI.
