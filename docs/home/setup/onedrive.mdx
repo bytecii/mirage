@@ -11,8 +11,9 @@ specific **drive**.
 
 ## Credentials
 
-You need two things: an **access token**, and (for app-only tokens or SharePoint)
-a **drive ID**. Pick whichever token path fits.
+You need an **access token** and, for app-only auth or a drive other than the
+signed-in user's default, one explicit drive selector. Pick whichever token
+path fits.
 
 ### Option A: Quick token (Graph Explorer)
 
@@ -25,9 +26,11 @@ Fastest way to try it. The token lasts about an hour, which is plenty for a test
 This is a **delegated** token, so it works against your own `/me/drive` and you do
 **not** need a drive ID.
 
-### Option B: Repeatable token (app registration + device code)
+### Option B: Interactive device-code token
 
-Use this for scripted or CI runs.
+Use this to obtain a delegated token through your own app registration. The
+initial sign-in is interactive, so this is a development bootstrap rather than
+an unattended CI credential.
 
 1. In the [Microsoft Entra admin center](https://entra.microsoft.com), go to
    **Identity** -> **Applications** -> **App registrations** -> **New registration**.
@@ -36,7 +39,9 @@ Use this for scripted or CI runs.
 1. Under **Authentication** -> **Advanced settings**, set
    **Allow public client flows** to **Yes**.
 1. Under **API permissions** -> **Microsoft Graph** -> **Delegated**, add
-   `Files.ReadWrite.All` (add `Sites.ReadWrite.All` for SharePoint libraries).
+   `Files.Read.All` for read-only access or `Files.ReadWrite.All` for writes.
+   For SharePoint libraries, add the corresponding `Sites.Read.All` or
+   `Sites.ReadWrite.All` permission.
 1. Run the device-code flow with your **Application (client) ID**:
 
 ```bash
@@ -52,20 +57,28 @@ curl -s -X POST "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode
 curl -s -X POST "https://login.microsoftonline.com/common/oauth2/v2.0/token" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
   -d "client_id=$CLIENT_ID" \
-  -d "device_code=<device_code from step 1>" | jq -r .access_token
+  -d "device_code=<device_code from step 1>"
 ```
+
+The response includes a short-lived access token and, because the request used
+`offline_access`, a refresh token. Do not reduce the response to only
+`access_token` if the application needs to survive token expiry. Mirage accepts
+an access-token callback and retries it once after a `401`; your callback must
+use an OAuth library or credential service to refresh the token. Mirage does
+not persist Microsoft refresh tokens for you.
 
 <Note>
 **App-only tokens** (client-credentials flow) have no signed-in user, so
-`/me/drive` returns an error. With an app-only token you **must** pass a
-`drive_id` (or `site_id`). Delegated tokens (Options A and B) can use `/me/drive`
-with no drive ID.
+`/me/drive` returns an error. With an app-only token you **must** pass one of
+`drive_id`, `site_id`, `group_id`, or `user_id`. Delegated tokens (Options A and
+B) can use `/me/drive` with no explicit selector.
 </Note>
 
 ### Get your drive ID
 
-Only needed for app-only tokens or to target a specific SharePoint library. With
-your token exported as `TOKEN`:
+Only needed when you use the `drive_id` selector. App-only auth can instead
+target a drive through `site_id`, `group_id`, or `user_id`. With your token
+exported as `TOKEN`:
 
 ```bash
 # your personal OneDrive drive id
@@ -85,13 +98,17 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 The drive ID looks like `b!a1B2c3...`.
 
-### Set environment variables
+### Save the token for the examples
 
 ```bash
 # .env.development
-ONEDRIVE_ACCESS_TOKEN=<token>
-ONEDRIVE_DRIVE_ID=<drive id>   # omit when using a delegated /me/drive token
+MS_GRAPH_DRIVE_TOKEN=<token>
+MS_GRAPH_DRIVE_ID=<drive id>   # optional; use at most one drive selector
 ```
+
+The Python example loads `.env.development` explicitly and passes these values
+to the SDK. For a long-running process, replace the static token with an
+access-token callback as described above.
 
 <Note>
 Snapshots and version pinning rely on OneDrive/SharePoint **version history**,
@@ -100,4 +117,4 @@ retains them (the version cap is configurable, and an admin can disable
 versioning).
 </Note>
 
-For Python configuration, see the [Python OneDrive VFS](/python/vfs/onedrive) page.
+For SDK configuration and the other drive selectors, see [Python OneDrive](/python/vfs/onedrive) or [TypeScript OneDrive](/typescript/setup/onedrive).

@@ -32,4 +32,26 @@ description: Set up a Discord Bot Token for the Discord VFS.
 DISCORD_BOT_TOKEN=MTIx...
 ```
 
+This is a dotenv file entry. Load it in your application or export the value,
+then pass it to `DiscordConfig`.
+
+## Optional CLI permissions
+
+The read-only VFS setup above is enough to browse messages the bot can see. If
+you register the [Discord CLI](/home/setup/cli/discord), add only the server
+permissions needed by its commands, then open a new invite URL or update the
+bot's role:
+
+| Commands or path | Additional permission or setting |
+| --- | --- |
+| `send`, `edit` | Send Messages |
+| `poll` | Send Messages and Send Polls |
+| `react` | Add Reactions |
+| `thread-create` | Create Public Threads and Send Messages in Threads |
+| `delete` for messages from other users | Manage Messages |
+| `members` or the VFS `members/` directory | Enable the Server Members Intent under **Privileged Gateway Intents** |
+
+Channel overrides can still deny a permission granted to the bot's server
+role. The bot can edit only messages it authored.
+
 For Python configuration, see the [Python Discord VFS](/python/vfs/discord) page.

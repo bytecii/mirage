@@ -26,5 +26,15 @@ HF_MODEL_REPO=sapientinc/HRM-Text-1B
 HF_TOKEN=hf_...   # optional, public models work without it
 ```
 
+This is a dotenv file entry. Load it in your application or export the value,
+then pass it to the VFS config.
+
+## Optional CLI write access
+
+The model VFS only needs read access. If you register the [Hugging Face CLI](/home/setup/cli/hf)
+to create repositories, upload or delete files, or manage tags, use a token
+with write access to the affected repositories. A read token continues to be
+the safer choice for download-only agents.
+
 For Python configuration, see the
 [HF Models VFS](/python/vfs/hf_models) docs.

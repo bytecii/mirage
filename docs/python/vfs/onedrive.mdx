@@ -26,7 +26,7 @@ config = OneDriveConfig(
     access_token=os.environ["MS_GRAPH_DRIVE_TOKEN"],
     # Optional:
     # Name at most one drive:
-    # drive_id="b!...",        # target a specific drive (required for app-only tokens)
+    # drive_id="b!...",        # target a specific drive
     # site_id="contoso.sharepoint.com,...",  # a SharePoint site's default drive
     # group_id="...",          # a Teams / Microsoft 365 group's library
     # user_id="user@contoso.com",  # another user's drive (app-only)
@@ -47,8 +47,8 @@ modes are supported.
 
 | Field            | Required | Description                                                            |
 | ---------------- | -------- | ---------------------------------------------------------------------- |
-| `access_token`   | Yes      | Microsoft Graph OAuth2 bearer token                                    |
-| `drive_id`       | No       | Target a specific drive. Required for app-only tokens (no `/me/drive`) |
+| `access_token`   | Yes      | Microsoft Graph bearer token or zero-argument provider returning one   |
+| `drive_id`       | No       | Target a specific drive by its Graph drive ID                         |
 | `site_id`        | No       | A SharePoint site's default drive                                      |
 | `group_id`       | No       | A Teams / Microsoft 365 group's document library                       |
 | `user_id`        | No       | Another user's drive, by id or UPN (app-only auth)                     |
@@ -64,7 +64,9 @@ drive the mount is, so set **at most one**. Setting two raises at config time
 rather than silently addressing whichever came first, which otherwise surfaces
 much later as an unexplained 404. Setting none means `/me/drive`, the
 signed-in user's own drive, which is the only form that needs no extra
-identifier and the only one unavailable to an app-only token.
+identifier and the only one unavailable to an app-only token. App-only auth
+therefore needs one suitable explicit selector, plus the Graph permissions to
+read that target.
 
 ### The service root
 
