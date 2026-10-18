@@ -18,9 +18,12 @@ description: Set up a Slack Bot Token for the Slack VFS.
 1. Under **Bot Token Scopes**, add:
    - `channels:history` - read messages in public channels
    - `channels:read` - list public channels
-   - `groups:history` - read messages in private channels (optional)
-   - `groups:read` - list private channels (optional)
-   - `chat:write` - send messages (for write mode)
+   - `groups:history`, `groups:read` - private channels (optional)
+   - `im:history`, `im:read` - direct messages (optional)
+   - `mpim:history`, `mpim:read` - group direct messages (optional)
+   - `users:read` - the VFS `users/` directory
+
+Add `chat:write` only for VFS write mode or the CLI `send-message` command.
 
 ### 3. Install to Workspace
 

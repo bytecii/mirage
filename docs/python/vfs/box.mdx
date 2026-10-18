@@ -46,7 +46,7 @@ from mirage.vfs.box import BoxConfig, BoxVFS
 
 config = BoxConfig(
     # A Box developer token from the app console (~60-minute lifetime):
-    access_token=os.environ["BOX_ACCESS_TOKEN"],
+    access_token=os.environ["BOX_DEVELOPER_TOKEN"],
     # Optional:
     # root_folder_id="123456789",  # mount a sub-folder as the root
 )
@@ -94,7 +94,7 @@ id-based mount survives reorganization that a path prefix would not.
 
 ```python
 config = BoxConfig(
-    access_token=os.environ["BOX_ACCESS_TOKEN"],
+    access_token=os.environ["BOX_DEVELOPER_TOKEN"],
     root_folder_id="123456789",
 )
 ```
@@ -174,7 +174,7 @@ import os
 from mirage import MountMode, Workspace
 from mirage.vfs.box import BoxConfig, BoxVFS
 
-config = BoxConfig(access_token=os.environ["BOX_ACCESS_TOKEN"])
+config = BoxConfig(access_token=os.environ["BOX_DEVELOPER_TOKEN"])
 
 vfs = BoxVFS(config)
 

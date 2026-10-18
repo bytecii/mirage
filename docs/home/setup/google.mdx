@@ -1,20 +1,14 @@
 ---
 title: Google Workspace
 icon: google
-description: Set up Google OAuth2 credentials for Docs, Sheets, Slides, Drive, and Gmail mounts.
+description: Set up Google OAuth2 credentials for Google mounts and the GWS CLI.
 ---
 
 ## Overview
 
-The Google mounts use OAuth2 with a refresh token to authenticate against:
-
-- **Google Drive API v3** - lists documents, reads metadata
-- **Google Docs API v1** - reads/writes document content
-
-Authentication takes either a pre-minted `access_token` (a token, or a provider
-callable that returns one, for a caller that already owns the OAuth dance) or the
-refresh-token grant: `client_id`, `client_secret`, and `refresh_token`. The steps
-below obtain the latter.
+Google mounts and the `gws` CLI accept an access token or OAuth refresh
+credentials. The steps below obtain refresh credentials for the services you
+enable.
 
 ## Setup
 
@@ -28,8 +22,21 @@ below obtain the latter.
 ### 2. Enable APIs
 
 1. Go to https://console.cloud.google.com/apis/library
-1. Search **Google Drive API** -> click -> **Enable**
-1. Search **Google Docs API** -> click -> **Enable**
+
+Enable the API for each service you plan to use:
+
+| Service | API to enable | Scope for Mirage's read/write commands |
+| --- | --- | --- |
+| Drive | Google Drive API | `https://www.googleapis.com/auth/drive` |
+| Docs | Google Docs API | `https://www.googleapis.com/auth/documents` |
+| Sheets | Google Sheets API | `https://www.googleapis.com/auth/spreadsheets` |
+| Slides | Google Slides API | `https://www.googleapis.com/auth/presentations` |
+| Gmail | Gmail API | `https://www.googleapis.com/auth/gmail.modify` |
+| Calendar | Google Calendar API | `https://www.googleapis.com/auth/calendar` |
+
+Keep the Drive API and scope when using Google file mounts. The `gws` create
+commands also need Drive when placing new files inside a configured folder.
+For read-only use, select the corresponding read-only scopes.
 
 ### 3. Configure Google Auth Platform
 
@@ -49,16 +56,8 @@ The OAuth settings are under **Google Auth Platform** in the Cloud Console left 
 **C) Data Access** (left sidebar) - this is where scopes are configured:
 
 1. Click **Add or Remove Scopes**
-1. Search for or paste these scopes:
-   - `https://www.googleapis.com/auth/drive` (full Drive access)
-   - `https://www.googleapis.com/auth/documents` (Google Docs)
-   - `https://www.googleapis.com/auth/presentations` (Google Slides)
+1. Add the scopes for the services you enabled in [Step 2](#2-enable-apis).
 1. Select them -> Save
-
-**D) Publish** (to avoid 7-day token expiry):
-
-1. Go to **Audience** -> click **Publish App**
-1. See [Token Lifetime](#token-lifetime) for details
 
 ### 4. Create OAuth2 Client
 
@@ -69,10 +68,11 @@ The OAuth settings are under **Google Auth Platform** in the Cloud Console left 
 
 ### 5. Get the Refresh Token
 
-**A) Open this URL in a browser** (replace `YOUR_CLIENT_ID`):
+**A) Build and open the authorization URL.** Replace `YOUR_CLIENT_ID` and add
+the scopes selected above to `scope`. This example requests Drive and Docs:
 
 ```
-https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:1&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/documents%20https://www.googleapis.com/auth/presentations&access_type=offline&prompt=consent
+https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:1&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/documents&access_type=offline&prompt=consent
 ```
 
 - `access_type=offline` - required to receive a refresh token
@@ -95,7 +95,7 @@ curl -X POST https://oauth2.googleapis.com/token \
 
 The response JSON contains `refresh_token` - save it.
 
-### 6. Set Environment Variables
+### 6. Save the credentials
 
 ```bash
 # .env.development
@@ -106,40 +106,30 @@ GOOGLE_REFRESH_TOKEN=1//0abc...
 
 ## Token Lifetime
 
-| App Publishing Status | Refresh Token Lifetime             |
-| --------------------- | ---------------------------------- |
-| Testing (default)     | 7 days - must re-authorize         |
-| In Production         | Never expires (with continued use) |
+| App Publishing Status | Typical behavior |
+| --- | --- |
+| Testing (default) | External-user grants expire after 7 days unless only basic profile scopes are requested |
+| In production | Long-lived while the grant remains valid |
 
-To publish: go to the OAuth consent screen page and click **Publish App**. Users will see an "unverified app" warning during auth, which is fine for personal use.
+You can complete setup in Testing mode. To publish, go to **Audience** and
+click **Publish App**.
 
-A published refresh token only gets revoked if:
-
-- Manually revoked at https://myaccount.google.com/permissions
-- Google account password is changed
-- Token unused for 6 months
-- 100+ outstanding refresh tokens per account per client (oldest revoked)
-
-For personal use with a published app, you do the auth flow **once** and it works indefinitely. The `TokenManager` in the VFS automatically uses the refresh token to obtain fresh access tokens (which expire hourly) behind the scenes.
-
-## Scopes Reference
-
-| Scope                                                | Purpose                                        |
-| ---------------------------------------------------- | ---------------------------------------------- |
-| `https://www.googleapis.com/auth/drive`              | Full Drive access (list, create, delete files) |
-| `https://www.googleapis.com/auth/drive.readonly`     | List files, read metadata only (alternative)   |
-| `https://www.googleapis.com/auth/documents`          | Read and write Google Docs                     |
-| `https://www.googleapis.com/auth/documents.readonly` | Read-only Docs access (alternative)            |
-| `https://www.googleapis.com/auth/presentations`      | Read and write Google Slides                   |
+The `TokenManager` exchanges a valid refresh token for short-lived access
+tokens automatically. Refresh tokens can still be revoked or expire; repeat
+authorization when that happens. See
+[Google's token lifecycle documentation](https://developers.google.com/identity/protocols/oauth2#expiration).
 
 ## Troubleshooting
 
 | Issue                              | Fix                                                               |
 | ---------------------------------- | ----------------------------------------------------------------- |
-| 403 during OAuth flow              | Add yourself as a test user in Step 3.7                           |
+| 403 during OAuth flow              | Add yourself as a test user under **Audience**                    |
 | No `refresh_token` in response     | Ensure `access_type=offline` and `prompt=consent` in the auth URL |
 | Token exchange fails               | `redirect_uri` must exactly match between auth URL and curl       |
-| Refresh token expires after 7 days | Publish the app (Step 3.9)                                        |
+| Refresh token expires after 7 days | Publish the app under **Audience**, or re-authorize while testing |
 | Auth code doesn't work twice       | Codes are single-use - re-authorize if exchange fails             |
 
-For Python configuration, see the VFS pages: [Gmail](/python/vfs/gmail), [Drive](/python/vfs/gdrive), [Docs](/python/vfs/gdocs), [Sheets](/python/vfs/gsheets), [Slides](/python/vfs/gslides).
+For Python configuration, see [Gmail](/python/vfs/gmail),
+[Drive](/python/vfs/gdrive), [Docs](/python/vfs/gdocs),
+[Sheets](/python/vfs/gsheets), and [Slides](/python/vfs/gslides). For Calendar,
+Forms, and service command trees, see [GWS setup](/home/setup/cli/gws).

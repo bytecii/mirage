@@ -43,7 +43,7 @@ fastest path, no redirect URI, no client secret, no curl exchange:
    **User Authentication (OAuth 2.0)** -> name it "Mirage" -> **Create App**
 1. On the **Configuration** tab, scroll to the **Developer Token** section near the bottom.
 1. Click **Generate Developer Token**. Copy the 32-char token.
-1. Paste into your `.env.development`:
+1. Save it for the repository examples in `.env.development`:
    ```bash
    BOX_DEVELOPER_TOKEN=...
    ```
@@ -51,9 +51,6 @@ fastest path, no redirect URI, no client secret, no curl exchange:
 
 The token expires in **60 minutes** and there is no programmatic way to renew it; you regenerate
 by hand. For long-running processes, use the OAuth flow below instead.
-
-When `BOX_DEVELOPER_TOKEN` is set, the `BoxVFS` skips the OAuth refresh path entirely and
-calls Box directly with the token in the `Authorization: Bearer` header.
 
 ## Setup (long-running OAuth flow)
 
