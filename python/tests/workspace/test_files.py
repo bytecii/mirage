@@ -16,6 +16,7 @@ import asyncio
 import errno
 import tracemalloc
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -112,10 +113,11 @@ class TestStat:
         assert s.name == "f.txt"
         assert s.size == 5
 
-    def test_stat_dir(self):
+    @pytest.mark.parametrize("fresh", [False, True])
+    def test_stat_dir(self, fresh):
         ops, _ = make_ops()
         run(ops.mkdir("/data/mydir"))
-        s = run(ops.stat("/data/mydir"))
+        s = run(ops.stat("/data/mydir", fresh=fresh))
         assert s.type == FileType.DIRECTORY
 
     def test_stat_nonexistent(self):
@@ -123,14 +125,127 @@ class TestStat:
         with pytest.raises(FileNotFoundError):
             run(ops.stat("/data/nope"))
 
-    def test_stat_reports_a_dangling_link_itself_under_nofollow(self):
+    @pytest.mark.parametrize("fresh", [False, True])
+    def test_stat_reports_a_dangling_link_itself_under_nofollow(self, fresh):
         ops, _ = make_ops()
         run(ops.mkdir("/data/dir"))
         run(ops.symlink("/data/dir/ghost", "missing.txt"))
         with pytest.raises(FileNotFoundError):
-            run(ops.stat("/data/dir/ghost"))
-        row = run(ops.stat("/data/dir/ghost", nofollow=True))
+            run(ops.stat("/data/dir/ghost", fresh=fresh))
+        row = run(ops.stat("/data/dir/ghost", nofollow=True, fresh=fresh))
         assert row.type == FileType.SYMLINK
+
+
+class TestFreshStat:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fresh", [False, True])
+    async def test_stat_sees_an_externally_created_file(self, fresh):
+        vfs = RAMVFS()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        other = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.mount("/data").index.set_dir(
+                "/data", [], datetime.now(timezone.utc) + timedelta(hours=1)
+            )
+            await other.vfs.write("/data/new.txt", b"created")
+            row = await ws.vfs.stat("/data/new.txt", fresh=fresh)
+            assert row.type is FileType.FILE
+            assert row.size == 7
+        finally:
+            await other.close()
+            await ws.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fresh", [None, False, True])
+    @pytest.mark.parametrize("replacement", [b"grown\n", None])
+    async def test_stat_after_an_external_change(self, fresh, replacement):
+        vfs = RAMVFS()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        other = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            listed = await ws.vfs.stat("/data/f.txt")
+            await ws.mount("/data").index.set_dir(
+                "/data",
+                [("f.txt", listed)],
+                datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            if replacement is None:
+                await other.vfs.unlink("/data/f.txt")
+            else:
+                await other.vfs.write("/data/f.txt", replacement)
+            options = {} if fresh is None else {"fresh": fresh}
+            if fresh and replacement is None:
+                with pytest.raises(FileNotFoundError):
+                    await ws.vfs.stat("/data/f.txt", **options)
+            else:
+                row = await ws.vfs.stat("/data/f.txt", **options)
+                assert row.name == "f.txt"
+                assert row.type is FileType.FILE
+                assert row.size == (6 if fresh else 3)
+                assert row.fingerprint is None
+                assert row.revision is None
+        finally:
+            await other.close()
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_follows_a_link_to_current_metadata(self):
+        vfs = RAMVFS()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            await ws.vfs.symlink("/data/link", "f.txt")
+            vfs._store.files["/f.txt"] = b"grown\n"
+            row = await ws.vfs.stat("/data/link", fresh=True)
+            assert row.type is FileType.FILE
+            assert row.size == 6
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("binding", ["named", "bound", "active"])
+    async def test_fresh_stat_preserves_session_visibility(self, binding):
+        ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/secret.txt", b"classified")
+            blind = ws.create_session(
+                "blind", permissions={"paths": {"hide": ["/data/secret.txt"]}}
+            )
+            ws.create_session("seeing", permissions={})
+            with pytest.raises(FileNotFoundError):
+                if binding == "named":
+                    await ws.vfs.stat(
+                        "/data/secret.txt", fresh=True, session_id="blind"
+                    )
+                elif binding == "bound":
+                    await Session(ws, "blind").vfs.stat(
+                        "/data/secret.txt", fresh=True
+                    )
+                else:
+                    token = set_current_session(blind)
+                    try:
+                        await ws.vfs.stat(
+                            "/data/secret.txt", fresh=True, session_id="seeing"
+                        )
+                    finally:
+                        reset_current_session(token)
+            assert (
+                await ws.vfs.stat("/data/secret.txt", fresh=True)
+            ).size == 10
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_preserves_policy_refusal(self):
+        ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"body")
+            ws.policies.add(_DenyEverything())
+            with pytest.raises(PolicyDenied):
+                await ws.vfs.stat("/data/f.txt", fresh=True)
+        finally:
+            await ws.close()
 
 
 class TestReaddir:

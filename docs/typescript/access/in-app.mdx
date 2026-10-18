@@ -317,12 +317,23 @@ The file API, run as the session. Paths are absolute, bytes are `Uint8Array`. A 
 | --- | --- |
 | `read(path, { offset, size })` | The bytes, whole or a range. |
 | `write(path, data)`, `append(path, data)` | Nothing. |
-| `stat(path, undefined, { nofollow })` | A `FileStat`. |
+| `stat(path, undefined, { nofollow, fresh })` | A `FileStat`. |
 | `readdir(path)` | The full path of each entry. |
 | `exists(path)` | `true` or `false`. |
 | `mkdir(path)`, `rmdir(path)`, `unlink(path)` | Nothing. |
 | `rename(src, dst)` | Nothing. |
 | `truncate(path, length)` | Nothing. |
+
+`stat` can reuse metadata from the mount's listing index. Set `fresh: true` to
+ask the backend past that index, for example after another client replaces or
+deletes a file. It defaults to `false`. Namespace attributes and cached rendered
+sizes still apply. The result remains a `FileStat`, with `null` for backend
+version fields the backend does not provide. `nofollow: true` still reports a
+trailing symlink itself. Session visibility and access rules apply to both modes.
+
+```ts
+const current = await session.vfs.stat('/s3/report.csv', undefined, { fresh: true })
+```
 
 <Expandable title="FileStat">
   <ResponseField name="name" type="string" />
