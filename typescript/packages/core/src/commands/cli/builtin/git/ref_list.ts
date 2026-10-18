@@ -15,7 +15,7 @@
 import type { PathSpec } from '../../../../types.ts'
 import git from 'isomorphic-git'
 import { IOResult } from '../../../../io/types.ts'
-import { encodeText } from '../../../../shell/bytes.ts'
+import { decodeText, encodeText } from '../../../../shell/bytes.ts'
 import { fnmatch } from '../../../../utils/fnmatch.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { CommandFnResult } from '../../../config.ts'
@@ -28,7 +28,7 @@ import { readNames, readOptional } from './io.ts'
 import { entryName } from '../../../../utils/remnants.ts'
 
 import { loadMailmap } from './mailmap.ts'
-import { abbreviationRequests, needsObject } from './ref_fields.ts'
+import { abbreviationRequests, mailmapped, needsObject } from './ref_fields.ts'
 import { keptRefs, type RefFilter } from './ref_filter.ts'
 import { parseSortKeys } from './ref_format.ts'
 import {
@@ -179,12 +179,24 @@ export function matchShort(name: string, patterns: readonly string[], icase = fa
   return patterns.some((pattern) => fnmatch(folded(rest, icase), folded(pattern, icase)))
 }
 
-/** What a tag object peels to, through any tags it names in turn. */
-async function peeledObject(repo: Repo, obj: RefObject): Promise<RefObject> {
+const OBJECT_HEADER = 'object '
+
+/**
+ * What a tag object peels to, through however many tags it names in turn,
+ * read off each tag's `object` line; null when one names an object the
+ * repository lacks.
+ */
+async function peeledObject(repo: Repo, obj: RefObject): Promise<RefObject | null> {
   let shown = obj
+  const seen = new Set([obj.oid])
   while (shown.type === 'tag') {
-    const { tag } = await git.readTag({ ...repoArgs(repo), oid: shown.oid })
-    shown = await rawObject(repo, tag.object)
+    const head = decodeText(shown.raw).split('\n', 1)[0] ?? ''
+    if (!head.startsWith(OBJECT_HEADER)) return null
+    const target = head.slice(OBJECT_HEADER.length).trim()
+    // Only a store that does not hash what it holds can loop.
+    if (seen.has(target) || (await objectType(repo, target)) === null) return null
+    seen.add(target)
+    shown = await rawObject(repo, target)
   }
   return shown
 }
@@ -511,20 +523,17 @@ export async function refListing(
     )
     items = items.filter((item) => kept.has(item.name))
   }
-  const upstreams = fields.filter((field) => field.field === 'upstream')
+  const upstreams = fields.filter((field) => field.name === 'upstream')
   if (upstreams.length) {
-    const counted = upstreams.some((field) => ['track', 'trackshort'].includes(field.option))
+    const counted = upstreams.some((field) => ['track', 'trackshort'].includes(field.variant))
     items = await withUpstreams(repo, items, table, known, counted)
   }
-  if (fields.some((field) => field.field === 'worktreepath')) {
+  if (fields.some((field) => field.name === 'worktreepath')) {
     const heads = await worktreeHeads(repo)
     items = items.map((item) => ({ ...item, worktree: heads.get(item.name) ?? '' }))
   }
   const values = (path: string): Promise<string[]> => configValues(repo.vfs, repo.location, path)
   const suffixes = await values('versionsort.suffix')
-  const mailmapped = fields.some(
-    (field) => field.option === 'mailmap' || field.words.has('mailmap'),
-  )
   const ctx: RefContext = {
     known,
     strict: gitBool(await values('core.warnambiguousrefs'), 'core.warnambiguousrefs', true),
@@ -532,7 +541,7 @@ export async function refListing(
     headDescription: '',
     abbrev: repo.abbrev,
     abbreviations: new Map(),
-    mailmap: mailmapped ? await loadMailmap(repo.vfs, repo.location) : [],
+    mailmap: mailmapped(fields) ? await loadMailmap(repo.vfs, repo.location, true) : [],
     date,
     suffixes: suffixes.length ? suffixes : await values('versionsort.prereleasesuffix'),
   }
@@ -550,12 +559,38 @@ export async function refListing(
  */
 export function sortKeys(fl: FlagView, defaults: readonly string[]): RefSortKey[] | null {
   let spellings = [...defaults]
+  let cleared = false
   for (const [name, value] of fl.occurrences('sort', 'no_sort')) {
-    if (name === 'no_sort') spellings = []
-    else if (Array.isArray(value)) spellings.push(...value.filter((v) => typeof v === 'string'))
+    if (name === 'no_sort') {
+      spellings = []
+      cleared = true
+    } else if (Array.isArray(value)) spellings.push(...value.filter((v) => typeof v === 'string'))
     else if (typeof value === 'string') spellings.push(value)
   }
-  return spellings.length ? parseSortKeys(spellings) : null
+  if (!spellings.length) return null
+  const keys = parseSortKeys(spellings)
+  // After --no-sort, one key that sorts upward by the ref's own name in any
+  // spelling leaves the refs in the order they are listed in, as git 2.50.1
+  // does; 2.47.3 sorts them.
+  const [only] = keys
+  if (
+    cleared &&
+    keys.length === 1 &&
+    only?.field.name === 'refname' &&
+    !only.reverse &&
+    !only.version
+  ) {
+    return null
+  }
+  return keys
+}
+
+/**
+ * Whether the line names its order with `--sort` or `--no-sort`: a listing in
+ * the order it gets without either may write each row as it renders.
+ */
+export function sortsNamed(fl: FlagView): boolean {
+  return fl.occurrences('sort', 'no_sort').length > 0
 }
 
 /**

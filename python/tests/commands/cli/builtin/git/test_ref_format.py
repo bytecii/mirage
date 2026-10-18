@@ -30,12 +30,15 @@ from mirage.commands.cli.builtin.git.types import (
 )
 from mirage.shell.bytes import encode_text
 
+# Every expectation below is git's own output for the same refs, measured
+# with git 2.47.3 and 2.50.1.
+
 
 def _commit(when: int, subject: str) -> RefObject:
     """A commit object with one date and subject.
 
     Args:
-        when (int): the committer timestamp.
+        when (int): the author and committer timestamp.
         subject (str): the message.
     """
     return RefObject(
@@ -71,6 +74,16 @@ ITEMS = [
     ),
 ]
 CTX = RefContext(date=DateMode(now=0))
+# Three refs dated within one day, so a short date ties them all.
+DATED = [
+    RefItem(
+        name=f"refs/tags/{n}",
+        oid=f"{i:040d}",
+        kind=RefKind.TAG,
+        obj=_commit(when, n),
+    )
+    for i, (n, when) in enumerate([("a10", 1300), ("a9", 1400), ("v2.0", 900)])
+]
 
 
 def _run(
@@ -96,9 +109,10 @@ def _run(
     "text,expected",
     [
         ("100%%", "100%"),
-        ("%41%2x", "A%2x"),
+        ("%41%4g", "A%4g"),
         ("50% off", "50% off"),
         ("%", "%"),
+        ("x%", "x%"),
     ],
 )
 def test_literal_text_expands_percent_escapes(text, expected):
@@ -110,8 +124,14 @@ def test_a_hex_escape_names_a_raw_byte():
 
 
 def test_a_quoted_percent_never_opens_a_field():
-    fmt = ref_format.parse_format("%%(refname)")
-    assert fmt.pieces == ("%(refname)",)
+    assert ref_format.parse_format("%%(refname)").pieces == ("%(refname)",)
+    assert [
+        p if isinstance(p, str) else p.text
+        for p in ref_format.parse_format("%%%(refname)").pieces
+    ] == [
+        "%",
+        "refname",
+    ]
 
 
 def test_an_unclosed_field_is_a_usage_error_or_a_listing_fatal():
@@ -120,22 +140,22 @@ def test_an_unclosed_field_is_a_usage_error_or_a_listing_fatal():
     assert str(info.value) == "malformed format string %(refname"
     with pytest.raises(UnparsableFormatError) as listing:
         ref_format.listing_format("x %(refname")
-    assert str(listing.value) == (
-        "malformed format string %(refname\n"
-        "fatal: unable to parse format string"
+    assert (
+        str(listing.value)
+        == "malformed format string %(refname\nfatal: unable to parse format string"
     )
 
 
-def test_rest_and_bare_raw_are_refused_by_the_format():
-    with pytest.raises(GitError) as info:
-        ref_format.parse_format("%(rest)")
-    assert str(info.value) == "this command reject atom %(rest)"
-    with pytest.raises(GitError) as quoted:
-        ref_format.parse_format("%(raw)", QuoteStyle.SHELL)
-    assert str(quoted.value) == (
-        "--format=raw cannot be used with --python, --shell, --tcl"
-    )
+def test_raw_is_refused_under_a_quoting_that_cannot_carry_bytes():
+    for spelling in ("raw", "*raw"):
+        with pytest.raises(GitError) as quoted:
+            ref_format.parse_format(f"%({spelling})", QuoteStyle.SHELL)
+        assert (
+            str(quoted.value)
+            == f"--format={spelling} cannot be used with --python, --shell, --tcl"
+        )
     assert ref_format.parse_format("%(raw)", QuoteStyle.PERL).pieces
+    assert ref_format.parse_format("%(raw:size)", QuoteStyle.SHELL).pieces
 
 
 def test_the_last_sort_key_given_sorts_first():
@@ -147,72 +167,69 @@ def test_the_last_sort_key_given_sorts_first():
         ("objecttype", True, True),
         ("refname", False, False),
     ]
-
-
-@pytest.mark.parametrize("key", ["refname:short", "refname:lstrip=2"])
-def test_transformed_names_are_sorted_before_applying_count(key):
-    items = [
-        RefItem(name="refs/heads/main", oid="1" * 40, kind=RefKind.BRANCH),
-        RefItem(name="refs/tags/base", oid="2" * 40, kind=RefKind.TAG),
-    ]
-    assert _run("%(refname)", ("refname", key), items=items, count=1) == (
-        "refs/tags/base\n",
-        None,
-    )
-    assert _run("%(refname)", (key,), items=items, count=1) == (
-        "refs/heads/main\n",
-        None,
-    )
-
-
-def test_a_prerelease_suffix_sorts_before_its_release():
-    assert ref_format.versioncmp("v2.0-rc1", "v2.0", ("-rc",)) < 0
-    assert ref_format.versioncmp("v2.0", "v2.0-rc1", ("-rc",)) > 0
+    with pytest.raises(GitError) as info:
+        ref_format.parse_sort_keys(["v:-refname"])
+    assert str(info.value) == "unknown field name: -refname"
 
 
 @pytest.mark.parametrize(
-    "style,expected",
+    "suffixes,names",
     [
-        (QuoteStyle.SHELL, "'it'\\''s'\\!''\\!''"),
-        (QuoteStyle.PERL, "'it\\'s!\\\\'"),
-        (QuoteStyle.PYTHON, "'it\\'s!\\\\\\n'"),
-        (QuoteStyle.TCL, '"it\'s!\\\\\\n\\$"'),
+        ((), ["v1.0", "v1.0-rc1", "v1.0.1", "v1.2", "v1.10"]),
+        (("-rc",), ["v1.0-rc1", "v1.0-rc2", "v1.0", "v1.0.1"]),
+        (("-rc", "-beta"), ["v2.0-rc1", "v2.0-beta", "v2.0", "v2.0.0"]),
+        (("-rc", "0"), ["release-1.0", "release-1.0-rc"]),
+        (("-pre", "", "-post"), ["v1-pre", "v1", "v1-post"]),
+        (("-rc", "-rc1"), ["v1.0-rc2", "v1.0-rc1", "v1.0"]),
     ],
 )
-def test_each_quote_style(style, expected):
-    text = {
-        QuoteStyle.SHELL: "it's!!",
-        QuoteStyle.PERL: "it's!\\",
-        QuoteStyle.PYTHON: "it's!\\\n",
-        QuoteStyle.TCL: "it's!\\\n$",
-    }[style]
+def test_versioncmp_places_configured_suffixes(suffixes, names):
+    for a, b in zip(names, names[1:]):
+        assert ref_format.versioncmp(a, b, suffixes) < 0
+        assert ref_format.versioncmp(b, a, suffixes) > 0
+
+
+@pytest.mark.parametrize(
+    "style,text,expected",
+    [
+        (QuoteStyle.SHELL, "it's!!", "'it'\\''s'\\!''\\!''"),
+        (QuoteStyle.PERL, "it's!\\", "'it\\'s!\\\\'"),
+        (QuoteStyle.PYTHON, "it's!\\\n\t", "'it\\'s!\\\\\\n\t'"),
+        (
+            QuoteStyle.TCL,
+            '[a]{b}$"\\\n\t\x01',
+            '"\\[a\\]\\{b\\}\\$\\"\\\\\\n\\t\x01"',
+        ),
+    ],
+)
+def test_each_quote_style(style, text, expected):
     assert ref_format.quote_text(text, style) == expected
-
-
-def test_keys_sort_with_names_breaking_ties_unreversed():
-    out, _ = _run("%(refname)", ("-committerdate",))
-    assert out == ("refs/heads/a\nrefs/tags/c\nrefs/heads/b\nrefs/tags/blob\n")
-
-
-def test_a_numeric_key_and_count_and_omit_empty():
-    out, _ = _run(
-        "%(if)%(subject)%(then)%(subject)%(end)",
-        ("objectsize",),
-        count=3,
-        omit_empty=True,
-    )
-    # The count takes the empty blob row too, as git's does.
-    assert out == "one\ntie\n"
 
 
 def test_blocks_nest_and_quote_as_a_whole():
     fmt = ref_format.parse_format(
-        "%(if:equals=blob)%(objecttype)%(then)[%(align:6,right)"
-        "%(refname:lstrip=2)%(end)]%(else)%(subject)%(end)",
+        "%(if:equals=blob)%(objecttype)%(then)[%(align:6,right)%(refname:lstrip=2)%(end)]%(else)%(subject)%(end)",
         QuoteStyle.SHELL,
     )
     rows, _ = ref_format.format_refs(fmt, ITEMS[1:3], CTX, None)
     assert rows == "'one'\n'[  blob]'\n"
+
+
+def test_a_plain_if_is_false_on_white_space_alone():
+    assert _run("%(if) %(then)y%(else)n%(end)", items=ITEMS[:1]) == (
+        "n\n",
+        None,
+    )
+
+
+def test_align_pads_by_display_width():
+    fmt = ref_format.parse_format(
+        "%(align:6)Ærø%(end)|%(align:6,middle)日本%(end)|%(align:7,middle)ab%(end)|"
+    )
+    assert (
+        ref_format.render_row(fmt, ITEMS[0], ref_format.ValueTable((), CTX))
+        == "Ærø   | 日本 |  ab   |"
+    )
 
 
 @pytest.mark.parametrize(
@@ -230,13 +247,65 @@ def test_blocks_nest_and_quote_as_a_whole():
             "format: %(else) atom used more than once",
         ),
         (
-            "%(if)x%(then)y%(else)z%(then)",
-            "format: %(then) atom used more than once",
+            "%(if)a%(align:3)%(then)b%(end)%(end)",
+            "format: %(then) atom used without a %(if) atom",
+        ),
+        (
+            "%(align:3)%(if)a%(end)%(then)b%(end)",
+            "format: %(if) atom used without a %(then) atom",
         ),
     ],
 )
-def test_blocks_that_do_not_nest_are_refused(template, message):
+def test_blocks_that_do_not_nest_are_refused_where_a_row_renders(
+    template, message
+):
     assert _run(template) == ("", message)
+    assert _run(template, items=[]) == ("", None)
+
+
+def test_keys_sort_with_names_breaking_ties_unreversed():
+    out, _ = _run("%(refname)", ("-committerdate",))
+    assert out == "refs/heads/a\nrefs/tags/c\nrefs/heads/b\nrefs/tags/blob\n"
+
+
+def test_a_styled_date_key_compares_instants_only_in_the_first_comparison():
+    assert (
+        _run("%(refname:lstrip=2)", ("authordate:short",), items=DATED)[0]
+        == "a10\nv2.0\na9\n"
+    )
+    assert (
+        _run("%(refname:lstrip=2)", ("-authordate:short",), items=DATED)[0]
+        == "a10\na9\nv2.0\n"
+    )
+    assert (
+        _run("%(refname:lstrip=2)", ("authordate",), items=DATED)[0]
+        == "v2.0\na10\na9\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "keys,expected",
+    [
+        (("authordate:short", "authordate:short"), "a10\nv2.0\na9\n"),
+        (("authordate:short", "committerdate:short"), "a10\nv2.0\na9\n"),
+        (("committerdate:short", "v:authordate:short"), "a10\na9\nv2.0\n"),
+    ],
+)
+def test_the_first_comparison_is_the_sorts_whatever_key_makes_it(
+    keys, expected
+):
+    assert _run("%(refname:lstrip=2)", keys, items=DATED)[0] == expected
+
+
+def test_a_numeric_key_and_count_and_omit_empty():
+    out, _ = _run(
+        "%(if)%(subject)%(then)%(subject)%(end)",
+        ("objectsize",),
+        count=3,
+        omit_empty=True,
+    )
+    # The count takes the empty blob row too, as git's does.
+    assert out == "one\ntie\n"
 
 
 def test_a_streamed_listing_stops_where_a_field_fails():
@@ -244,15 +313,58 @@ def test_a_streamed_listing_stops_where_a_field_fails():
         "%(refname) %(authordate:bogus)", items=[ITEMS[2], ITEMS[0]]
     )
     assert (out, stopped) == ("refs/tags/blob \n", "unknown date format bogus")
+    assert _run(
+        "%(refname) %(authordate:bogus)", count=1, items=[ITEMS[2], ITEMS[0]]
+    ) == ("refs/tags/blob \n", None)
 
 
-def test_a_sorted_listing_fails_before_it_prints():
-    out, stopped = _run(
-        "%(refname) %(authordate:bogus)",
-        ("-refname",),
-        items=[ITEMS[2], ITEMS[0]],
+def test_a_ref_refuses_a_field_no_comparison_reads():
+    refused = ("", "unknown date format bogus")
+    assert (
+        _run("%(refname)", ("authordate:bogus",), items=ITEMS[:1]) == refused
     )
-    assert (out, stopped) == ("", "unknown date format bogus")
+    assert (
+        _run("%(refname)", ("authordate:bogus", "refname"), items=ITEMS[:2])
+        == refused
+    )
+    # A blob has no author date to refuse.
+    assert _run("%(refname)", ("authordate:bogus",), items=ITEMS[2:3]) == (
+        "refs/tags/blob\n",
+        None,
+    )
+
+
+def test_ignore_case_sorts_even_the_default_order():
+    items = [
+        RefItem(
+            name=f"refs/heads/{name}",
+            oid="1" * 40,
+            kind=RefKind.BRANCH,
+            obj=_commit(1, "x"),
+        )
+        for name in ("B", "a")
+    ]
+    assert _run("%(refname)", count=1, items=items) == ("refs/heads/B\n", None)
+    assert _run("%(refname)", count=1, icase=True, items=items) == (
+        "refs/heads/a\n",
+        None,
+    )
+    # --no-sort keeps the order the refs came in.
+    assert _run("%(refname)", None, icase=True, items=items) == (
+        "refs/heads/B\nrefs/heads/a\n",
+        None,
+    )
+
+
+def test_a_sorted_listing_renders_every_row_before_it_prints():
+    for count in (0, 1):
+        out, stopped = _run(
+            "%(refname) %(authordate:bogus)",
+            ("-refname",),
+            count=count,
+            items=[ITEMS[0], ITEMS[2]],
+        )
+        assert (out, stopped) == ("", "unknown date format bogus")
 
 
 def test_a_detached_head_leads_when_asked():
@@ -260,7 +372,7 @@ def test_a_detached_head_leads_when_asked():
         name="HEAD", oid="1" * 40, kind=RefKind.DETACHED, obj=_commit(1, "x")
     )
     out, _ = _run(
-        "%(refname)",
+        "%(refname:short)",
         ("-refname",),
         items=[*ITEMS[:2], head],
         detached_first=True,

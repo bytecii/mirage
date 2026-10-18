@@ -21,7 +21,7 @@ from dataclasses import replace
 from os.path import commonprefix
 
 from dulwich.config import ConfigFile
-from dulwich.objects import ObjectID, ShaFile, Tag
+from dulwich.objects import ObjectID, Tag
 from dulwich.refs import Ref
 from dulwich.repo import BaseRepo
 from dulwich.walk import Walker
@@ -33,6 +33,7 @@ from mirage.commands.cli.builtin.git.mailmap import load_mailmap
 from mirage.commands.cli.builtin.git.objects import FANOUT_LEN, abbrev_for
 from mirage.commands.cli.builtin.git.ref_fields import (
     abbreviation_requests,
+    mailmapped,
     needs_object,
 )
 from mirage.commands.cli.builtin.git.ref_filter import RefFilter, kept_refs
@@ -247,28 +248,46 @@ def match_short(
     )
 
 
+OBJECT_TYPES = {1: "commit", 2: "tree", 3: "blob", 4: "tag"}
+OBJECT_HEADER = b"object "
+
+
 def _object(repo: BaseRepo, oid: str) -> RefObject:
-    obj: ShaFile = repo.object_store[ObjectID(oid.encode())]
-    return RefObject(
-        oid=oid, type=obj.type_name.decode(), raw=obj.as_raw_string()
-    )
+    """An object's type and bytes, read without parsing it, so an
+    object git lists despite a malformed header lists here too.
+
+    Args:
+        repo (BaseRepo): the opened repository.
+        oid (str): the hex object id.
+    """
+    kind, raw = repo.object_store.get_raw(ObjectID(oid.encode()))
+    return RefObject(oid=oid, type=OBJECT_TYPES.get(kind, ""), raw=raw)
 
 
-def _peeled(repo: BaseRepo, obj: RefObject) -> RefObject:
-    """What a tag object peels to, through any tags it names in turn.
+def _peeled(repo: BaseRepo, obj: RefObject) -> RefObject | None:
+    """What a tag object peels to, through however many tags it names in
+    turn; None when one names an object the repository lacks.
 
     Args:
         repo (BaseRepo): the opened repository.
         obj (RefObject): the tag.
     """
-    shown: ShaFile = repo.object_store[ObjectID(obj.oid.encode())]
-    while isinstance(shown, Tag):
-        shown = repo.object_store[shown.object[1]]
-    return RefObject(
-        oid=shown.id.decode(),
-        type=shown.type_name.decode(),
-        raw=shown.as_raw_string(),
-    )
+    shown = obj
+    seen = {obj.oid}
+    while shown.type == "tag":
+        head = shown.raw.split(b"\n", 1)[0]
+        if not head.startswith(OBJECT_HEADER):
+            return None
+        target = head[len(OBJECT_HEADER) :].decode("ascii", "replace").strip()
+        # Only a store that does not hash what it holds can loop.
+        if (
+            target in seen
+            or ObjectID(target.encode()) not in repo.object_store
+        ):
+            return None
+        seen.add(target)
+        shown = _object(repo, target)
+    return shown
 
 
 def listed_refs(
@@ -582,13 +601,6 @@ def head_ref(table: Mapping[str, str]) -> str | None:
     return None
 
 
-def _mailmapped(fields: Sequence[RefField]) -> bool:
-    return any(
-        field.option == "mailmap" or "mailmap" in field.words
-        for field in fields
-    )
-
-
 def unique_width(oid: str, width: int, ids: Sequence[str]) -> int:
     """The shortest prefix of ``oid`` no other id shares, no shorter than
     ``width``, the length git abbreviates it to.
@@ -690,15 +702,15 @@ async def ref_listing(
         pairs = [(item.name, item.oid.encode()) for item in items]
         kept = await asyncio.to_thread(kept_refs, repo, filt, pairs)
         items = [item for item in items if item.name in kept]
-    upstreams = [field for field in fields if field.field == "upstream"]
+    upstreams = [field for field in fields if field.name == "upstream"]
     if upstreams:
         counted = any(
-            field.option in ("track", "trackshort") for field in upstreams
+            field.variant in ("track", "trackshort") for field in upstreams
         )
         items = await asyncio.to_thread(
             with_upstreams, repo, cfg, items, table, known, counted
         )
-    if any(field.field == "worktreepath" for field in fields):
+    if any(field.name == "worktreepath" for field in fields):
         heads = await worktree_heads(repo)
         items = [
             replace(item, worktree=heads.get(item.name, "")) for item in items
@@ -715,8 +727,8 @@ async def ref_listing(
         ),
         head=head_ref(table),
         abbrev=abbrev_for(repo),
-        mailmap=await load_mailmap(repo.dispatch, repo.location)
-        if _mailmapped(fields)
+        mailmap=await load_mailmap(repo.dispatch, repo.location, exact=True)
+        if mailmapped(fields)
         else (),
         date=date,
         suffixes=tuple(value.decode("utf-8", "replace") for value in suffixes),
@@ -747,14 +759,41 @@ def sort_keys(
         defaults (Sequence[str]): the keys a line starts with.
     """
     spellings = list(defaults)
+    cleared = False
     for name, value in fl.occurrences("sort", "no_sort"):
         if name == "no_sort":
             spellings = []
+            cleared = True
         elif isinstance(value, list):
             spellings.extend(v for v in value if isinstance(v, str))
         elif isinstance(value, str):
             spellings.append(value)
-    return parse_sort_keys(spellings) if spellings else None
+    if not spellings:
+        return None
+    keys = parse_sort_keys(spellings)
+    # After --no-sort, one key that sorts upward by the ref's own name in
+    # any spelling leaves the refs in the order they are listed in, as git
+    # 2.50.1 does; 2.47.3 sorts them.
+    only = keys[0]
+    if (
+        cleared
+        and len(keys) == 1
+        and only.field.name == "refname"
+        and not (only.reverse or only.version)
+    ):
+        return None
+    return keys
+
+
+def sorts_named(fl: FlagView) -> bool:
+    """Whether the line names its order with ``--sort`` or ``--no-sort``:
+    a listing in the order it gets without either may write each row as
+    it renders.
+
+    Args:
+        fl (FlagView): spec-bound options.
+    """
+    return bool(fl.occurrences("sort", "no_sort"))
 
 
 def configured_sort(cfg: ConfigFile, verb: bytes) -> tuple[str, ...]:

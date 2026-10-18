@@ -15,8 +15,8 @@
 import {
   LOCAL_ZONE,
   UTC_ZONE,
+  posixTransitions,
   resolveTz,
-  utcFromWall,
   type WallParts,
   type Zone,
 } from './timezone.ts'
@@ -75,9 +75,9 @@ function daysInMonth(year: number, month: number): number {
 }
 
 /**
- * The instant `zone` shows `p` at, or null when it shows none: glibc's
- * mktime finds no instant for the hour skipped when DST starts, and GNU
- * date answers `-d` for one with `invalid date`. The host's zone is not
+ * The instant `zone` shows `p` at, or null when it shows none: no instant
+ * reads the hour skipped when DST starts, and GNU date answers a clock
+ * setting for one with `invalid date`. The host's zone is not
  * checked, since the Python twin reads a host-local moment naively and
  * cannot refuse there.
  */
@@ -110,991 +110,1083 @@ export function inMtimeWindow(
   return true
 }
 
-// The UTC seconds Python's datetime holds: 0001-01-01 to 9999-12-31.
+// The moments mirage holds, as Python's datetime does: 0001-01-01 00:00:00 to
+// 9999-12-31 23:59:59 UTC.
 const FIRST_SECOND = -62135596800
 const LAST_SECOND = 253402300799
-const EPOCH_RE = /^@\s*[+-]?\d+(?:\.\d+)?$/
-const SPACES = ' \t\n\v\f\r'
-const DIGITS = '0123456789'
-const HOUR = 3600
-const BILLION = 1_000_000_000
-const MER24 = 0
-const AM = 1
-const PM = 2
-// Each unit token's field of a relative item.
-const UNITS: ReadonlyMap<string, keyof Rel> = new Map([
-  ['YEAR_UNIT', 'year'],
-  ['MONTH_UNIT', 'month'],
-  ['DAY_UNIT', 'day'],
-  ['HOUR_UNIT', 'hour'],
-  ['MINUTE_UNIT', 'minutes'],
-  ['SEC_UNIT', 'seconds'],
-])
+const DAY = 86400
+const NANOS = 1_000_000_000
+// date reads each number, and keeps each relative count, in a signed 64-bit
+// integer, refusing one that overflows it.
+const INT64 = 1n << 63n
+// The largest relative total a double holds exactly.
+const EXACT = BigInt(Number.MAX_SAFE_INTEGER)
 
-// gnulib parse-datetime's word tables (coreutils 9.7), in the order lookup_word
-// tries them.
-const MERIDIANS: Readonly<Record<string, number>> = { AM, 'A.M.': AM, PM, 'P.M.': PM }
-const MONTHS_AND_DAYS: readonly (readonly [string, string, number])[] = [
-  ['JANUARY', 'MONTH', 1],
-  ['FEBRUARY', 'MONTH', 2],
-  ['MARCH', 'MONTH', 3],
-  ['APRIL', 'MONTH', 4],
-  ['MAY', 'MONTH', 5],
-  ['JUNE', 'MONTH', 6],
-  ['JULY', 'MONTH', 7],
-  ['AUGUST', 'MONTH', 8],
-  ['SEPTEMBER', 'MONTH', 9],
-  ['SEPT', 'MONTH', 9],
-  ['OCTOBER', 'MONTH', 10],
-  ['NOVEMBER', 'MONTH', 11],
-  ['DECEMBER', 'MONTH', 12],
-  ['SUNDAY', 'DAY', 0],
-  ['MONDAY', 'DAY', 1],
-  ['TUESDAY', 'DAY', 2],
-  ['TUES', 'DAY', 2],
-  ['WEDNESDAY', 'DAY', 3],
-  ['WEDNES', 'DAY', 3],
-  ['THURSDAY', 'DAY', 4],
-  ['THUR', 'DAY', 4],
-  ['THURS', 'DAY', 4],
-  ['FRIDAY', 'DAY', 5],
-  ['SATURDAY', 'DAY', 6],
+const BLANKS = ' \t\n\v\f\r'
+const DIGITS = '0123456789'
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+const SIGNS = '+-'
+
+const MONTHS = [
+  'JANUARY',
+  'FEBRUARY',
+  'MARCH',
+  'APRIL',
+  'MAY',
+  'JUNE',
+  'JULY',
+  'AUGUST',
+  'SEPTEMBER',
+  'OCTOBER',
+  'NOVEMBER',
+  'DECEMBER',
 ]
-const TIME_UNITS: Readonly<Record<string, readonly [string, number]>> = {
-  YEAR: ['YEAR_UNIT', 1],
-  MONTH: ['MONTH_UNIT', 1],
-  FORTNIGHT: ['DAY_UNIT', 14],
-  WEEK: ['DAY_UNIT', 7],
-  DAY: ['DAY_UNIT', 1],
-  HOUR: ['HOUR_UNIT', 1],
-  MINUTE: ['MINUTE_UNIT', 1],
-  MIN: ['MINUTE_UNIT', 1],
-  SECOND: ['SEC_UNIT', 1],
-  SEC: ['SEC_UNIT', 1],
+const WEEKDAYS = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY']
+
+type Meaning = readonly [string, number]
+
+// Longer abbreviations date reads beside the three-letter ones.
+const NAMED_DAYS: Record<string, Meaning> = {
+  SEPT: ['month', 9],
+  TUES: ['weekday', 2],
+  WEDNES: ['weekday', 3],
+  THUR: ['weekday', 4],
+  THURS: ['weekday', 4],
 }
-const RELATIVE_WORDS: Readonly<Record<string, readonly [string, number]>> = {
-  TOMORROW: ['DAY_SHIFT', 1],
-  YESTERDAY: ['DAY_SHIFT', -1],
-  TODAY: ['DAY_SHIFT', 0],
-  NOW: ['DAY_SHIFT', 0],
-  LAST: ['ORDINAL', -1],
-  THIS: ['ORDINAL', 0],
-  NEXT: ['ORDINAL', 1],
-  FIRST: ['ORDINAL', 1],
-  THIRD: ['ORDINAL', 3],
-  FOURTH: ['ORDINAL', 4],
-  FIFTH: ['ORDINAL', 5],
-  SIXTH: ['ORDINAL', 6],
-  SEVENTH: ['ORDINAL', 7],
-  EIGHTH: ['ORDINAL', 8],
-  NINTH: ['ORDINAL', 9],
-  TENTH: ['ORDINAL', 10],
-  ELEVENTH: ['ORDINAL', 11],
-  TWELFTH: ['ORDINAL', 12],
-  AGO: ['AGO', -1],
-  HENCE: ['AGO', 1],
+// [kind, amount]: a unit counts months, days or seconds.
+const UNITS: Record<string, Meaning> = {
+  YEAR: ['months', 12],
+  MONTH: ['months', 1],
+  FORTNIGHT: ['days', 14],
+  WEEK: ['days', 7],
+  DAY: ['days', 1],
+  HOUR: ['seconds', 3600],
+  MINUTE: ['seconds', 60],
+  MIN: ['seconds', 60],
+  SECOND: ['seconds', 1],
+  SEC: ['seconds', 1],
 }
-const UNIVERSAL_ZONES: Readonly<Record<string, number>> = { GMT: 0, UT: 0, UTC: 0 }
-// Seconds east of UTC; a DAYZONE is an hour more.
-const ZONES: Readonly<Record<string, readonly [string, number]>> = {
-  WET: ['ZONE', 0],
-  WEST: ['DAYZONE', 0],
-  BST: ['DAYZONE', 0],
-  ART: ['ZONE', -3 * HOUR],
-  BRT: ['ZONE', -3 * HOUR],
-  BRST: ['DAYZONE', -3 * HOUR],
-  NST: ['ZONE', -(3 * HOUR + 1800)],
-  NDT: ['DAYZONE', -(3 * HOUR + 1800)],
-  AST: ['ZONE', -4 * HOUR],
-  ADT: ['DAYZONE', -4 * HOUR],
-  CLT: ['ZONE', -4 * HOUR],
-  CLST: ['DAYZONE', -4 * HOUR],
-  EST: ['ZONE', -5 * HOUR],
-  EDT: ['DAYZONE', -5 * HOUR],
-  CST: ['ZONE', -6 * HOUR],
-  CDT: ['DAYZONE', -6 * HOUR],
-  MST: ['ZONE', -7 * HOUR],
-  MDT: ['DAYZONE', -7 * HOUR],
-  PST: ['ZONE', -8 * HOUR],
-  PDT: ['DAYZONE', -8 * HOUR],
-  AKST: ['ZONE', -9 * HOUR],
-  AKDT: ['DAYZONE', -9 * HOUR],
-  HST: ['ZONE', -10 * HOUR],
-  HAST: ['ZONE', -10 * HOUR],
-  HADT: ['DAYZONE', -10 * HOUR],
-  SST: ['ZONE', -12 * HOUR],
-  WAT: ['ZONE', HOUR],
-  CET: ['ZONE', HOUR],
-  CEST: ['DAYZONE', HOUR],
-  MET: ['ZONE', HOUR],
-  MEZ: ['ZONE', HOUR],
-  MEST: ['DAYZONE', HOUR],
-  MESZ: ['DAYZONE', HOUR],
-  EET: ['ZONE', 2 * HOUR],
-  EEST: ['DAYZONE', 2 * HOUR],
-  CAT: ['ZONE', 2 * HOUR],
-  SAST: ['ZONE', 2 * HOUR],
-  EAT: ['ZONE', 3 * HOUR],
-  MSK: ['ZONE', 3 * HOUR],
-  MSD: ['DAYZONE', 3 * HOUR],
-  IST: ['ZONE', 5 * HOUR + 1800],
-  SGT: ['ZONE', 8 * HOUR],
-  KST: ['ZONE', 9 * HOUR],
-  JST: ['ZONE', 9 * HOUR],
-  GST: ['ZONE', 10 * HOUR],
-  NZST: ['ZONE', 12 * HOUR],
-  NZDT: ['DAYZONE', 12 * HOUR],
+const DAY_WORDS: Record<string, number> = { TOMORROW: 1, YESTERDAY: -1, TODAY: 0, NOW: 0 }
+// "SECOND" is the unit, so the second ordinal has no word.
+const ORDINALS: Record<string, number> = {
+  LAST: -1,
+  THIS: 0,
+  NEXT: 1,
+  FIRST: 1,
+  THIRD: 3,
+  FOURTH: 4,
+  FIFTH: 5,
+  SIXTH: 6,
+  SEVENTH: 7,
+  EIGHTH: 8,
+  NINTH: 9,
+  TENTH: 10,
+  ELEVENTH: 11,
+  TWELFTH: 12,
 }
-// The military letters, RFC 5322's way round; T is the ISO 8601 separator
-// and J the local zone.
-const MILITARY: Readonly<Record<string, number>> = {
-  ...Object.fromEntries(Array.from('ABCDEFGHI', (letter, i) => [letter, (i + 1) * HOUR])),
-  ...Object.fromEntries(Array.from('KLM', (letter, i) => [letter, (i + 10) * HOUR])),
-  ...Object.fromEntries(Array.from('NOPQRS', (letter, i) => [letter, -(i + 1) * HOUR])),
-  ...Object.fromEntries(Array.from('UVWXY', (letter, i) => [letter, -(i + 8) * HOUR])),
-  Z: 0,
+const SUFFIXES: Record<string, number> = { AGO: -1, HENCE: 1 }
+const MERIDIANS: Record<string, number> = { AM: 0, 'A.M.': 0, PM: 12, 'P.M.': 12 }
+// The zone names date accepts, measured on coreutils 9.7, each at its UTC
+// offset in minutes as tzdata and RFC 5322 give it (SST is read at -12:00).
+// The second set names daylight time, which takes no "DST" and no offset
+// after it. Mirrors the Python tables.
+const STANDARD_ZONES: Record<string, number> = {
+  UT: 0,
+  UTC: 0,
+  GMT: 0,
+  WET: 0,
+  WAT: 60,
+  CET: 60,
+  MET: 60,
+  MEZ: 60,
+  EET: 120,
+  CAT: 120,
+  SAST: 120,
+  EAT: 180,
+  MSK: 180,
+  IST: 330,
+  SGT: 480,
+  KST: 540,
+  JST: 540,
+  GST: 600,
+  NZST: 720,
+  ART: -180,
+  BRT: -180,
+  NST: -210,
+  AST: -240,
+  CLT: -240,
+  EST: -300,
+  CST: -360,
+  MST: -420,
+  PST: -480,
+  AKST: -540,
+  HST: -600,
+  HAST: -600,
+  SST: -720,
 }
+const DAYLIGHT_ZONES: Record<string, number> = {
+  WEST: 60,
+  BST: 60,
+  CEST: 120,
+  MEST: 120,
+  MESZ: 120,
+  EEST: 180,
+  MSD: 240,
+  NZDT: 780,
+  BRST: -120,
+  NDT: -150,
+  ADT: -180,
+  CLST: -180,
+  EDT: -240,
+  CDT: -300,
+  MDT: -360,
+  PDT: -420,
+  AKDT: -480,
+  HADT: -540,
+}
+// A zone correction reaches a whole day either way.
+const ZONE_LIMIT = 24 * 60
+const UNIT_KINDS = ['months', 'days', 'seconds']
+// Names the zone's own abbreviations never stand in for.
+const FIXED_NAMES = ['GMT', 'UT', 'UTC']
+
+/** A date expression date would answer with `invalid date`. */
+class NotADate extends Error {}
 
 /**
- * One lexeme of a date expression, gnulib's yylex output: `kind` is UNUMBER,
- * SNUMBER, UDECIMAL, SDECIMAL, a word's table type or a lone character; `ns`
- * is a decimal's nanoseconds, always a positive offset; `negative` marks a
- * number written with a minus sign, zero too; `offset` is a local zone's
- * offset east of UTC, null when its abbreviation names both of the zone's
- * offsets.
+ * One lexeme of a date expression. A number keeps its digits as typed, the
+ * sign that led it ('' for none) and, after a `.` or `,`, its fraction in
+ * nanoseconds; a word is upper-cased, dots kept; anything else is a single
+ * character.
  */
 interface Token {
-  kind: string
+  kind: 'number' | 'word' | 'char'
+  text: string
+  sign: string
   value: number
-  digits: number
-  ns: number
-  negative: boolean
-  offset: number | null
+  nanos: number | null
 }
 
-interface Rel {
-  year: number
-  month: number
-  day: number
-  hour: number
-  minutes: number
-  seconds: number
-  ns: number
-}
-
-// What the items of an expression set, gnulib's parser_control. The calendar
-// fields start as the current moment's, so an item that leaves one alone
-// keeps it; the counters are how many items of each kind were seen.
-interface Parsed {
-  year: number
-  yearDigits: number
-  month: number
-  day: number
-  hour: number
-  minutes: number
-  seconds: number
-  ns: number
-  meridian: number
-  rel: Rel
-  relsSeen: boolean
-  dayOrdinal: number
-  dayNumber: number
-  timeZone: number
-  localOffset: number | null
-  datesSeen: number
-  daysSeen: number
-  timesSeen: number
-  zonesSeen: number
-  localZonesSeen: number
-  dstsSeen: number
-  jZonesSeen: number
-}
-
-function token(kind: string, value = 0, extra: Partial<Token> = {}): Token {
-  return { kind, value, digits: 0, ns: 0, negative: false, offset: null, ...extra }
-}
-
-function noRel(): Rel {
-  return { year: 0, month: 0, day: 0, hour: 0, minutes: 0, seconds: 0, ns: 0 }
+// Minutes east of UTC for a military zone letter, J excluded.
+function military(letter: string): number {
+  if (letter === 'Z') return 0
+  const at = letter.charCodeAt(0) - 65
+  if (letter < 'J') return (at + 1) * 60
+  if (letter < 'N') return at * 60
+  return -(at - 12) * 60
 }
 
 /**
- * The zone abbreviations the reading zone itself uses, gnulib's
- * local_time_zone_table: the current one, and the first different offset's in
- * the next three quarters, each with the offset it names. An abbreviation
- * naming both offsets names neither.
+ * What an upper-cased word names, as [kind, value]: `meridian` (hours to
+ * add), `month` (1-12), `weekday` (0 is Sunday), `dst`, a unit
+ * (`months`/`days`/`seconds` with its size), `today` (and its neighbours, in
+ * days), `ordinal`, `suffix` (ago, hence), `zone` and `daylight` (minutes
+ * east) and `local` (J, the zone the expression is read in). Words are
+ * upper-cased, so no lookup reaches a name Object.prototype holds.
  */
-function localZones(zone: Zone, now: Date): Map<string, number | null> {
-  const table = new Map<string, number | null>()
-  if (zone === LOCAL_ZONE) return table
-  const first = zone.parts(now)
-  table.set(first.abbrev, first.offsetSec)
-  for (const quarter of [1, 2, 3]) {
-    const probe = zone.parts(new Date(now.getTime() + quarter * 90 * 86_400_000))
-    if (probe.offsetSec === first.offsetSec) continue
-    if (probe.abbrev === first.abbrev) table.set(first.abbrev, null)
-    else table.set(probe.abbrev, probe.offsetSec)
-    break
-  }
-  return table
-}
-
-function zoneToken(word: string, local: Map<string, number | null>): Token | null {
-  const universal = UNIVERSAL_ZONES[word]
-  if (universal !== undefined) return token('ZONE', universal)
-  if (local.has(word)) return token('LOCAL_ZONE', 0, { offset: local.get(word) ?? null })
-  const zone = ZONES[word]
-  return zone === undefined ? null : token(zone[0], zone[1])
-}
-
-/** A word as gnulib's lookup_word classifies it, null for one it does not know. */
-function wordToken(text: string, local: Map<string, number | null>): Token | null {
-  const word = text.toUpperCase()
+function meaning(word: string): Meaning | null {
   const meridian = MERIDIANS[word]
-  if (meridian !== undefined) return token('MERIDIAN', meridian)
-  const abbrev = word.length === 3 || (word.length === 4 && word[3] === '.')
-  for (const [name, kind, value] of MONTHS_AND_DAYS) {
-    if (abbrev ? name.slice(0, 3) === word.slice(0, 3) : name === word) return token(kind, value)
+  if (meridian !== undefined) return ['meridian', meridian]
+  if (MONTHS.includes(word)) return ['month', MONTHS.indexOf(word) + 1]
+  if (WEEKDAYS.includes(word)) return ['weekday', WEEKDAYS.indexOf(word)]
+  const named = NAMED_DAYS[word]
+  if (named !== undefined) return named
+  const short = word.length === 3 || (word.length === 4 && word[3] === '.') ? word.slice(0, 3) : ''
+  if (/^[A-Z]{3}$/.test(short)) {
+    const month = MONTHS.findIndex((name) => name.startsWith(short))
+    if (month >= 0) return ['month', month + 1]
+    const weekday = WEEKDAYS.findIndex((name) => name.startsWith(short))
+    if (weekday >= 0) return ['weekday', weekday]
   }
-  const zone = zoneToken(word, local)
-  if (zone !== null) return zone
-  if (word === 'DST') return token('DST')
-  for (const unit of [word, word.endsWith('S') ? word.slice(0, -1) : null]) {
-    const found = unit === null ? undefined : TIME_UNITS[unit]
-    if (found !== undefined) return token(found[0], found[1])
+  if (word === 'DST') return ['dst', 0]
+  for (const unit of [word, word.endsWith('S') ? word.slice(0, -1) : '']) {
+    const found = UNITS[unit]
+    if (found !== undefined) return found
   }
-  const relative = RELATIVE_WORDS[word]
-  if (relative !== undefined) return token(relative[0], relative[1])
-  if (word.length === 1) {
-    if (word === 'J' || word === 'T') return token(word)
-    const military = MILITARY[word]
-    if (military !== undefined) return token('ZONE', military)
-  }
-  if (word.includes('.')) return zoneToken(word.replaceAll('.', ''), local)
+  const today = DAY_WORDS[word]
+  if (today !== undefined) return ['today', today]
+  const ordinal = ORDINALS[word]
+  if (ordinal !== undefined) return ['ordinal', ordinal]
+  const suffix = SUFFIXES[word]
+  if (suffix !== undefined) return ['suffix', suffix]
+  const bare = word.replaceAll('.', '')
+  const standard = STANDARD_ZONES[bare]
+  if (standard !== undefined && bare.length > 1) return ['zone', standard]
+  const daylight = DAYLIGHT_ZONES[bare]
+  if (daylight !== undefined) return ['daylight', daylight]
+  if (word.length === 1) return word === 'J' ? ['local', 0] : ['zone', military(word)]
   return null
 }
 
-function isLetter(char: string | undefined): boolean {
-  return char !== undefined && /^[A-Za-z]$/.test(char)
+function bareToken(kind: Token['kind'], text: string): Token {
+  return { kind, text, sign: '', value: 0, nanos: null }
 }
 
-function isDigit(char: string | undefined): boolean {
-  return char !== undefined && char !== '' && DIGITS.includes(char)
+// The kind and size of a unit word the parser looked at.
+function unit(token: Token): Meaning {
+  const found = meaning(token.text)
+  if (found === null) throw new NotADate()
+  return found
+}
+
+// The number whose digits start at `at`, and where it ends.
+function lexNumber(text: string, at: number, sign: string): [Token, number] {
+  let stop = at
+  while (stop < text.length && DIGITS.includes(text.charAt(stop))) stop++
+  const digits = text.slice(at, stop)
+  let nanos: number | null = null
+  if (
+    stop + 1 < text.length &&
+    '.,'.includes(text.charAt(stop)) &&
+    DIGITS.includes(text.charAt(stop + 1))
+  ) {
+    let end = stop + 1
+    while (end < text.length && DIGITS.includes(text.charAt(end))) end++
+    const fraction = text.slice(stop + 1, end)
+    // Nanoseconds are all date keeps; further digits are dropped, though a
+    // negative number's nonzero ones still take it one nanosecond further
+    // down.
+    nanos = Number(fraction.slice(0, 9).padEnd(9, '0'))
+    if (sign === '-' && /[1-9]/.test(fraction.slice(9))) nanos++
+    stop = end
+  }
+  const size = Number(digits)
+  if (BigInt(digits) >= INT64) throw new NotADate()
+  return [{ kind: 'number', text: digits, sign, value: sign === '-' ? -size : size, nanos }, stop]
 }
 
 /**
- * gnulib's yylex over the whole expression, null at a word it does not know or
- * a number past 64 bits. A sign binds to the number after it, `.` or `,` makes
- * a decimal of up to nine fraction digits, and a parenthesized comment is
- * skipped.
+ * Split a date expression into tokens. White space and parenthesized
+ * comments (which nest, and run to the end when unclosed) separate tokens. A
+ * run of signs and blanks before digits signs the number with its last sign;
+ * one before anything else is dropped.
  */
-function lex(text: string, local: Map<string, number | null>): Token[] | null {
+function lex(text: string): Token[] {
   const tokens: Token[] = []
   let at = 0
-  const end = text.length
-  for (;;) {
-    while (at < end && SPACES.includes(text[at] ?? '')) at += 1
-    if (at >= end) return tokens
-    const char = text[at] ?? ''
-    if (isDigit(char) || char === '+' || char === '-') {
-      let sign = 0
-      let p = at
-      if (char === '+' || char === '-') {
-        sign = char === '-' ? -1 : 1
-        p += 1
-        while (p < end && SPACES.includes(text[p] ?? '')) p += 1
-        if (!isDigit(text[p])) {
-          at = p
-          continue
-        }
-      }
-      const first = p
-      while (isDigit(text[p])) p += 1
-      const value = Number(text.slice(first, p))
-      if (value > Number.MAX_SAFE_INTEGER) return null
-      if ((text[p] === '.' || text[p] === ',') && isDigit(text[p + 1])) {
-        let q = p + 1
-        while (isDigit(text[q])) q += 1
-        const fraction = text.slice(p + 1, q)
-        let ns = Number(fraction.slice(0, 9).padEnd(9, '0'))
-        if (sign < 0 && /[1-9]/.test(fraction.slice(9))) ns += 1
-        let seconds = sign < 0 ? -value : value
-        if (sign < 0 && ns !== 0) {
-          seconds -= 1
-          ns = BILLION - ns
-        }
-        tokens.push(token(sign !== 0 ? 'SDECIMAL' : 'UDECIMAL', seconds, { ns }))
-        at = q
-        continue
-      }
-      tokens.push(
-        token(sign !== 0 ? 'SNUMBER' : 'UNUMBER', sign < 0 ? -value : value, {
-          digits: p - first,
-          negative: sign < 0,
-        }),
-      )
-      at = p
-      continue
-    }
-    if (isLetter(char)) {
-      let p = at
-      while (isLetter(text[p]) || text[p] === '.') p += 1
-      const word = wordToken(text.slice(at, p), local)
-      if (word === null) return null
-      tokens.push(word)
-      at = p
-      continue
-    }
-    if (char === '(') {
+  while (at < text.length) {
+    const c = text.charAt(at)
+    if (BLANKS.includes(c)) {
+      at++
+    } else if (c === '(') {
       let depth = 0
-      while (at < end) {
-        if (text[at] === '(') depth += 1
-        else if (text[at] === ')') depth -= 1
-        at += 1
+      while (at < text.length) {
+        const here = text.charAt(at)
+        depth += here === '(' ? 1 : here === ')' ? -1 : 0
+        at++
         if (depth === 0) break
       }
-      if (depth !== 0) return tokens
-      continue
-    }
-    tokens.push(token(char))
-    at += 1
-  }
-}
-
-function kindAt(tokens: readonly Token[], at: number): string {
-  return tokens[at]?.kind ?? ''
-}
-
-function at(tokens: readonly Token[], index: number): Token {
-  return tokens[index] ?? token('')
-}
-
-/** A relative unit times a count, gnulib's relunit. */
-function unitRel(unit: Token, count: number): Rel {
-  const rel = noRel()
-  rel[UNITS.get(unit.kind) ?? 'seconds'] = count * unit.value
-  return rel
-}
-
-/** Add a relative item into the running sum, gnulib's apply_relative_time. */
-function apply(parsed: Parsed, rel: Rel, factor: number): void {
-  const total = parsed.rel
-  total.year += factor * rel.year
-  total.month += factor * rel.month
-  total.day += factor * rel.day
-  total.hour += factor * rel.hour
-  total.minutes += factor * rel.minutes
-  total.seconds += factor * rel.seconds
-  total.ns += factor * rel.ns
-  parsed.relsSeen = true
-}
-
-/** A relative unit at `index` with its count, and where it ends. */
-function relunit(tokens: readonly Token[], index: number): [Rel, number] | null {
-  const head = at(tokens, index)
-  const after = kindAt(tokens, index + 1)
-  if (['ORDINAL', 'UNUMBER', 'SNUMBER'].includes(head.kind) && UNITS.has(after)) {
-    return [unitRel(at(tokens, index + 1), head.value), index + 2]
-  }
-  if ((head.kind === 'UDECIMAL' || head.kind === 'SDECIMAL') && after === 'SEC_UNIT') {
-    return [{ ...noRel(), seconds: head.value, ns: head.ns }, index + 2]
-  }
-  if (UNITS.has(head.kind)) return [unitRel(head, 1), index + 1]
-  return null
-}
-
-/** `relunit [ago|hence]`: add one relative item. */
-function relItem(parsed: Parsed, tokens: readonly Token[], index: number): number | null {
-  const found = relunit(tokens, index)
-  if (found === null) return null
-  const [rel, next] = found
-  let after = next
-  let factor = 1
-  if (kindAt(tokens, after) === 'AGO') {
-    factor = at(tokens, after).value
-    after += 1
-  }
-  apply(parsed, rel, factor)
-  return after
-}
-
-/**
- * The numeric zone a signed number at `index` starts, in seconds east, and
- * where it ends: gnulib's time_zone_hhmm, one or two digits of hours or more of
- * hours and minutes, a `:MM` adding minutes, at most 24 hours either way.
- */
-function zoneHhmm(tokens: readonly Token[], index: number): [number, number] | null {
-  const number = at(tokens, index)
-  let minutes = -1
-  let after = index + 1
-  if (kindAt(tokens, after) === ':') {
-    if (kindAt(tokens, after + 1) !== 'UNUMBER') return null
-    minutes = at(tokens, after + 1).value
-    after += 2
-  }
-  let value = number.value
-  if (number.digits <= 2 && minutes < 0) value *= 100
-  let total: number
-  if (minutes < 0) {
-    const size = Math.abs(value)
-    total = (Math.floor(size / 100) * 60 + (size % 100)) * (value < 0 ? -1 : 1)
-  } else {
-    total = value * 60 + (number.negative ? -minutes : minutes)
-  }
-  if (total < -24 * 60 || total > 24 * 60) return null
-  return [total * 60, after]
-}
-
-/** An optional numeric zone after a time of day. */
-function zoneOffset(parsed: Parsed, tokens: readonly Token[], index: number): number | null {
-  if (kindAt(tokens, index) !== 'SNUMBER') return index
-  const found = zoneHhmm(tokens, index)
-  if (found === null) return null
-  parsed.timeZone = found[0]
-  parsed.zonesSeen += 1
-  return found[1]
-}
-
-function setTime(
-  parsed: Parsed,
-  hour: number,
-  minutes: number,
-  seconds: number,
-  ns: number,
-  meridian: number,
-): void {
-  parsed.hour = hour
-  parsed.minutes = minutes
-  parsed.seconds = seconds
-  parsed.ns = ns
-  parsed.meridian = meridian
-  parsed.timesSeen += 1
-}
-
-/**
- * `H:MM[:SS[.frac]]` with a meridian, or an ISO time with an optional numeric
- * zone; after a date's `T` only the ISO form.
- */
-function clock(
-  parsed: Parsed,
-  tokens: readonly Token[],
-  index: number,
-  iso: boolean,
-): number | null {
-  if (kindAt(tokens, index + 2) !== 'UNUMBER') return null
-  const hour = at(tokens, index).value
-  const minutes = at(tokens, index + 2).value
-  let seconds = 0
-  let ns = 0
-  let after = index + 3
-  if (kindAt(tokens, after) === ':') {
-    const kind = kindAt(tokens, after + 1)
-    if (kind !== 'UNUMBER' && kind !== 'UDECIMAL') return null
-    seconds = at(tokens, after + 1).value
-    ns = at(tokens, after + 1).ns
-    after += 2
-  }
-  if (!iso && kindAt(tokens, after) === 'MERIDIAN') {
-    setTime(parsed, hour, minutes, seconds, ns, at(tokens, after).value)
-    return after + 1
-  }
-  setTime(parsed, hour, minutes, seconds, ns, MER24)
-  return zoneOffset(parsed, tokens, after)
-}
-
-/** The time after a date's `T`: an hour with a numeric zone, or a clock. */
-function isoTime(parsed: Parsed, tokens: readonly Token[], index: number): number | null {
-  if (kindAt(tokens, index) !== 'UNUMBER') return null
-  if (kindAt(tokens, index + 1) === ':') return clock(parsed, tokens, index, true)
-  if (kindAt(tokens, index + 1) !== 'SNUMBER') return null
-  setTime(parsed, at(tokens, index).value, 0, 0, 0, MER24)
-  return zoneOffset(parsed, tokens, index + 1)
-}
-
-/**
- * A bare number, gnulib's digits_to_date_time: the year of a date that has
- * none yet, a `YYYYMMDD` date past four digits, else `HH` or `HHMM`.
- */
-function digitsItem(parsed: Parsed, number: Token): void {
-  if (
-    parsed.datesSeen > 0 &&
-    parsed.yearDigits === 0 &&
-    !parsed.relsSeen &&
-    (parsed.timesSeen > 0 || number.digits > 2)
-  ) {
-    parsed.year = number.value
-    parsed.yearDigits = number.digits
-  } else if (number.digits > 4) {
-    parsed.datesSeen += 1
-    parsed.day = number.value % 100
-    parsed.month = Math.floor(number.value / 100) % 100
-    parsed.year = Math.floor(number.value / 10000)
-    parsed.yearDigits = number.digits - 4
-  } else if (number.digits <= 2) {
-    setTime(parsed, number.value, 0, 0, 0, MER24)
-  } else {
-    setTime(parsed, Math.floor(number.value / 100), number.value % 100, 0, 0, MER24)
-  }
-}
-
-/**
- * An item that opens with an unsigned number, resolved by the token after it as
- * gnulib's LALR(1) parser resolves it; with none that fits, a bare number.
- */
-function numberItem(parsed: Parsed, tokens: readonly Token[], index: number): number | null {
-  const number = at(tokens, index)
-  const after = kindAt(tokens, index + 1)
-  if (after === 'MERIDIAN') {
-    setTime(parsed, number.value, 0, 0, 0, at(tokens, index + 1).value)
-    return index + 2
-  }
-  if (after === ':') return clock(parsed, tokens, index, false)
-  if (after === '/') {
-    if (kindAt(tokens, index + 2) !== 'UNUMBER') return null
-    const second = at(tokens, index + 2)
-    parsed.datesSeen += 1
-    if (kindAt(tokens, index + 3) !== '/') {
-      parsed.month = number.value
-      parsed.day = second.value
-      return index + 3
-    }
-    if (kindAt(tokens, index + 4) !== 'UNUMBER') return null
-    const third = at(tokens, index + 4)
-    if (number.digits >= 4) {
-      parsed.year = number.value
-      parsed.yearDigits = number.digits
-      parsed.month = second.value
-      parsed.day = third.value
+    } else if (SIGNS.includes(c)) {
+      let sign = c
+      let probe = at + 1
+      while (probe < text.length && (SIGNS + BLANKS).includes(text.charAt(probe))) {
+        if (SIGNS.includes(text.charAt(probe))) sign = text.charAt(probe)
+        probe++
+      }
+      if (probe < text.length && DIGITS.includes(text.charAt(probe))) {
+        const [token, end] = lexNumber(text, probe, sign)
+        tokens.push(token)
+        at = end
+      } else {
+        at = probe
+      }
+    } else if (DIGITS.includes(c)) {
+      const [token, end] = lexNumber(text, at, '')
+      tokens.push(token)
+      at = end
+    } else if (LETTERS.includes(c)) {
+      let stop = at
+      while (
+        stop < text.length &&
+        (LETTERS.includes(text.charAt(stop)) || text.charAt(stop) === '.')
+      )
+        stop++
+      tokens.push(bareToken('word', text.slice(at, stop).toUpperCase()))
+      at = stop
     } else {
-      parsed.month = number.value
-      parsed.day = second.value
-      parsed.year = third.value
-      parsed.yearDigits = third.digits
+      tokens.push(bareToken('char', c))
+      at++
     }
-    return index + 5
   }
-  if (after === 'SNUMBER') {
-    const following = kindAt(tokens, index + 2)
-    if (following === 'SNUMBER') {
-      parsed.year = number.value
-      parsed.yearDigits = number.digits
-      parsed.month = -at(tokens, index + 1).value
-      parsed.day = -at(tokens, index + 2).value
-      parsed.datesSeen += 1
-      if (kindAt(tokens, index + 3) === 'T') return isoTime(parsed, tokens, index + 4)
-      return index + 3
-    }
-    if (UNITS.has(following)) {
-      digitsItem(parsed, number)
-      apply(parsed, unitRel(at(tokens, index + 2), at(tokens, index + 1).value), 1)
-      return index + 3
-    }
-    setTime(parsed, number.value, 0, 0, 0, MER24)
-    return zoneOffset(parsed, tokens, index + 1)
-  }
-  if (after === 'MONTH') {
-    parsed.day = number.value
-    parsed.month = at(tokens, index + 1).value
-    parsed.datesSeen += 1
-    const following = kindAt(tokens, index + 2)
-    if (following === 'SNUMBER') {
-      parsed.year = -at(tokens, index + 2).value
-      parsed.yearDigits = at(tokens, index + 2).digits
-      return index + 3
-    }
-    if (following === 'UNUMBER') {
-      parsed.year = at(tokens, index + 2).value
-      parsed.yearDigits = at(tokens, index + 2).digits
-      return index + 3
-    }
-    return index + 2
-  }
-  if (after === 'DAY') {
-    parsed.dayOrdinal = number.value
-    parsed.dayNumber = at(tokens, index + 1).value
-    parsed.daysSeen += 1
-    return index + 2
-  }
-  if (UNITS.has(after)) return relItem(parsed, tokens, index)
-  digitsItem(parsed, number)
-  return index + 1
+  return tokens
 }
 
-/** One item of gnulib's grammar at `index`; where it ends, or null when none starts there. */
-function item(parsed: Parsed, tokens: readonly Token[], index: number): number | null {
-  const head = at(tokens, index)
-  const kind = head.kind
-  const after = kindAt(tokens, index + 1)
-  if (kind === 'UNUMBER') return numberItem(parsed, tokens, index)
-  if (['SNUMBER', 'UDECIMAL', 'SDECIMAL'].includes(kind) || UNITS.has(kind)) {
-    return relItem(parsed, tokens, index)
+// A year as typed: two digits are 1969-2068, any other count is literal.
+function yearOf(token: Token): number {
+  const year = Math.abs(token.value)
+  if (token.text.length === 2) return year + (year < 69 ? 2000 : 1900)
+  return year
+}
+
+/**
+ * What a date expression names, before it is placed in time. `date` is
+ * [year, month, day] with no year until one is given; `clock` is [hour,
+ * minute, second, nanos]; `zone` is seconds east, null with `zoned` set for J
+ * or a name of the zone the expression is read in, which sets `named`, and
+ * `dst` to whether it names daylight time (null for a name both seasons
+ * use); `weekday` is [ordinal, day]; the relative
+ * items sum into `months`, `days`, `seconds` and `nanos`, the fractions of a
+ * second.
+ */
+interface Reading {
+  date: [number | null, number, number] | null
+  clock: [number, number, number, number] | null
+  zone: number | null
+  zoned: boolean
+  named: boolean
+  dst: boolean | null
+  weekday: [number, number] | null
+  months: bigint
+  days: bigint
+  seconds: bigint
+  nanos: number
+  counts: Map<string, bigint>
+  relative: boolean
+  epoch: [number, number] | null
+}
+
+/**
+ * Reads the items of a tokenized date expression into a Reading. Each date,
+ * time of day, zone and day of the week may appear once; relative items add
+ * up. Every refusal throws NotADate.
+ */
+class Parser {
+  private at = 0
+  // Where the last ISO date ended, for the "T" that may follow it.
+  private isoEnd = -1
+  readonly reading: Reading = {
+    date: null,
+    clock: null,
+    zone: null,
+    zoned: false,
+    named: false,
+    dst: null,
+    weekday: null,
+    months: 0n,
+    days: 0n,
+    seconds: 0n,
+    nanos: 0,
+    counts: new Map(),
+    relative: false,
+    epoch: null,
   }
-  if (kind === 'ORDINAL') {
-    if (after === 'DAY') {
-      parsed.dayOrdinal = head.value
-      parsed.dayNumber = at(tokens, index + 1).value
-      parsed.daysSeen += 1
-      return index + 2
+
+  constructor(
+    private readonly tokens: Token[],
+    private readonly names: ReadonlyMap<string, boolean | null>,
+  ) {}
+
+  private peek(ahead = 0): Token | null {
+    return this.tokens[this.at + ahead] ?? null
+  }
+
+  private take(): Token {
+    const token = this.peek()
+    if (token === null) throw new NotADate()
+    this.at++
+    return token
+  }
+
+  /**
+   * What a word names: a month, a weekday or a meridian, then the zone's own
+   * abbreviations, then every other word. One of the zone's names, dots
+   * dropped, is a `named` zone, 1 for daylight time and -1 for a name both
+   * seasons use; GMT, UT and UTC keep their fixed meaning even where the zone
+   * uses them.
+   */
+  private mean(token: Token): Meaning | null {
+    const found = meaning(token.text)
+    if (found !== null && ['meridian', 'month', 'weekday'].includes(found[0])) return found
+    const bare = token.text.replaceAll('.', '')
+    const named = this.names.get(bare)
+    if (named !== undefined && !FIXED_NAMES.includes(bare)) {
+      return ['named', named === null ? -1 : named ? 1 : 0]
     }
-    return relItem(parsed, tokens, index)
+    return found
   }
-  if (kind === 'DAY_SHIFT') {
-    apply(parsed, { ...noRel(), day: head.value }, 1)
-    return index + 1
+
+  // The kind of the token `ahead`: a word's meaning, else its own.
+  private kind(ahead = 0): string | null {
+    const token = this.peek(ahead)
+    if (token === null) return null
+    if (token.kind === 'word') return this.mean(token)?.[0] ?? null
+    return token.kind
   }
-  if (kind === 'MONTH') {
-    parsed.month = head.value
-    parsed.datesSeen += 1
-    if (after === 'SNUMBER') {
-      if (kindAt(tokens, index + 2) !== 'SNUMBER') return null
-      parsed.day = -at(tokens, index + 1).value
-      parsed.year = -at(tokens, index + 2).value
-      parsed.yearDigits = at(tokens, index + 2).digits
-      return index + 3
-    }
-    if (after !== 'UNUMBER') return null
-    parsed.day = at(tokens, index + 1).value
-    if (kindAt(tokens, index + 2) !== ',') return index + 2
-    if (kindAt(tokens, index + 3) !== 'UNUMBER') return null
-    parsed.year = at(tokens, index + 3).value
-    parsed.yearDigits = at(tokens, index + 3).digits
-    return index + 4
-  }
-  if (kind === 'DAY') {
-    parsed.dayOrdinal = 0
-    parsed.dayNumber = head.value
-    parsed.daysSeen += 1
-    return after === ',' ? index + 2 : index + 1
-  }
-  if (kind === 'ZONE' || kind === 'T') {
-    const zone = kind === 'T' ? -7 * HOUR : head.value
-    parsed.timeZone = zone
-    parsed.zonesSeen += 1
-    if (after === 'SNUMBER' && UNITS.has(kindAt(tokens, index + 2))) {
-      apply(parsed, unitRel(at(tokens, index + 2), at(tokens, index + 1).value), 1)
-      return index + 3
-    }
-    if (kind === 'T') return index + 1
-    if (after === 'DST') {
-      parsed.timeZone = zone + HOUR
-      return index + 2
-    }
-    if (after !== 'SNUMBER') return index + 1
-    const found = zoneHhmm(tokens, index + 1)
-    if (found === null) return null
-    parsed.timeZone += found[0]
+
+  // The value of a word whose kind was looked at.
+  private value(token: Token): number {
+    const found = this.mean(token)
+    if (found === null) throw new NotADate()
     return found[1]
   }
-  if (kind === 'DAYZONE') {
-    parsed.timeZone = head.value + HOUR
-    parsed.zonesSeen += 1
-    return index + 1
+
+  private char(c: string, ahead = 0): boolean {
+    const token = this.peek(ahead)
+    return token !== null && token.kind === 'char' && token.text === c
   }
-  if (kind === 'LOCAL_ZONE') {
-    parsed.localZonesSeen += 1
-    parsed.localOffset = head.offset
-    if (after === 'DST') {
-      parsed.dstsSeen += 1
-      parsed.localOffset = head.offset === null ? null : head.offset + HOUR
-      return index + 2
+
+  // Whether the token `ahead` is a whole number with no sign.
+  private plain(ahead = 0): boolean {
+    const token = this.peek(ahead)
+    return token !== null && token.kind === 'number' && token.sign === '' && token.nanos === null
+  }
+
+  // Whether the token `ahead` is a whole number `-` signs.
+  private minus(ahead = 0): boolean {
+    const token = this.peek(ahead)
+    return token !== null && token.kind === 'number' && token.sign === '-' && token.nanos === null
+  }
+
+  // Whether the token `ahead` is a signed whole number: a signed fraction is
+  // never a zone correction, only seconds.
+  private signed(ahead = 0): boolean {
+    const token = this.peek(ahead)
+    return token !== null && token.kind === 'number' && token.sign !== '' && token.nanos === null
+  }
+
+  private unit(ahead = 0): boolean {
+    return UNIT_KINDS.includes(this.kind(ahead) ?? '')
+  }
+
+  // Take a whole number with no sign.
+  private whole(): Token {
+    if (!this.plain()) throw new NotADate()
+    return this.take()
+  }
+
+  parse(): Reading {
+    if (this.char('@')) {
+      this.take()
+      const stamp = this.take()
+      if (stamp.kind !== 'number' || this.peek() !== null) throw new NotADate()
+      const big = BigInt(NANOS)
+      const size = BigInt(stamp.text) * big + BigInt(stamp.nanos ?? 0)
+      const signed = stamp.sign === '-' ? -size : size
+      const seconds = signed >= 0n ? signed / big : -((-signed + big - 1n) / big)
+      this.reading.epoch = [Number(seconds), Number(signed - seconds * big)]
+      return this.reading
     }
-    return index + 1
+    while (this.peek() !== null) this.item()
+    return this.reading
   }
-  if (kind === 'J') {
-    parsed.jZonesSeen += 1
-    return index + 1
-  }
-  return null
-}
 
-/** An hour on the 24-hour clock, -1 when the meridian refuses it. */
-function toHour(hour: number, meridian: number): number {
-  if (meridian === MER24) return hour >= 0 && hour < 24 ? hour : -1
-  if (!(hour > 0 && hour <= 12)) return -1
-  return (hour % 12) + (meridian === PM ? 12 : 0)
-}
-
-/**
- * The reading of a wall clock that carries a local abbreviation's offset, null
- * when the zone does not show the wall clock under it (`CET` on a summer date
- * in Europe/Berlin), as mktime refuses a tm_isdst that does not hold.
- */
-function localReading(zone: Zone, p: WallParts, offset: number): Date | null {
-  const reading = zone.fromWall(p, offset)
-  const shown = zone.parts(reading)
-  const kept =
-    shown.offsetSec === offset &&
-    utcFromWall({ ...shown, ms: 0 }).getTime() === utcFromWall({ ...p, ms: 0 }).getTime()
-  return kept ? reading : null
-}
-
-/**
- * A wall clock as mktime reads it under an explicit tm_isdst: the reading at
- * that offset, or the wall clock taken at the offset where the zone does not
- * show it under it, which is how mktime extrapolates a tm_isdst the date does
- * not observe.
- */
-function held(zone: Zone, p: WallParts, offset: number): Date {
-  return localReading(zone, p, offset) ?? new Date(utcFromWall(p).getTime() - offset * 1000)
-}
-
-/** The wall clock `zone` shows for an instant, without milliseconds. */
-function wallOf(zone: Zone, dt: Date): WallParts {
-  const p = zone.parts(dt)
-  return {
-    year: p.year,
-    month: p.month,
-    day: p.day,
-    hour: p.hour,
-    minute: p.minute,
-    second: p.second,
-    ms: 0,
-  }
-}
-
-/**
- * Days from the wall clock `p` to the weekday the items name. A bare weekday
- * is the next one on or after `p`; `next` or a count past it skips that many
- * more weeks, counting `p` itself only when it is not already that weekday;
- * `last` goes back.
- */
-function weekdayShift(parsed: Parsed, p: WallParts): number {
-  const weekday = utcFromWall(p).getUTCDay()
-  const ordinal =
-    parsed.dayOrdinal - (parsed.dayOrdinal > 0 && weekday !== parsed.dayNumber ? 1 : 0)
-  return ordinal * 7 + ((parsed.dayNumber - weekday + 7) % 7)
-}
-
-/** A wall clock from fields that may overflow, normalized as mktime carries them. */
-function normalized(p: WallParts): WallParts {
-  const d = utcFromWall(p)
-  return {
-    year: d.getUTCFullYear(),
-    month: d.getUTCMonth(),
-    day: d.getUTCDate(),
-    hour: d.getUTCHours(),
-    minute: d.getUTCMinutes(),
-    second: d.getUTCSeconds(),
-    ms: 0,
-  }
-}
-
-/**
- * The moment the parsed items name, gnulib's parse_datetime body: the fields
- * placed in the zone as mktime places them, a weekday moved to, then the summed
- * relative days moved on the calendar once and the relative seconds added on
- * the timeline.
- */
-function resolve(parsed: Parsed, zone: Zone, now: Date): Date | null {
-  if (
-    1 <
-    (parsed.timesSeen |
-      parsed.datesSeen |
-      parsed.daysSeen |
-      parsed.dstsSeen |
-      (parsed.jZonesSeen + parsed.localZonesSeen + parsed.zonesSeen))
-  ) {
-    return null
-  }
-  let year = parsed.year
-  if (parsed.yearDigits === 2 && year >= 0) year += year < 69 ? 2000 : 1900
-  const absolute = parsed.datesSeen > 0 || parsed.daysSeen > 0 || parsed.timesSeen > 0
-  let hour = 0
-  let minute = 0
-  let second = 0
-  let ns = 0
-  if (parsed.timesSeen > 0 || (parsed.relsSeen && !absolute)) {
-    hour = toHour(parsed.hour, parsed.meridian)
-    minute = parsed.minutes
-    second = parsed.seconds
-    ns = parsed.ns
-  }
-  if (
-    year < 1 ||
-    year > 9999 ||
-    parsed.month < 1 ||
-    parsed.month > 12 ||
-    hour < 0 ||
-    hour > 23 ||
-    minute < 0 ||
-    minute > 59 ||
-    second < 0 ||
-    second > 59 ||
-    parsed.day < 1 ||
-    parsed.day > daysInMonth(year, parsed.month - 1)
-  ) {
-    return null
-  }
-  const wall: WallParts = {
-    year,
-    month: parsed.month - 1,
-    day: parsed.day,
-    hour,
-    minute,
-    second,
-    ms: 0,
-  }
-  const rel = parsed.rel
-  const moves = rel.year !== 0 || rel.month !== 0 || rel.day !== 0
-  let epochMs: number
-  if (parsed.zonesSeen > 0) {
-    let p = wall
-    if (parsed.daysSeen > 0 && parsed.datesSeen === 0) {
-      p = normalized({ ...p, day: p.day + weekdayShift(parsed, p) })
+  private item(): void {
+    const token = this.take()
+    if (token.kind === 'number') {
+      this.number(token)
+      return
     }
-    if (moves) {
-      p = normalized({
-        ...wall,
-        year: p.year + rel.year,
-        month: p.month + rel.month,
-        day: p.day + rel.day,
-      })
-    }
-    epochMs = utcFromWall(p).getTime() - parsed.timeZone * 1000
-  } else {
-    // What gnulib hands mktime as tm_isdst for the calendar move: -1 (null
-    // here) after a date, weekday or time, else an explicit one, the local
-    // abbreviation's or the current moment's, which mktime holds to even
-    // where the moved date does not observe it.
-    const hint =
-      parsed.localZonesSeen > 0 ? parsed.localOffset : absolute ? null : zone.parts(now).offsetSec
-    let placed: Date | null
-    if (parsed.localZonesSeen > 0 && parsed.localOffset !== null) {
-      placed = localReading(zone, wall, parsed.localOffset)
-    } else if (absolute || hint === null) {
-      placed = placeWall(zone, wall)
+    const found = token.kind === 'word' ? this.mean(token) : null
+    if (found === null) throw new NotADate()
+    const [kind, value] = found
+    if (kind === 'month') {
+      this.month(value)
+    } else if (kind === 'weekday') {
+      this.setWeekday(0, value)
+      // Only a bare weekday takes a comma after it.
+      if (this.char(',')) this.take()
+    } else if (kind === 'ordinal') {
+      if (this.kind() === 'weekday') this.setWeekday(value, this.value(this.take()))
+      else if (this.unit()) this.relative(BigInt(value))
+      else throw new NotADate()
+    } else if (UNIT_KINDS.includes(kind)) {
+      this.add(kind, value, 1n)
+    } else if (kind === 'today') {
+      this.tally('days', 1, BigInt(value))
+    } else if (kind === 'zone' && token.text === 'T' && this.isoEnd === this.at - 1) {
+      // A time of day: H:M[:S], or an hour that a zone correction must follow.
+      if (this.plain() && this.char(':', 1)) {
+        this.clock(this.take(), false)
+      } else if (this.plain() && this.signed(1)) {
+        this.setClock(this.take().value, 0, 0, 0)
+        this.setZone(this.zoneNumber(this.take()))
+      } else {
+        throw new NotADate()
+      }
+    } else if (kind === 'zone') {
+      this.zone(value * 60)
+    } else if (kind === 'daylight') {
+      this.setZone(value * 60)
+    } else if (kind === 'local') {
+      this.setZone(null)
+    } else if (kind === 'named') {
+      let dst = value < 0 ? null : value === 1
+      if (this.kind() === 'dst') {
+        this.take()
+        dst = true
+      }
+      this.setZone(null)
+      this.reading.named = true
+      this.reading.dst = dst
     } else {
-      placed = held(zone, wall, hint)
+      throw new NotADate()
     }
-    if (placed === null) return null
-    if (parsed.daysSeen > 0 && parsed.datesSeen === 0) {
-      const shown = wallOf(zone, placed)
-      placed = zone.fromWall(
-        { ...shown, day: shown.day + weekdayShift(parsed, shown) },
-        zone.parts(placed).offsetSec,
-      )
-    }
-    if (moves) {
-      const shown = wallOf(zone, placed)
-      const moved = normalized({
-        ...wall,
-        year: shown.year + rel.year,
-        month: shown.month + rel.month,
-        day: shown.day + rel.day,
-      })
-      placed =
-        hint === null ? zone.fromWall(moved, zone.parts(placed).offsetSec) : held(zone, moved, hint)
-    }
-    epochMs = placed.getTime()
   }
-  const totalNs = ns + rel.ns
-  const seconds =
-    epochMs / 1000 +
-    rel.hour * HOUR +
-    rel.minutes * 60 +
-    rel.seconds +
-    Math.floor(totalNs / BILLION)
-  if (seconds < FIRST_SECOND || seconds > LAST_SECOND) return null
-  const result = new Date(
-    seconds * 1000 + Math.floor((((totalNs % BILLION) + BILLION) % BILLION) / 1_000_000),
-  )
-  const shownYear = new Date(
-    result.getTime() + zone.parts(result).offsetSec * 1000,
-  ).getUTCFullYear()
-  if (shownYear < 1 || shownYear > 9999) return null
-  return result
+
+  // A standard zone, then DST, an offset, or a relative item of its own.
+  private zone(base: number): void {
+    let offset = base
+    if (this.kind() === 'dst') {
+      this.take()
+      offset += 3600
+    } else if (this.signedZone()) {
+      offset += this.zoneNumber(this.take())
+    } else if (this.signed() && this.unit(1)) {
+      // `UTC +1 day` is the zone and a relative item, which then takes no
+      // `ago`.
+      this.setZone(offset)
+      const count = this.take()
+      const [kind, size] = unit(this.take())
+      this.add(kind, size, BigInt(count.sign + count.text), false)
+      return
+    }
+    this.setZone(offset)
+  }
+
+  private number(token: Token): void {
+    if (token.nanos !== null) {
+      this.fraction(token)
+    } else if (token.sign !== '') {
+      if (!this.unit()) throw new NotADate()
+      this.relative(BigInt(token.sign + token.text))
+    } else if (this.char(':')) {
+      this.clock(token, true)
+    } else if (this.char('/')) {
+      this.slashed(token)
+    } else if (this.minus() && this.minus(1)) {
+      this.iso(token)
+    } else if (this.kind() === 'month') {
+      this.dayMonth(token)
+    } else if (this.unit()) {
+      this.relative(BigInt(token.text))
+    } else if (this.kind() === 'weekday') {
+      this.setWeekday(token.value, this.value(this.take()))
+    } else if (this.kind() === 'meridian') {
+      this.setClock(this.meridian(token.value, this.value(this.take())), 0, 0, 0)
+    } else {
+      this.pure(token)
+    }
+  }
+
+  /**
+   * A number standing alone: a year, a date, or a time of day. One a zone
+   * correction follows is an hour, whatever its digits, and no signed number
+   * may follow a ±HHMM correction there (one may follow ±H:M). Otherwise,
+   * after a date with no year and before any relative item, it is the year,
+   * when a time of day came first or it has three digits or more; five digits
+   * or more are [YY]YYMMDD and fewer are HH or HHMM.
+   */
+  private pure(token: Token): void {
+    const reading = this.reading
+    const digits = token.text.length
+    const value = token.value
+    const date = reading.date
+    if (this.signedZone()) {
+      const colon = this.char(':', 1) && this.plain(2)
+      this.setClock(value, 0, 0, 0)
+      this.setZone(this.zoneNumber(this.take()))
+      if (!colon && this.signed()) throw new NotADate()
+    } else if (
+      date !== null &&
+      date[0] === null &&
+      !reading.relative &&
+      (reading.clock !== null || digits > 2)
+    ) {
+      reading.date = [yearOf(token), date[1], date[2]]
+    } else if (digits > 4) {
+      let year = Math.floor(value / 10000)
+      if (digits === 6) year += year < 69 ? 2000 : 1900
+      this.setDate(year, Math.floor(value / 100) % 100, value % 100)
+    } else if (digits <= 2) {
+      this.setClock(value, 0, 0, 0)
+    } else {
+      this.setClock(Math.floor(value / 100), value % 100, 0, 0)
+    }
+  }
+
+  // H:M[:S[.frac]], then a meridian or a zone correction.
+  private clock(hour: Token, meridian: boolean): void {
+    this.take()
+    const minute = this.whole().value
+    let second = 0
+    let nanos = 0
+    if (this.char(':')) {
+      this.take()
+      const token = this.take()
+      if (token.kind !== 'number' || token.sign !== '') throw new NotADate()
+      second = token.value
+      nanos = token.nanos ?? 0
+    }
+    if (meridian && this.kind() === 'meridian') {
+      this.setClock(this.meridian(hour.value, this.value(this.take())), minute, second, nanos)
+      return
+    }
+    this.setClock(hour.value, minute, second, nanos)
+    if (this.signed()) this.setZone(this.zoneNumber(this.take()))
+  }
+
+  // M/D, M/D/Y or, four digits leading, Y/M/D.
+  private slashed(first: Token): void {
+    this.take()
+    const second = this.whole()
+    let third: Token | null = null
+    if (this.char('/')) {
+      this.take()
+      third = this.whole()
+    }
+    if (first.text.length >= 4) {
+      if (third === null) throw new NotADate()
+      this.setDate(first.value, second.value, third.value)
+    } else {
+      this.setDate(third === null ? null : yearOf(third), first.value, second.value)
+    }
+  }
+
+  // Y-M-D, read as the year and two `-` signed numbers.
+  private iso(year: Token): void {
+    const month = this.take()
+    const day = this.take()
+    this.setDate(yearOf(year), -month.value, -day.value)
+    this.isoEnd = this.at
+  }
+
+  // D [-]MONTH [Y]: a number after the month is its year.
+  private dayMonth(day: Token): void {
+    const month = this.value(this.take())
+    let year: number | null = null
+    if (this.plain() || this.minus()) year = yearOf(this.take())
+    this.setDate(year, month, day.value)
+  }
+
+  // MONTH D[, Y] or MONTH -D -Y.
+  private month(month: number): void {
+    if (this.plain()) {
+      const day = this.take().value
+      let year: number | null = null
+      if (this.char(',')) {
+        this.take()
+        year = yearOf(this.whole())
+      }
+      this.setDate(year, month, day)
+    } else if (this.minus() && this.minus(1)) {
+      const day = this.take()
+      const year = this.take()
+      this.setDate(yearOf(year), month, -day.value)
+    } else {
+      throw new NotADate()
+    }
+  }
+
+  // N.F SECONDS [ago|hence]: only seconds take a fraction.
+  private fraction(token: Token): void {
+    if (this.kind() !== 'seconds' || this.value(this.take()) !== 1) throw new NotADate()
+    let times = token.sign === '-' ? -1 : 1
+    if (this.kind() === 'suffix') times *= this.value(this.take())
+    this.tally('seconds', 1, BigInt(times) * BigInt(token.text))
+    this.reading.nanos += times * (token.nanos ?? 0)
+  }
+
+  // count UNIT [ago|hence], the unit next.
+  private relative(count: bigint): void {
+    const [kind, size] = unit(this.take())
+    this.add(kind, size, count)
+  }
+
+  private add(kind: string, size: number, count: bigint, suffix = true): void {
+    let times = count
+    if (suffix && this.kind() === 'suffix') times *= BigInt(this.value(this.take()))
+    this.tally(kind, size, times)
+  }
+
+  // Add `count` units of `size` to the relative `kind`, each unit counted on
+  // its own, a week's and a fortnight's as days.
+  private tally(kind: string, size: number, count: bigint): void {
+    let [step, times] = [BigInt(size), count]
+    if (kind === 'days') [step, times] = [1n, count * step]
+    const reading = this.reading
+    const key = `${kind} ${String(step)}`
+    const total = (reading.counts.get(key) ?? 0n) + times
+    if (times < -INT64 || times >= INT64 || total < -INT64 || total >= INT64) throw new NotADate()
+    reading.counts.set(key, total)
+    if (kind === 'months') reading.months += step * times
+    else if (kind === 'days') reading.days += step * times
+    else reading.seconds += step * times
+    reading.relative = true
+  }
+
+  // Whether a signed number comes next that is no relative item's.
+  private signedZone(): boolean {
+    return this.signed() && !this.unit(1)
+  }
+
+  // A zone correction in seconds east: ±H and ±HH are hours, a longer number
+  // hours and minutes as ±HHMM reads, its leading zeros aside, and ±H:M takes
+  // any count of minutes.
+  private zoneNumber(token: Token): number {
+    if (token.nanos !== null) throw new NotADate()
+    const size = Math.abs(token.value)
+    let minutes: number
+    if (this.char(':') && this.plain(1)) {
+      this.take()
+      minutes = size * 60 + this.take().value
+    } else if (token.text.length <= 2) {
+      minutes = size * 60
+    } else {
+      minutes = Math.floor(size / 100) * 60 + (size % 100)
+    }
+    if (minutes > ZONE_LIMIT) throw new NotADate()
+    return (token.sign === '-' ? -minutes : minutes) * 60
+  }
+
+  private meridian(hour: number, add: number): number {
+    if (hour < 1 || hour > 12) throw new NotADate()
+    return (hour % 12) + add
+  }
+
+  private setDate(year: number | null, month: number, day: number): void {
+    if (this.reading.date !== null) throw new NotADate()
+    this.reading.date = [year, month, day]
+  }
+
+  private setClock(hour: number, minute: number, second: number, nanos: number): void {
+    if (this.reading.clock !== null) throw new NotADate()
+    this.reading.clock = [hour, minute, second, nanos]
+  }
+
+  private setZone(offset: number | null): void {
+    if (this.reading.zoned) throw new NotADate()
+    this.reading.zoned = true
+    this.reading.zone = offset
+  }
+
+  private setWeekday(ordinal: number, day: number): void {
+    if (this.reading.weekday !== null) throw new NotADate()
+    this.reading.weekday = [ordinal, day]
+  }
 }
 
 /**
- * A leading `TZ="..."`: the zone it names and the text after it, with `\` and
- * `"` escaped by a backslash inside the quotes.
+ * Days from 1970-01-01 to a proleptic Gregorian date. A month past 12 or below
+ * 1 carries into the year, and a day past the month's end into the months
+ * after, as a calendar shift needs.
  */
-function tzPrefix(text: string): [string, string] | null {
-  if (!text.startsWith('TZ="')) return null
-  let name = ''
-  let index = 4
-  while (index < text.length) {
-    const char = text[index] ?? ''
-    const next = text[index + 1]
-    if (char === '\\' && (next === '\\' || next === '"')) {
-      name += next
-      index += 2
-      continue
+function civilDays(year: number, month: number, day: number): number {
+  const y = year + Math.floor((month - 1) / 12)
+  const m = ((((month - 1) % 12) + 12) % 12) + 1
+  // Counted from March, so February's leap day ends the year.
+  const shifted = y - (m <= 2 ? 1 : 0)
+  const march = m <= 2 ? m + 9 : m - 3
+  const days =
+    365 * shifted + Math.floor(shifted / 4) - Math.floor(shifted / 100) + Math.floor(shifted / 400)
+  return days + Math.floor((153 * march + 2) / 5) + day - 1 - 719468
+}
+
+// The calendar fields of wall-clock seconds read as UTC.
+function wallFields(wall: number): [number, number, number, number, number, number] {
+  const shown = new Date(wall * 1000)
+  return [
+    shown.getUTCFullYear(),
+    shown.getUTCMonth() + 1,
+    shown.getUTCDate(),
+    shown.getUTCHours(),
+    shown.getUTCMinutes(),
+    shown.getUTCSeconds(),
+  ]
+}
+
+/** The UTC offsets a zone shows. Mirrors Python's _Clock. */
+class Clock {
+  constructor(private readonly zone: Zone) {}
+
+  // Clamped a few days inside what mirage holds, so a far moment reads as the
+  // nearest one it does.
+  private at(instant: number): Date {
+    const kept = Math.min(Math.max(instant, FIRST_SECOND + 2 * DAY), LAST_SECOND - 2 * DAY)
+    return new Date((Number.isFinite(kept) ? kept : 0) * 1000)
+  }
+
+  offset(instant: number): number {
+    return this.zone.parts(this.at(instant)).offsetSec
+  }
+
+  abbreviation(instant: number): string {
+    return this.zone.parts(this.at(instant)).abbrev.toUpperCase()
+  }
+
+  /**
+   * Whether an instant is in daylight time: ahead of the lesser of the
+   * offsets its year shows on January 1 and July 1, or behind the offsets of
+   * both the January 1 or July 1 before it and the one after, as Ramadan's
+   * hour back in Casablanca is.
+   */
+  isdst(instant: number): boolean {
+    const year = wallFields(Math.min(Math.max(instant, FIRST_SECOND), LAST_SECOND))[0]
+    const winter = this.offset(civilDays(year, 1, 1) * DAY)
+    const july = civilDays(year, 7, 1) * DAY
+    const summer = this.offset(july)
+    const shown = this.offset(instant)
+    if (shown > Math.min(winter, summer)) return true
+    const [before, after] =
+      instant < july ? [winter, summer] : [summer, this.offset(civilDays(year + 1, 1, 1) * DAY)]
+    return shown < before && shown < after
+  }
+
+  // The abbreviations the zone shows now and 90, 180 and 270 days on, the
+  // instants date reads its names at, each with whether it names daylight
+  // time, null for one both seasons use.
+  names(now: number): Map<string, boolean | null> {
+    const found = new Map<string, boolean | null>()
+    for (let step = 0; step < 4; step++) {
+      const instant = Math.min(now + step * 90 * DAY, LAST_SECOND)
+      const name = this.abbreviation(instant)
+      const dst = this.isdst(instant)
+      const known = found.get(name)
+      found.set(name, known === undefined || known === dst ? dst : null)
     }
-    if (char === '"') return [name, text.slice(index + 1)]
-    name += char
-    index += 1
+    return found
   }
-  return null
+
+  // When a POSIX rule changes the clock in `wall`'s year; none for a zone from
+  // tzdata.
+  ruleChanges(wall: number): readonly number[] {
+    const year = wallFields(Math.min(Math.max(wall, FIRST_SECOND), LAST_SECOND))[0]
+    return posixTransitions(this.zone, year) ?? []
+  }
+
+  /**
+   * The instants this zone's clock reads `wall` at: one, two in an hour
+   * repeated when DST ends, none in one skipped when it starts.
+   */
+  readings(wall: number): number[] {
+    const offsets = new Set([this.offset(wall - DAY), this.offset(wall + DAY)])
+    // A POSIX rule's daylight time can be shorter than a day.
+    for (const change of this.ruleChanges(wall)) offsets.add(this.offset(change))
+    return [...offsets]
+      .filter((offset) => this.offset(wall - offset) === offset)
+      .map((offset) => wall - offset)
+      .sort((a, b) => a - b)
+  }
+
+  /**
+   * The instant this zone's clock reads `wall` at. The search starts under
+   * `guess`, so a reading the clock shows twice takes the side of the change
+   * whose offset `guess` is. One it never shows is read under the offset
+   * before the change.
+   */
+  place(wall: number, guess: number): number {
+    let instant = wall - guess
+    for (let step = 0; step < 2; step++) {
+      const shown = this.offset(instant)
+      if (this.offset(wall - shown) === shown) return wall - shown
+      instant = wall - shown
+    }
+    return wall - this.offset(wall - DAY)
+  }
+
+  /**
+   * The instant a wall clock the expression names reads at, null when the
+   * clock never reads it (or not in the daylight state `dst` asks for).
+   */
+  settle(wall: number, guess: number, dst: boolean | null): number | null {
+    const shown = this.readings(wall).filter((t) => dst === null || this.isdst(t) === dst)
+    if (shown.length === 2) {
+      const placed = this.place(wall, guess)
+      return shown.includes(placed) ? placed : (shown[1] ?? null)
+    }
+    return shown[0] ?? null
+  }
+
+  /**
+   * The instant a moved wall clock reads at, kept in daylight state `dst`: a
+   * reading in another state, or none, is read under the offset of the
+   * nearest time in that state.
+   */
+  keepState(wall: number, dst: boolean, guess: number): number {
+    const shown = this.readings(wall).filter((t) => this.isdst(t) === dst)
+    if (shown.length === 2) return this.place(wall, guess)
+    const only = shown[0]
+    if (only !== undefined) return only
+    // A POSIX rule's daylight time can be shorter than any step.
+    for (const change of this.ruleChanges(wall)) {
+      if (this.isdst(change) === dst) return wall - this.offset(change)
+    }
+    for (let step = 1; step < 14; step++) {
+      for (const instant of [wall - step * 30 * DAY, wall + step * 30 * DAY]) {
+        if (this.isdst(instant) === dst) return wall - this.offset(instant)
+      }
+    }
+    return this.place(wall, guess)
+  }
 }
 
-function trimSpaces(text: string, start: boolean, end: boolean): string {
-  let first = 0
-  let last = text.length
-  while (start && first < last && SPACES.includes(text[first] ?? '')) first += 1
-  while (end && last > first && SPACES.includes(text[last - 1] ?? '')) last -= 1
-  return text.slice(first, last)
+// The remainder of `n` by 7, from 0 to 6 even when `n` is negative.
+function mod7(n: number): number {
+  return ((n % 7) + 7) % 7
 }
 
-// Parse a GNU `date -d` expression, null when GNU says `invalid date`. A port
-// of gnulib's parse-datetime grammar as coreutils 9.7 builds it; one
-// divergence: a moment outside years 1-9999 is not a date, the range a Date
-// holds.
+/**
+ * Days from a weekday to the `ordinal`-th `day` from it. Ordinal 0 is that
+ * day this week, today included; a positive one counts occurrences after
+ * today; -1 is the last one before it.
+ */
+function weekdayShift(base: number, ordinal: number, day: number): number {
+  const ahead = mod7(day - base)
+  if (ordinal > 0) return (ahead || 7) + 7 * (ordinal - 1)
+  if (ordinal === 0) return ahead
+  return -(mod7(base - day) || 7) + 7 * (ordinal + 1)
+}
+
+/**
+ * Place a reading in time, as [epoch seconds, nanoseconds]. A field left out
+ * comes from now on the zone's clock, and the time of day is midnight unless
+ * only relative items (and a zone) were given. The wall clock named must
+ * exist on the zone's clock, a skipped hour refused and a repeated one read on
+ * now's side, unless a zone given reads it. A
+ * weekday moves the date, then days, months and years move it on the
+ * calendar, read from the side of any change the base was on; the zone and
+ * the hours, minutes and seconds then move the instant. A shift keeps the
+ * daylight state a name of the zone gives, and a shift of now's own clock
+ * now's, as date's does. `guess` is the offset a repeated wall clock is first read
+ * under: now's, in the zone the command runs in even when `TZ="..."` names
+ * another. Mirrors Python's _resolve.
+ */
+function resolve(
+  reading: Reading,
+  clock: Clock,
+  now: number,
+  nowNanos: number,
+  guess: number,
+): [number, number] | null {
+  if (reading.epoch !== null) return reading.epoch
+  // A total past what a double holds exactly lands past the years mirage
+  // holds unless another unit's cancels it, which mirage refuses rather than
+  // round; Python's integers keep it exact.
+  const [months, shift, seconds] = [reading.months, reading.days, reading.seconds].map((total) => {
+    if (total > EXACT || total < -EXACT) throw new NotADate()
+    return Number(total)
+  }) as [number, number, number]
+  const here = clock.offset(now)
+  let [year, month, day, hour, minute, second] = wallFields(now + here)
+  let nanos = nowNanos
+  const fromNow =
+    reading.relative && reading.date === null && reading.clock === null && reading.weekday === null
+  if (reading.date !== null) {
+    const [given, m, d] = reading.date
+    month = m
+    day = d
+    if (given !== null) year = given
+  }
+  if (reading.clock !== null) {
+    ;[hour, minute, second, nanos] = reading.clock
+  } else if (!fromNow) {
+    hour = 0
+    minute = 0
+    second = 0
+    nanos = 0
+  }
+  if (month < 1 || month > 12) return null
+  const monthDays = civilDays(year, month + 1, 1) - civilDays(year, month, 1)
+  if (day < 1 || day > monthDays) return null
+  if (hour > 23 || minute > 59 || second > 59) return null
+  let days = civilDays(year, month, day)
+  const within = hour * 3600 + minute * 60 + second
+  const state = reading.dst ?? clock.isdst(now)
+  let instant: number
+  if (reading.zone !== null) {
+    // A zone given reads the wall clock as its own, whether or not the
+    // zone's clock shows it.
+    instant = days * DAY + within - reading.zone
+  } else if (fromNow && reading.dst === null) {
+    instant = now
+  } else {
+    // A shift of now's wall clock starts in the daylight state the zone name
+    // asks for.
+    const settled = clock.settle(days * DAY + within, guess, reading.dst)
+    if (settled === null) return null
+    instant = settled
+  }
+  let moving = shift !== 0 || months !== 0
+  if (reading.weekday !== null && reading.date === null) {
+    days += weekdayShift(mod7(days + 4), ...reading.weekday)
+    ;[year, month, day] = wallFields(days * DAY)
+    moving = true
+  }
+  if (moving) {
+    const wall = (civilDays(year, month + months, day) + shift) * DAY + within
+    // A shifted wall clock past what a double holds exactly is refused too,
+    // rather than rounded.
+    if (!Number.isSafeInteger(wall)) throw new NotADate()
+    // A name both seasons use places the shift where it lands.
+    instant =
+      reading.dst !== null || (fromNow && !reading.named)
+        ? clock.keepState(wall, state, guess)
+        : clock.place(wall, clock.offset(instant))
+    if (reading.zone !== null) instant += clock.offset(instant) - reading.zone
+  }
+  const total = nanos + reading.nanos
+  const carry = Math.floor(total / NANOS)
+  return [instant + seconds + carry, total - carry * NANOS]
+}
+
+/**
+ * A leading `TZ="..."` and the rest, or no zone and the text. Inside the
+ * quotes a backslash escapes a backslash or a quote, and nothing else.
+ */
+function splitZone(text: string): [string | null, string] {
+  let start = 0
+  while (start < text.length && BLANKS.includes(text.charAt(start))) start++
+  const lead = text.slice(start)
+  if (!lead.startsWith('TZ="')) return [null, text]
+  let value = ''
+  let at = 4
+  while (at < lead.length) {
+    let c = lead.charAt(at)
+    if (c === '"') return [value, lead.slice(at + 1)]
+    if (c === '\\') {
+      const escaped = lead.charAt(at + 1)
+      if (escaped !== '\\' && escaped !== '"') throw new NotADate()
+      c = escaped
+      at++
+    }
+    value += c
+    at++
+  }
+  throw new NotADate()
+}
+
+/**
+ * Parse a free-form date expression as `date -d` reads it, or null for date's
+ * `invalid date`. The grammar is coreutils 9.7's as measured on
+ * debian:stable-slim: calendar dates (`2026-01-15`, `1/15/26`, `15 Jan 2026`,
+ * `Jan 15, 2026`, `20260115`), times of day (`10:30:45.5`, `9pm`) with zone
+ * corrections (`+05:30`), zone names (`UTC`, `EST DST`, `UTC+3`, military
+ * letters), days of the week (`next monday`), relative items (`2 days ago`,
+ * `tomorrow`), `@epoch` and a leading `TZ="zone"`, with parenthesized
+ * comments ignored. Mirage also refuses a moment outside years 1-9999, which
+ * date shows. Mirrors Python's parse_date_expr.
+ */
 export function parseDateExpr(text: string, zone: Zone, now?: Date): Date | null {
-  let raw = trimSpaces(text, true, false)
-  let reading = zone
-  const prefixed = tzPrefix(raw)
-  if (prefixed !== null) {
-    reading = resolveTz(prefixed[0])
-    raw = prefixed[1]
+  try {
+    const [inner, rest] = splitZone(text)
+    const ms = (now ?? new Date()).getTime()
+    const current = Math.floor(ms / 1000)
+    const currentNanos = (ms - current * 1000) * 1_000_000
+    const outer = new Clock(zone)
+    const clock = inner === null ? outer : new Clock(resolveTz(inner))
+    const reading = new Parser(lex(rest), clock.names(current)).parse()
+    const placed = resolve(reading, clock, current, currentNanos, outer.offset(current))
+    if (placed === null) return null
+    const [instant, nanos] = placed
+    if (!(instant >= FIRST_SECOND && instant <= LAST_SECOND)) return null
+    const shown = zone.parts(new Date(instant * 1000)).year
+    if (shown < 1 || shown > 9999) return null
+    return new Date(instant * 1000 + Math.floor(nanos / 1_000_000))
+  } catch (err) {
+    if (err instanceof NotADate || err instanceof RangeError) return null
+    throw err
   }
-  raw = trimSpaces(raw, true, true)
-  if (raw.startsWith('@')) {
-    // gnulib's epoch grammar (findutils 4.10): blanks, a sign, a decimal
-    // count of seconds and a fraction with digits on both sides; `@0x1`,
-    // `@1e2`, `@1.` and `@.5` are not dates, however readily Number()
-    // would take them.
-    if (!EPOCH_RE.test(raw)) return null
-    return new Date(Number(raw.slice(1)) * 1000)
-  }
-  const current = now ?? new Date()
-  const tokens = lex(raw, localZones(reading, current))
-  if (tokens === null) return null
-  const fields = reading.parts(current)
-  const parsed: Parsed = {
-    year: fields.year,
-    yearDigits: 0,
-    month: fields.month + 1,
-    day: fields.day,
-    hour: fields.hour,
-    minutes: fields.minute,
-    seconds: fields.second,
-    ns: (current.getTime() % 1000) * 1_000_000,
-    meridian: MER24,
-    rel: noRel(),
-    relsSeen: false,
-    dayOrdinal: 0,
-    dayNumber: 0,
-    timeZone: 0,
-    localOffset: null,
-    datesSeen: 0,
-    daysSeen: 0,
-    timesSeen: 0,
-    zonesSeen: 0,
-    localZonesSeen: 0,
-    dstsSeen: 0,
-    jZonesSeen: 0,
-  }
-  let index = 0
-  while (index < tokens.length) {
-    const next = item(parsed, tokens, index)
-    if (next === null) return null
-    index = next
-  }
-  return resolve(parsed, reading, current)
 }
 
-// POSIX `MMDDhhmm[[CC]YY][.ss]`, the clock a bare `date` operand sets.
 const POSIX_TIME_RE = /^([0-9]{8}|[0-9]{10}|[0-9]{12})(?:\.([0-9]{2}))?$/
 
 // As GNU date reads it, measured on coreutils 9.7: no year is this year, a

@@ -290,24 +290,6 @@ class Decoration(StrEnum):
     FULL = "full"
 
 
-class FieldCompare(StrEnum):
-    """How a ref field sorts, git's ``cmp_type``: as text, or by the
-    number behind it."""
-
-    TEXT = "text"
-    NUMBER = "number"
-    TIME = "time"
-
-
-class FieldSource(StrEnum):
-    """Where a ref field's value comes from, git's ``info_source``: the
-    ref alone, the object's content, or its type and size."""
-
-    REF = "ref"
-    OBJECT = "object"
-    OBJECT_INFO = "object-info"
-
-
 class QuoteStyle(StrEnum):
     """``--shell``, ``--perl``, ``--python`` and ``--tcl``: how each
     field is quoted in a listing."""
@@ -332,36 +314,45 @@ class RefKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RefField:
-    """One ``%(...)`` field of a ref format or a sort key, parsed.
+    """One field a format or a sort key names, read once per listing.
 
     Args:
-        name (str): the field as typed, its ``*`` and arguments
-            included; two fields spelled alike are one field.
-        field (str): the field's own name, e.g. ``refname``.
-        deref (bool): the ``*`` prefix: read the object a tag peels to.
-        arg (str | None): the text after the first ``:``, None when
-            there is none or it is empty.
-        compare (FieldCompare): how the field sorts.
-        source (FieldSource): what the field is read from.
-        option (str): the argument the field's parser settled on, e.g.
-            ``short`` or ``lstrip``.
-        number (int): the count an option carries (``lstrip=2``,
-            ``short=10``, ``lines=3``, an ``align`` width).
-        words (frozenset[str]): the flags a list argument set, e.g. an
-            email's ``trim`` and ``mailmap``.
-        text (str): an ``if`` comparand or an ``align`` position.
+        text (str): the field as typed, ``*`` and argument included,
+            which is how a refusal names it.
+        name (str): the field alone, e.g. ``authordate``.
+        deref (bool): the ``*`` prefix: read what a tag peels to.
+        argument (str | None): what follows the colon, None without one.
+        variant (str): the argument's choice, e.g. ``short``, ``lstrip``,
+            ``track`` or ``lines``; empty for none.
+        count (int): the number the variant takes: components to strip,
+            an id's width or message lines.
+        options (frozenset[str]): the switches an email, an upstream or
+            an align collects from its comma list.
+        date (str | None): a date field's style, None for the default.
     """
 
+    text: str
     name: str
-    field: str
-    deref: bool
-    arg: str | None
-    compare: FieldCompare
-    source: FieldSource
-    option: str = ""
-    number: int = 0
-    words: frozenset[str] = frozenset()
-    text: str = ""
+    deref: bool = False
+    argument: str | None = None
+    variant: str = ""
+    count: int = 0
+    options: frozenset[str] = frozenset()
+    date: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FieldValue:
+    """A field's value for one ref.
+
+    Args:
+        text (str): what the field prints.
+        number (int | None): what it sorts by when it sorts as a number
+            (a size, a count, a date's instant); None to sort as text.
+    """
+
+    text: str
+    number: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,8 +361,10 @@ class RefFormat:
 
     Args:
         pieces (tuple[str | RefField, ...]): literal text, its escapes
-            already expanded, and fields, in order.
-        quote (QuoteStyle): how each field is quoted.
+            already expanded, and fields, ``align`` and ``if`` blocks
+            among them, in order.
+        quote (QuoteStyle): how each field, or each outermost block, is
+            quoted.
     """
 
     pieces: tuple[str | RefField, ...]
@@ -487,42 +480,6 @@ class RefContext:
     mailmap: tuple[MailmapEntry, ...] = ()
     date: DateMode = DateMode()
     suffixes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class FieldValue:
-    """A field's value for one ref.
-
-    Args:
-        text (str): what it renders as.
-        number (int): what it sorts by when it sorts as a number.
-    """
-
-    text: str
-    number: int = 0
-
-
-@dataclass(slots=True)
-class FormatFrame:
-    """One open block while a ref format renders: the whole row, an
-    ``%(align)`` or an ``%(if)``.
-
-    Args:
-        kind (str): ``root``, ``align`` or ``if``.
-        opener (RefField | None): the ``align`` or ``if`` field.
-        out (list[str]): what the block has rendered so far.
-        then_seen (bool): an ``if`` block reached its ``%(then)``.
-        satisfied (bool): what its condition came to.
-        head (FormatFrame | None): for the ``%(else)`` half of an
-            ``if``, the ``if`` it belongs to.
-    """
-
-    kind: str
-    opener: RefField | None = None
-    out: list[str] = field(default_factory=list)
-    then_seen: bool = False
-    satisfied: bool = False
-    head: "FormatFrame | None" = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -46,7 +46,14 @@ import type { ReadOnlyRefusal } from './types.ts'
 import { blockingRef, deleteRef, loadRefs, TAG_PREFIX, validRefName, writeRef } from './refs.ts'
 import { filterWords, listModeOption, refFilter, withoutFilterValues } from './ref_filter.ts'
 import { formatRefs, listingFormat, usedFields } from './ref_format.ts'
-import { configuredSort, listingResult, matchShort, refListing, sortKeys } from './ref_list.ts'
+import {
+  configuredSort,
+  listingResult,
+  matchShort,
+  refListing,
+  sortKeys,
+  sortsNamed,
+} from './ref_list.ts'
 import { repoArgs, type Repo } from './repo.ts'
 import { opened } from './session.ts'
 import { resolveObject } from './revparse.ts'
@@ -270,7 +277,9 @@ export async function tag(
       const [rows, stopped] = formatRefs(fmt, items, refCtx, keys, {
         omitEmpty: fl.asBool('omit_empty'),
         icase,
-        stream: filter === null || (filter.merged === null && filter.noMerged === null),
+        stream:
+          (keys === null || !sortsNamed(fl)) &&
+          (filter === null || (filter.merged === null && filter.noMerged === null)),
       })
       return listingResult(rows, errors, stopped)
     }

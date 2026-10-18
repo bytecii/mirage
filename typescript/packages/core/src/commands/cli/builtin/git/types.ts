@@ -262,23 +262,6 @@ export enum Decoration {
   FULL = 'full',
 }
 
-/** How a ref field sorts, git's `cmp_type`: as text, or by the number behind it. */
-export enum FieldCompare {
-  TEXT = 'text',
-  NUMBER = 'number',
-  TIME = 'time',
-}
-
-/**
- * Where a ref field's value comes from, git's `info_source`: the ref alone, the
- * object's content, or its type and size.
- */
-export enum FieldSource {
-  REF = 'ref',
-  OBJECT = 'object',
-  OBJECT_INFO = 'object-info',
-}
-
 /** `--shell`, `--perl`, `--python` and `--tcl`: how each field is quoted. */
 export enum QuoteStyle {
   NONE = 'none',
@@ -298,35 +281,45 @@ export enum RefKind {
   OTHER = 'other',
 }
 
-/** One `%(...)` field of a ref format or a sort key, parsed. */
+/** One field a format or a sort key names, read once per listing. */
 export interface RefField {
-  /** The field as typed, its `*` and arguments included. */
-  readonly name: string
-  /** The field's own name, e.g. `refname`. */
-  readonly field: string
-  /** The `*` prefix: read the object a tag peels to. */
-  readonly deref: boolean
-  /** The text after the first `:`, null when there is none or it is empty. */
-  readonly arg: string | null
-  readonly compare: FieldCompare
-  readonly source: FieldSource
-  /** The argument the field's parser settled on, e.g. `short` or `lstrip`. */
-  readonly option: string
-  /** The count an option carries (`lstrip=2`, `short=10`, an `align` width). */
-  readonly number: number
-  /** The flags a list argument set, e.g. an email's `trim` and `mailmap`. */
-  readonly words: ReadonlySet<string>
-  /**
-   * A second word an option carries: an `if` comparand, an `align` position,
-   * or the refname option an upstream field shows its ref with.
-   */
+  /** The field as typed, `*` and argument included, which is how a refusal names it. */
   readonly text: string
+  /** The field alone, e.g. `authordate`. */
+  readonly name: string
+  /** The `*` prefix: read what a tag peels to. */
+  readonly deref: boolean
+  /** What follows the colon, null without one. */
+  readonly argument: string | null
+  /** The argument's choice, e.g. `short`, `lstrip`, `track` or `lines`; empty for none. */
+  readonly variant: string
+  /** The number the variant takes: components to strip, an id's width or message lines. */
+  readonly count: number
+  /** The switches an email, an upstream or an align collects from its comma list. */
+  readonly options: ReadonlySet<string>
+  /** A date field's style, null for the default. */
+  readonly date: string | null
+}
+
+/** A field's value for one ref. */
+export interface FieldValue {
+  /** What the field prints. */
+  readonly text: string
+  /**
+   * What it sorts by when it sorts as a number (a size, a count, a date's
+   * instant); null to sort as text.
+   */
+  readonly number: number | null
 }
 
 /** A `--format` string, parsed once for every ref it renders. */
 export interface RefFormat {
-  /** Literal text, escapes already expanded, and fields, in order. */
+  /**
+   * Literal text, escapes already expanded, and fields, `align` and `if`
+   * blocks among them, in order.
+   */
   readonly pieces: readonly (string | RefField)[]
+  /** How each field, or each outermost block, is quoted. */
   readonly quote: QuoteStyle
 }
 
@@ -402,27 +395,6 @@ export interface RefContext {
   readonly date: DateMode
   /** `versionsort.suffix`. */
   readonly suffixes: readonly string[]
-}
-
-/** A field's value for one ref: what it renders as, and what it sorts by as a number. */
-export interface FieldValue {
-  readonly text: string
-  readonly number: number
-}
-
-/** One open block while a ref format renders: the whole row, an `%(align)` or an `%(if)`. */
-export interface FormatFrame {
-  readonly kind: 'root' | 'align' | 'if'
-  /** The `align` or `if` field. */
-  readonly opener: RefField | null
-  /** What the block has rendered so far. */
-  out: string[]
-  /** An `if` block reached its `%(then)`. */
-  thenSeen: boolean
-  /** What its condition came to. */
-  satisfied: boolean
-  /** For the `%(else)` half of an `if`, the `if` it belongs to. */
-  readonly head: FormatFrame | null
 }
 
 /** One `[+]<src>[:<dst>]` refspec. */

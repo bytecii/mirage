@@ -12,20 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Sequence
-from functools import cmp_to_key
-from os.path import commonprefix
+from collections.abc import Callable, Iterable, Sequence
 
 from mirage.commands.cli.builtin.git.errors import (
     FormatUsageError,
     GitError,
     UnparsableFormatError,
 )
-from mirage.commands.cli.builtin.git.ref_fields import field_value, parse_field
+from mirage.commands.cli.builtin.git.ref_fields import (
+    field_value,
+    parse_field,
+)
 from mirage.commands.cli.builtin.git.types import (
-    FieldCompare,
     FieldValue,
-    FormatFrame,
     QuoteStyle,
     RefContext,
     RefField,
@@ -36,177 +35,195 @@ from mirage.commands.cli.builtin.git.types import (
 )
 from mirage.shell.bytes import byte_char
 from mirage.utils.strverscmp import strverscmp
-from mirage.utils.width import char_width
+from mirage.utils.width import text_width
 
-HEX = "0123456789abcdefABCDEF"
-C_SPACE = " \t\n\v\f\r"
+HEX_DIGITS = "0123456789abcdefABCDEF"
+BLOCK_FIELDS = frozenset(("align", "if", "then", "else", "end"))
+SPACE = " \t\n\v\f\r"
+# The quoting styles that cannot carry a raw object's bytes.
+TEXT_QUOTES = (QuoteStyle.SHELL, QuoteStyle.PYTHON, QuoteStyle.TCL)
+TCL_ESCAPES = {
+    "\f": "\\f",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\v": "\\v",
+}
 VERSION_PREFIXES = ("version:", "v:")
-# The quote styles a bare %(raw) cannot be used with: raw content may
-# hold a NUL, which only perl's quoting carries.
-TEXT_QUOTES = (QuoteStyle.PYTHON, QuoteStyle.SHELL, QuoteStyle.TCL)
-TCL_ESCAPES = {"\f": "\\f", "\r": "\\r", "\n": "\\n", "\t": "\\t", "\v": "\\v"}
-
-
-def _next_field(template: str, start: int) -> int:
-    """``find_next``: where the next ``%(`` starts, -1 for none; a
-    ``%%`` is a quoted percent and never starts one.
-
-    Args:
-        template (str): the format.
-        start (int): where to look from.
-    """
-    i = start
-    while i < len(template):
-        if template[i] == "%":
-            if template.startswith("(", i + 1):
-                return i
-            if template.startswith("%", i + 1):
-                i += 1
-        i += 1
-    return -1
+# The sort a listing gets when the line names none: by name, upward.
+DEFAULT_KEY = "refname"
 
 
 def literal_text(text: str) -> str:
-    """``append_literal``: ``%%`` is a percent and ``%xx`` the byte it
-    names in hex; any other ``%`` stays.
+    """A format's text between fields: ``%%`` is a percent sign and
+    ``%`` with two hex digits the byte they spell; any other ``%`` is
+    itself.
 
     Args:
-        text (str): literal text between fields.
+        text (str): the text as typed.
     """
     out: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == "%":
-            if text.startswith("%", i + 1):
-                out.append("%")
-                i += 2
-                continue
-            pair = text[i + 1 : i + 3]
-            if len(pair) == 2 and pair[0] in HEX and pair[1] in HEX:
-                out.append(byte_char(int(pair, 16)))
-                i += 3
-                continue
-        out.append(text[i])
-        i += 1
+    at = 0
+    while at < len(text):
+        ch = text[at]
+        if ch == "%" and text.startswith("%", at + 1):
+            out.append("%")
+            at += 2
+        elif (
+            ch == "%"
+            and at + 2 < len(text)
+            and text[at + 1] in HEX_DIGITS
+            and text[at + 2] in HEX_DIGITS
+        ):
+            out.append(byte_char(int(text[at + 1 : at + 3], 16)))
+            at += 3
+        else:
+            out.append(ch)
+            at += 1
     return "".join(out)
+
+
+def _pieces(template: str) -> tuple[list[str | RefField], int | None]:
+    """A template's literal runs and fields, and where an unclosed
+    ``%(`` starts, None when every one closes.
+
+    Args:
+        template (str): the format.
+    """
+    pieces: list[str | RefField] = []
+    at = 0
+    while True:
+        start = template.find("%(", at)
+        while start != -1 and _escaped(template, at, start):
+            start = template.find("%(", start + 1)
+        if start == -1:
+            if at < len(template):
+                pieces.append(literal_text(template[at:]))
+            return pieces, None
+        end = template.find(")", start)
+        if end == -1:
+            return pieces, start
+        if at < start:
+            pieces.append(literal_text(template[at:start]))
+        pieces.append(parse_field(template[start + 2 : end]))
+        at = end + 1
+
+
+def _escaped(template: str, at: int, start: int) -> bool:
+    """Whether the ``%`` at ``start`` is the second half of a ``%%``
+    begun at or after ``at``.
+
+    Args:
+        template (str): the format.
+        at (int): where the current literal run starts.
+        start (int): where ``%(`` was found.
+    """
+    run = 0
+    while start - run - 1 >= at and template[start - run - 1] == "%":
+        run += 1
+    return run % 2 == 1
 
 
 def parse_format(
     template: str, quote: QuoteStyle = QuoteStyle.NONE
 ) -> RefFormat:
-    """Read a ``--format`` the way git's ``verify_ref_format`` does.
-
-    Every field is parsed here, before any ref is read, so a bad one is
-    refused by a listing that would print nothing.
+    """Read a ``--format`` string once for every ref it renders.
 
     Args:
-        template (str): the format as typed.
-        quote (QuoteStyle): the quoting option, which bare ``%(raw)``
-            refuses all but perl's of.
+        template (str): the format.
+        quote (QuoteStyle): the quoting option the line chose.
 
     Raises:
-        FormatUsageError: a ``%(`` with no ``)``.
-        GitError: a field git refuses, in its words.
+        FormatUsageError: a ``%(`` that never closes.
+        GitError: a field git refuses, or ``%(raw)`` under a quoting
+            style that cannot carry its bytes.
     """
-    pieces: list[str | RefField] = []
-    cursor = 0
-    while cursor < len(template):
-        start = _next_field(template, cursor)
-        if start == -1:
-            break
-        end = template.find(")", start)
-        if end == -1:
-            raise FormatUsageError(
-                f"malformed format string {template[start:]}"
-            )
-        if start > cursor:
-            pieces.append(literal_text(template[cursor:start]))
-        name = template[start + 2 : end]
-        field = parse_field(name)
-        if field.field == "rest":
-            raise GitError(f"this command reject atom %({name})")
-        if (
-            quote in TEXT_QUOTES
-            and field.field == "raw"
-            and field.option == "bare"
-        ):
-            raise GitError(
-                f"--format={name} cannot be used with --python, --shell, --tcl"
-            )
-        pieces.append(field)
-        cursor = end + 1
-    if cursor < len(template):
-        pieces.append(literal_text(template[cursor:]))
+    pieces, unclosed = _pieces(template)
+    if unclosed is not None:
+        raise FormatUsageError(
+            f"malformed format string {template[unclosed:]}"
+        )
+    _check_raw(pieces, quote)
     return RefFormat(pieces=tuple(pieces), quote=quote)
 
 
-def listing_format(template: str) -> RefFormat:
-    """A ``branch`` or ``tag`` format, whose unclosed ``%(`` is refused
-    as those verbs refuse it rather than with ``for-each-ref``'s usage.
-
-    Args:
-        template (str): the format as typed.
-    """
-    try:
-        return parse_format(template)
-    except FormatUsageError as exc:
-        raise UnparsableFormatError(
-            str(exc).removeprefix("malformed format string ")
-        ) from exc
-
-
-def parse_sort_keys(spellings: Sequence[str]) -> tuple[RefSortKey, ...]:
-    """``ref_sorting_options``: the sort keys, the last one given first.
-
-    Each key may start with ``-`` (reverse) and then ``version:`` or
-    ``v:`` (compare as versions); what is left is a field.
-
-    Args:
-        spellings (Sequence[str]): the keys as given, in line order.
-    """
-    keys: list[RefSortKey] = []
-    for spelling in spellings:
-        reverse = spelling.startswith("-")
-        rest = spelling[1:] if reverse else spelling
-        prefix = next(
-            (p for p in VERSION_PREFIXES if rest.startswith(p)), None
-        )
-        if prefix is not None:
-            rest = rest[len(prefix) :]
-        keys.append(
-            RefSortKey(
-                field=parse_field(rest),
-                reverse=reverse,
-                version=prefix is not None,
+def _check_raw(pieces: Iterable[str | RefField], quote: QuoteStyle) -> None:
+    if quote not in TEXT_QUOTES:
+        return
+    for piece in pieces:
+        if (
+            isinstance(piece, RefField)
+            and piece.name == "raw"
+            and not piece.variant
+        ):
+            raise GitError(
+                f"--format={piece.text} cannot be used with --python, --shell, --tcl"
             )
-        )
-    return tuple(reversed(keys))
+
+
+def listing_format(template: str) -> RefFormat:
+    """``branch``'s and ``tag``'s ``--format``, which refuse a ``%(``
+    that never closes in two lines rather than with the usage.
+
+    Args:
+        template (str): the format.
+
+    Raises:
+        UnparsableFormatError: a ``%(`` that never closes.
+        GitError: a field git refuses.
+    """
+    pieces, unclosed = _pieces(template)
+    if unclosed is not None:
+        raise UnparsableFormatError(template[unclosed:])
+    return RefFormat(pieces=tuple(pieces))
 
 
 def used_fields(
-    fmt: RefFormat, keys: Sequence[RefSortKey] = ()
+    fmt: RefFormat | None, keys: Iterable[RefSortKey]
 ) -> tuple[RefField, ...]:
-    """Every distinct field a listing reads, format fields first.
+    """Every field a listing reads: its format's and its sort keys'.
 
     Args:
-        fmt (RefFormat): the parsed format.
-        keys (Sequence[RefSortKey]): the sort keys.
+        fmt (RefFormat | None): the format, None for a built-in layout.
+        keys (Iterable[RefSortKey]): the sort keys.
     """
-    seen: dict[str, RefField] = {}
-    for piece in fmt.pieces:
-        if isinstance(piece, RefField):
-            seen.setdefault(piece.name, piece)
-    for key in keys:
-        seen.setdefault(key.field.name, key.field)
-    return tuple(seen.values())
+    fields = [p for p in fmt.pieces if isinstance(p, RefField)] if fmt else []
+    return (*fields, *(key.field for key in keys))
+
+
+def parse_sort_keys(spellings: Sequence[str]) -> tuple[RefSortKey, ...]:
+    """The ``--sort`` keys, the last given first, as git orders them.
+
+    Each is an optional ``-`` (descending), then an optional
+    ``version:`` or ``v:``, then a field.
+
+    Args:
+        spellings (Sequence[str]): the keys in line order.
+
+    Raises:
+        GitError: a key whose field git refuses.
+    """
+    keys = []
+    for spelling in reversed(spellings):
+        reverse = spelling.startswith("-")
+        rest = spelling[1:] if reverse else spelling
+        prefix = next((p for p in VERSION_PREFIXES if rest.startswith(p)), "")
+        keys.append(
+            RefSortKey(
+                field=parse_field(rest[len(prefix) :]),
+                reverse=reverse,
+                version=bool(prefix),
+            )
+        )
+    return tuple(keys)
 
 
 def quote_text(text: str, style: QuoteStyle) -> str:
-    """One value quoted the way ``quote_formatting`` does it.
+    """One field's text quoted for the language a quoting option names.
 
     Args:
-        text (str): the value.
-        style (QuoteStyle): the quoting option.
+        text (str): the text.
+        style (QuoteStyle): the quoting style.
     """
     if style is QuoteStyle.SHELL:
         return "'" + text.replace("'", "'\\''").replace("!", "'\\!'") + "'"
@@ -217,113 +234,180 @@ def quote_text(text: str, style: QuoteStyle) -> str:
         return "'" + escaped.replace("\n", "\\n") + "'"
     if style is QuoteStyle.TCL:
         out = []
-        for char in text:
-            if char in '[]{}$\\"':
-                out.append("\\" + char)
+        for ch in text:
+            if ch in '[]{}$\\"':
+                out.append("\\" + ch)
             else:
-                out.append(TCL_ESCAPES.get(char, char))
+                out.append(TCL_ESCAPES.get(ch, ch))
         return '"' + "".join(out) + '"'
     return text
 
 
-class ValueTable:
-    """Each listed ref's field values, filled all at once when first
-    read, as git's ``populate_value`` fills them.
+def _common_prefix(a: str, b: str) -> int:
+    """How many leading characters two names share."""
+    at = 0
+    while at < len(a) and at < len(b) and a[at] == b[at]:
+        at += 1
+    return at
 
-    Reading every field together is what makes an error one of them
-    raises (a date style git lacks) surface on the first ref that has
-    the field, whichever field was asked for.
+
+def _suffix_rank(name: str, off: int, suffixes: Sequence[str]) -> int | None:
+    """Which configured suffix decides where ``name`` sorts: of those
+    starting at or before the first difference and reaching it, the one
+    starting earliest, then the longest, then the first configured.
 
     Args:
-        fields (tuple[RefField, ...]): every field the listing reads.
+        name (str): one of the two names compared.
+        off (int): where the two names first differ.
+        suffixes (Sequence[str]): ``versionsort.suffix``, in order.
+    """
+    best: tuple[int, int, int] | None = None
+    for rank, suffix in enumerate(suffixes):
+        if not suffix:
+            continue
+        at = name.find(suffix)
+        while at != -1 and at <= off:
+            if at + len(suffix) >= off:
+                candidate = (at, -len(suffix), rank)
+                if best is None or candidate < best:
+                    best = candidate
+            at = name.find(suffix, at + 1)
+    return None if best is None else best[2]
+
+
+def versioncmp(a: str, b: str, suffixes: Sequence[str] = ()) -> int:
+    """Version order with ``versionsort.suffix``.
+
+    A name holding one of the suffixes where the two first differ sorts
+    before one holding none, and two holding different ones sort in the
+    order the suffixes were configured; an empty suffix in the list
+    places the names holding none. Anything else is ``strverscmp``.
+    Fitted to git 2.47.3 on 40,950 pairs of names.
+
+    Args:
+        a (str): the first name.
+        b (str): the second name.
+        suffixes (Sequence[str]): ``versionsort.suffix``, in order.
+    """
+    if suffixes and a != b:
+        off = _common_prefix(a, b)
+        rank_a = _suffix_rank(a, off, suffixes)
+        rank_b = _suffix_rank(b, off, suffixes)
+        if "" in suffixes:
+            empty = suffixes.index("")
+            rank_a = empty if rank_a is None else rank_a
+            rank_b = empty if rank_b is None else rank_b
+        if rank_a != rank_b:
+            if rank_a is None:
+                return 1
+            if rank_b is None:
+                return -1
+            return -1 if rank_a < rank_b else 1
+    return strverscmp(a, b)
+
+
+class ValueTable:
+    """Each field's value for each ref, read once however often a sort
+    or a row asks.
+
+    Args:
+        fields (Iterable[RefField]): the fields the listing reads.
         ctx (RefContext): the listing's facts.
     """
 
-    def __init__(self, fields: tuple[RefField, ...], ctx: RefContext) -> None:
-        self._fields = fields
-        self._ctx = ctx
-        self._rows: dict[str, dict[str, FieldValue]] = {}
+    def __init__(self, fields: Iterable[RefField], ctx: RefContext) -> None:
+        self.fields = tuple(fields)
+        self.ctx = ctx
+        self._values: dict[tuple[str, str], dict[RefField, FieldValue]] = {}
 
     def value(self, item: RefItem, field: RefField) -> FieldValue:
         """One field's value for one ref.
+
+        A ref's first read reads every field the listing uses, so one
+        refused for the ref stops the listing whichever field was asked
+        for, as git's does.
 
         Args:
             item (RefItem): the ref.
             field (RefField): the field.
         """
-        row = self._rows.get(item.name)
+        key = (item.name, item.kind.value)
+        row = self._values.get(key)
         if row is None:
             row = {
-                f.name: field_value(f, item, self._ctx) for f in self._fields
+                used: self._read(item, used)
+                for used in dict.fromkeys(self.fields)
             }
-            self._rows[item.name] = row
-        found = row.get(field.name)
-        return (
-            found if found is not None else field_value(field, item, self._ctx)
-        )
+            self._values[key] = row
+        found = row.get(field)
+        if found is None:
+            found = row[field] = self._read(item, field)
+        return found
+
+    def _read(self, item: RefItem, field: RefField) -> FieldValue:
+        if field.name in BLOCK_FIELDS:
+            return FieldValue("")
+        return field_value(field, item, self.ctx)
 
 
-def _swap_prereleases(
-    a: str, b: str, off: int, suffixes: Sequence[str]
-) -> int | None:
-    """``swap_prereleases``: a ``versionsort.suffix`` around the first
-    difference sorts its version before the one without it.
-
-    Args:
-        a (str): the first value.
-        b (str): the second value.
-        off (int): where they first differ.
-        suffixes (Sequence[str]): ``versionsort.suffix``, in order.
-    """
-    found = [[-1, off, -1], [-1, off, -1]]
-    for position, suffix in enumerate(suffixes):
-        start = off - len(suffix) if len(suffix) < off else 0
-        for text, match in ((a, found[0]), (b, found[1])):
-            end = match[1] if match[2] < len(suffix) else match[1] - 1
-            for i in range(start, end + 1):
-                if text.startswith(suffix, i):
-                    match[:] = [position, i, len(suffix)]
-                    break
-    first, second = found[0][0], found[1][0]
-    if first == second:
-        return None
-    if first >= 0 and second >= 0:
-        return first - second
-    return -1 if first >= 0 else 1
-
-
-def versioncmp(a: str, b: str, suffixes: Sequence[str] = ()) -> int:
-    """git's ``versioncmp``: glibc's ``strverscmp``, unless a
-    ``versionsort.suffix`` around the first difference decides.
+def display_width(text: str) -> int:
+    """How many terminal columns a name takes.
 
     Args:
-        a (str): the first value.
-        b (str): the second value.
-        suffixes (Sequence[str]): ``versionsort.suffix``.
+        text (str): the text.
     """
-    if suffixes and a != b:
-        off = len(commonprefix([a, b]))
-        swapped = _swap_prereleases(a, b, off, suffixes)
-        if swapped is not None:
-            return swapped
-    return strverscmp(a, b)
+    return text_width(text)
 
 
-def _compare_text(a: str, b: str, icase: bool) -> int:
-    """``strcmp``, or ``strcasecmp`` folding ASCII only.
+def _ascii_folded(text: str) -> str:
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in text)
 
-    Args:
-        a (str): the first value.
-        b (str): the second value.
-        icase (bool): ``--ignore-case``.
-    """
-    if icase:
-        a, b = _ascii_lower(a), _ascii_lower(b)
+
+def _order(a: str, b: str) -> int:
     return (a > b) - (a < b)
 
 
-def _ascii_lower(text: str) -> str:
-    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in text)
+def _compare(
+    key: RefSortKey,
+    a: FieldValue,
+    b: FieldValue,
+    ctx: RefContext,
+    icase: bool,
+) -> int:
+    if key.version:
+        return versioncmp(a.text, b.text, ctx.suffixes)
+    if a.number is not None and b.number is not None:
+        return (a.number > b.number) - (a.number < b.number)
+    if icase:
+        return _order(_ascii_folded(a.text), _ascii_folded(b.text))
+    return _order(a.text, b.text)
+
+
+def _merge_sort(
+    items: list[RefItem], compare: Callable[[RefItem, RefItem], int]
+) -> list[RefItem]:
+    """A top-down merge sort, halves split at ``n // 2`` and a tie taken
+    from the left, so the comparisons come in the order git's make them.
+
+    Args:
+        items (list[RefItem]): the refs, in name order.
+        compare (Callable[[RefItem, RefItem], int]): the order.
+    """
+    if len(items) <= 1:
+        return items
+    half = len(items) // 2
+    left = _merge_sort(items[:half], compare)
+    right = _merge_sort(items[half:], compare)
+    out: list[RefItem] = []
+    i = j = 0
+    while i < len(left) and j < len(right):
+        if compare(left[i], right[j]) <= 0:
+            out.append(left[i])
+            i += 1
+        else:
+            out.append(right[j])
+            j += 1
+    return [*out, *left[i:], *right[j:]]
 
 
 def sort_refs(
@@ -331,183 +415,178 @@ def sort_refs(
     keys: Sequence[RefSortKey],
     table: ValueTable,
     ctx: RefContext,
-    icase: bool = False,
+    icase: bool,
     detached_first: bool = False,
 ) -> list[RefItem]:
-    """``ref_array_sort``: order refs by each key in turn, then by name.
+    """The refs in the order the keys give, the first key deciding
+    first; a tie on every key goes by name, upward whatever the keys'
+    direction. A detached HEAD leads when ``detached_first`` says so.
 
-    The name that breaks a tie is never reversed, so ``-committerdate``
-    lists refs of one date in name order. ``branch`` puts a detached
-    HEAD first whatever the keys say.
+    The sort's first comparison of a date with a style
+    (``committerdate:short``), under whichever key, goes by the refs'
+    instants, and every later one by the dates as shown, as git's sort
+    does (measured on 504 random ref sets and eight styles against git
+    2.47.3 and 2.50.1, and on 1,800 random lists of up to four keys
+    against 2.50.1).
 
     Args:
-        items (Sequence[RefItem]): the refs.
+        items (Sequence[RefItem]): the refs, in name order.
         keys (Sequence[RefSortKey]): the keys, primary first.
-        table (ValueTable): their values.
-        ctx (RefContext): carries ``versionsort.suffix``.
-        icase (bool): ``--ignore-case``.
-        detached_first (bool): whether a detached HEAD leads.
-    """
+        table (ValueTable): the listing's values.
+        ctx (RefContext): the listing's facts.
+        icase (bool): ``--ignore-case``: text compares ASCII case folded.
+        detached_first (bool): put a detached HEAD first.
 
-    def by_key(key: RefSortKey, a: RefItem, b: RefItem) -> int:
-        va, vb = table.value(a, key.field), table.value(b, key.field)
-        if detached_first and RefKind.DETACHED in (a.kind, b.kind):
-            return -1 if a.kind is RefKind.DETACHED else 1
-        if key.version:
-            cmp = versioncmp(va.text, vb.text, ctx.suffixes)
-        elif key.field.compare is FieldCompare.TEXT:
-            cmp = _compare_text(va.text, vb.text, icase)
-        else:
-            cmp = (va.number > vb.number) - (va.number < vb.number)
-        return -cmp if key.reverse else cmp
+    Raises:
+        GitError: a key's field refused for some ref.
+    """
+    fresh = True
 
     def compare(a: RefItem, b: RefItem) -> int:
+        nonlocal fresh
+        if detached_first:
+            lead_a = a.kind is RefKind.DETACHED
+            lead_b = b.kind is RefKind.DETACHED
+            if lead_a != lead_b:
+                return -1 if lead_a else 1
         for key in keys:
-            cmp = by_key(key, a, b)
-            if cmp:
-                return cmp
-        return _compare_text(a.name, b.name, icase and bool(keys))
+            value_a, value_b = (
+                table.value(a, key.field),
+                table.value(b, key.field),
+            )
+            if key.field.date is not None:
+                if not fresh:
+                    value_a = FieldValue(value_a.text)
+                    value_b = FieldValue(value_b.text)
+                fresh = False
+            found = _compare(key, value_a, value_b, ctx, icase)
+            if found:
+                return -found if key.reverse else found
+        if icase:
+            return _order(
+                _ascii_folded(a.name), _ascii_folded(b.name)
+            ) or _order(a.name, b.name)
+        return _order(a.name, b.name)
 
-    return sorted(items, key=cmp_to_key(compare))
+    return _merge_sort(list(items), compare)
 
 
-def display_width(text: str) -> int:
-    """A text's display width, as ``utf8_strwidth`` counts it.
+class _Block:
+    """An ``align`` or ``if`` block being filled while a row renders.
 
     Args:
-        text (str): the text.
+        field (RefField): the field that opened it.
     """
-    return sum(max(char_width(char), 0) for char in text)
+
+    def __init__(self, field: RefField) -> None:
+        self.field = field
+        self.out: list[str] = []
+        self.condition: str | None = None
+        self.then: str | None = None
+
+
+def _holds(field: RefField, condition: str) -> bool:
+    argument = field.argument or ""
+    if field.variant == "equals":
+        return condition == argument[len("equals=") :]
+    if field.variant == "notequals":
+        return condition != argument[len("notequals=") :]
+    return condition.strip(SPACE) != ""
 
 
 def _aligned(text: str, field: RefField) -> str:
-    """``strbuf_utf8_align``: pad a block to a display width.
-
-    Args:
-        text (str): the block.
-        field (RefField): the ``align`` field, width and position.
-    """
-    pad = field.number - display_width(text)
-    if pad <= 0:
+    gap = field.count - text_width(text)
+    if gap <= 0:
         return text
-    if field.text == "left":
-        return text + " " * pad
-    if field.text == "right":
-        return " " * pad + text
-    return " " * (pad // 2) + text + " " * (pad - pad // 2)
+    if field.variant == "right":
+        return " " * gap + text
+    if field.variant == "middle":
+        left = gap // 2
+        return " " * left + text + " " * (gap - left)
+    return text + " " * gap
 
 
-def _satisfied(frame: FormatFrame, text: str) -> bool:
-    """Whether an ``%(if)`` holds for what it read before its ``then``.
-
-    Args:
-        frame (FormatFrame): the ``if`` frame.
-        text (str): what was rendered between ``%(if)`` and
-            ``%(then)``.
-    """
-    field = frame.opener
-    assert field is not None
-    if field.option == "equals":
-        return text == field.text
-    if field.option == "notequals":
-        return text != field.text
-    return bool(text.strip(C_SPACE))
+def _then_atom(blocks: list[_Block]) -> None:
+    block = blocks[-1] if blocks else None
+    if block is None or block.field.name != "if":
+        raise GitError("format: %(then) atom used without a %(if) atom")
+    if block.condition is not None:
+        raise GitError("format: %(then) atom used more than once")
+    block.condition = "".join(block.out)
+    block.out = []
 
 
-def _end_block(stack: list[FormatFrame], quote: QuoteStyle) -> None:
-    """``end_atom_handler``: close the innermost ``align`` or ``if``.
+def _else_atom(blocks: list[_Block]) -> None:
+    block = blocks[-1] if blocks else None
+    if block is None or block.field.name != "if":
+        raise GitError("format: %(else) atom used without a %(if) atom")
+    if block.condition is None:
+        raise GitError("format: %(else) atom used without a %(then) atom")
+    if block.then is not None:
+        raise GitError("format: %(else) atom used more than once")
+    block.then = "".join(block.out)
+    block.out = []
 
-    Args:
-        stack (list[FormatFrame]): the open blocks, root first.
-        quote (QuoteStyle): quotes the block if it is outermost.
-    """
-    current = stack[-1]
-    if current.kind == "root":
+
+def _end_atom(blocks: list[_Block]) -> str:
+    if not blocks:
         raise GitError("format: %(end) atom used without corresponding atom")
-    if current.kind == "align":
-        assert current.opener is not None
-        current.out = [_aligned("".join(current.out), current.opener)]
-    else:
-        head = current.head or current
-        if not head.then_seen:
-            raise GitError("format: %(if) atom used without a %(then) atom")
-        if current.head is not None:
-            branch = current
-            stack.pop()
-            current = stack[-1]
-            if not head.satisfied:
-                current.out = branch.out
-        elif not head.satisfied:
-            current.out = []
-    block = "".join(current.out)
-    stack.pop()
-    stack[-1].out.append(
-        quote_text(block, quote) if len(stack) == 1 else block
-    )
+    block = blocks.pop()
+    body = "".join(block.out)
+    if block.field.name == "align":
+        return _aligned(body, block.field)
+    if block.condition is None:
+        raise GitError("format: %(if) atom used without a %(then) atom")
+    then, other = (block.then, body) if block.then is not None else (body, "")
+    return then if _holds(block.field, block.condition) else other
 
 
-def render_ref(fmt: RefFormat, item: RefItem, table: ValueTable) -> str:
-    """``format_ref_array_item``: one ref through the format.
-
-    A field's value is quoted unless it sits inside an ``align`` or
-    ``if`` block, where the whole outermost block is quoted at its
-    ``%(end)`` instead; literal text is never quoted.
+def render_row(fmt: RefFormat, item: RefItem, table: ValueTable) -> str:
+    """One ref through a format: literal text as it is, each field (or
+    each outermost block) quoted on its own.
 
     Args:
-        fmt (RefFormat): the parsed format.
+        fmt (RefFormat): the format.
         item (RefItem): the ref.
         table (ValueTable): the listing's values.
 
     Raises:
-        GitError: blocks that do not nest, in git's words.
+        GitError: blocks that do not nest, or a field refused for this
+            ref.
     """
-    stack = [FormatFrame(kind="root")]
+    out: list[str] = []
+    blocks: list[_Block] = []
+
+    def emit(text: str, quoted: bool) -> None:
+        if blocks:
+            blocks[-1].out.append(text)
+        else:
+            out.append(quote_text(text, fmt.quote) if quoted else text)
+
     for piece in fmt.pieces:
         if isinstance(piece, str):
-            stack[-1].out.append(piece)
-            continue
-        value = table.value(item, piece)
-        head = piece.field
-        if head == "align":
-            stack.append(FormatFrame(kind="align", opener=piece))
-        elif head == "if":
-            stack.append(FormatFrame(kind="if", opener=piece))
-        elif head == "then":
-            frame = stack[-1]
-            if frame.kind != "if":
-                raise GitError(
-                    "format: %(then) atom used without a %(if) atom"
-                )
-            if (frame.head or frame).then_seen:
-                raise GitError("format: %(then) atom used more than once")
-            frame.then_seen = True
-            frame.satisfied = _satisfied(frame, "".join(frame.out))
-            frame.out = []
-        elif head == "else":
-            frame = stack[-1]
-            if frame.kind != "if":
-                raise GitError(
-                    "format: %(else) atom used without a %(if) atom"
-                )
-            owner = frame.head or frame
-            if not owner.then_seen:
-                raise GitError(
-                    "format: %(else) atom used without a %(then) atom"
-                )
-            if frame.head is not None:
-                raise GitError("format: %(else) atom used more than once")
-            stack.append(
-                FormatFrame(kind="if", opener=frame.opener, head=frame)
-            )
-        elif head == "end":
-            _end_block(stack, fmt.quote)
-        elif len(stack) == 1:
-            stack[-1].out.append(quote_text(value.text, fmt.quote))
+            emit(piece, False)
+        elif piece.name in ("align", "if"):
+            blocks.append(_Block(piece))
+        elif piece.name == "then":
+            _then_atom(blocks)
+        elif piece.name == "else":
+            _else_atom(blocks)
+        elif piece.name == "end":
+            emit(_end_atom(blocks), True)
         else:
-            stack[-1].out.append(value.text)
-    if len(stack) > 1:
+            emit(table.value(item, piece).text, True)
+    if blocks:
         raise GitError("format: %(end) atom missing")
-    return "".join(stack[0].out)
+    return "".join(out)
+
+
+def _default_order(keys: Sequence[RefSortKey]) -> bool:
+    return (
+        len(keys) == 1
+        and keys[0].field.text == DEFAULT_KEY
+        and not (keys[0].reverse or keys[0].version)
+    )
 
 
 def format_refs(
@@ -521,52 +600,63 @@ def format_refs(
     detached_first: bool = False,
     stream: bool = True,
 ) -> tuple[str, GitError | None]:
-    """``filter_and_format_refs``: sort the refs, then print each one.
+    """A listing through ``--format``, one row per ref.
 
-    A listing sorted by name alone is printed ref by ref, as git streams
-    it, so a field that fails on a later ref (a date style git lacks,
-    read only off a commit) fails after the refs before it printed; any
-    other listing reads every ref while sorting, before it prints one.
+    A listing in name order (``--no-sort``, or the one sort a line gets
+    by default, case-sensitive) writes each row as it renders, in the order the refs
+    came, so a field refused on a later ref stops it with the rows before
+    already out; a sorted one renders every row first and prints none
+    when one is refused.
+    ``--count`` takes refs, an omitted empty row among them.
 
     Args:
-        fmt (RefFormat): the parsed format.
+        fmt (RefFormat): the format.
         items (Sequence[RefItem]): the refs, in name order.
         ctx (RefContext): the listing's facts.
-        keys (Sequence[RefSortKey] | None): the sort keys, primary
-            first; None for ``--no-sort``.
-        count (int): ``--count``, zero for every ref.
-        omit_empty (bool): ``--omit-empty``: an empty row prints no
-            newline.
+        keys (Sequence[RefSortKey] | None): the sort keys, primary first;
+            None for ``--no-sort``.
+        count (int): ``--count``, 0 for every ref.
+        omit_empty (bool): ``--omit-empty``: no line for an empty row.
         icase (bool): ``--ignore-case``.
-        detached_first (bool): whether a detached HEAD leads.
-        stream (bool): whether a listing sorted by name alone may be
-            printed ref by ref; ``--merged`` and ``branch`` never are.
+        detached_first (bool): a detached HEAD leads.
+        stream (bool): whether the listing may write rows as it renders,
+            which a line naming its sort, or a commit filter that walks
+            history first, rules out.
 
     Returns:
-        tuple[str, GitError | None]: what was printed, and the error the
-        listing stopped at.
+        tuple[str, GitError | None]: the rows printed, and the refusal
+        the listing stopped at.
     """
     table = ValueTable(used_fields(fmt, keys or ()), ctx)
-    rows: list[str] = []
+    # Case folding reorders even the default sort, so only a
+    # case-sensitive one streams.
+    streamed = stream and (
+        keys is None or (not icase and _default_order(keys))
+    )
     try:
-        ordered = list(items)
-        # Git 2.50.1's can_do_iterative_format checks the atom type, even
-        # for :short/:lstrip after --no-sort removes the default tie-breaker.
-        by_name = keys is None or (
-            len(keys) == 1
-            and not keys[0].reverse
-            and not keys[0].version
-            and not icase
-            and keys[0].field.field == "refname"
+        ordered = (
+            list(items)
+            if keys is None or streamed
+            else sort_refs(items, keys, table, ctx, icase, detached_first)
         )
-        if not (stream and by_name) and keys:
-            ordered = sort_refs(
-                ordered, keys, table, ctx, icase, detached_first
-            )
-        for item in ordered[:count] if count else ordered:
-            row = render_ref(fmt, item, table)
-            if row or not omit_empty:
-                rows.append(row + "\n")
     except GitError as exc:
-        return "".join(rows), exc
-    return "".join(rows), None
+        return "", exc
+    # A streamed listing stops at its count; a sorted one renders every
+    # row before the count takes the first.
+    rows: list[str] = []
+    stopped: GitError | None = None
+    for taken, item in enumerate(ordered):
+        if streamed and 0 < count <= taken:
+            break
+        try:
+            rows.append(render_row(fmt, item, table))
+        except GitError as exc:
+            if not streamed:
+                return "", exc
+            stopped = exc
+            break
+    if count > 0:
+        rows = rows[:count]
+    return "".join(
+        f"{row}\n" for row in rows if row or not omit_empty
+    ), stopped

@@ -130,11 +130,10 @@ function date(
     if (placed === null) return invalidDate(setting)
     dt = placed
   } else if (d !== null && d.trim() === '') {
-    // GNU ACCEPTS an empty (or blank) expression, exit 0: gnulib's
-    // parse-datetime sees no component at all and falls through to "a date
-    // with no time", which is today at midnight. Measured on coreutils
-    // 9.4: `date -d ''` and `date -d '   '` both print today 00:00:00 in
-    // the command's zone.
+    // GNU ACCEPTS an empty (or blank) expression, exit 0: with no item at
+    // all it names today at midnight. Measured on coreutils 9.4: `date -d
+    // ''` and `date -d '   '` both print today 00:00:00 in the command's
+    // zone.
     const midnight = parseDateExpr(gnuStrftime(new Date(), '%Y-%m-%d', zone), zone)
     // Today's own ISO date always parses; the fallback is for the type.
     dt = midnight ?? new Date()

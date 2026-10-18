@@ -14,1137 +14,1204 @@
 
 import math
 import re
-from calendar import monthrange
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 
-from mirage.utils.timezone import resolve_tz
+from mirage.utils.timezone import posix_transitions, resolve_tz
 
-_EPOCH_RE = re.compile(r"@\s*[+-]?\d+(?:\.\d+)?")
-# POSIX `MMDDhhmm[[CC]YY][.ss]`, the clock a bare `date` operand sets.
-# [0-9], not \d: python's \d also matches Unicode digits, which gnulib
-# refuses.
 _POSIX_TIME_RE = re.compile(r"([0-9]{8}|[0-9]{10}|[0-9]{12})(\.[0-9]{2})?")
-_FIRST_SECOND = datetime.min.replace(tzinfo=timezone.utc).timestamp()
-_LAST_SECOND = datetime.max.replace(
-    tzinfo=timezone.utc, microsecond=0
-).timestamp()
 
+# The moments mirage holds, as Python's datetime does: 0001-01-01 00:00:00
+# to 9999-12-31 23:59:59 UTC.
+_FIRST_SECOND = -62135596800
+_LAST_SECOND = 253402300799
+_DAY = 86400
+_NANOS = 1_000_000_000
+# date reads each number, and keeps each relative count, in a signed 64-bit
+# integer, refusing one that overflows it.
+_INT64 = 1 << 63
 
-_SPACES = " \t\n\v\f\r"
-_HOUR = 3600
-_BILLION = 1_000_000_000
-_MER24, _AM, _PM = 0, 1, 2
-# Each unit token's field of a relative item.
-_UNITS = {
-    "YEAR_UNIT": "year",
-    "MONTH_UNIT": "month",
-    "DAY_UNIT": "day",
-    "HOUR_UNIT": "hour",
-    "MINUTE_UNIT": "minutes",
-    "SEC_UNIT": "seconds",
-}
+_BLANKS = " \t\n\v\f\r"
+_DIGITS = "0123456789"
+_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_SIGNS = "+-"
 
-# gnulib parse-datetime's word tables (coreutils 9.7), in the order
-# lookup_word tries them.
-_MERIDIANS = {"AM": _AM, "A.M.": _AM, "PM": _PM, "P.M.": _PM}
-_MONTHS_AND_DAYS = (
-    ("JANUARY", "MONTH", 1),
-    ("FEBRUARY", "MONTH", 2),
-    ("MARCH", "MONTH", 3),
-    ("APRIL", "MONTH", 4),
-    ("MAY", "MONTH", 5),
-    ("JUNE", "MONTH", 6),
-    ("JULY", "MONTH", 7),
-    ("AUGUST", "MONTH", 8),
-    ("SEPTEMBER", "MONTH", 9),
-    ("SEPT", "MONTH", 9),
-    ("OCTOBER", "MONTH", 10),
-    ("NOVEMBER", "MONTH", 11),
-    ("DECEMBER", "MONTH", 12),
-    ("SUNDAY", "DAY", 0),
-    ("MONDAY", "DAY", 1),
-    ("TUESDAY", "DAY", 2),
-    ("TUES", "DAY", 2),
-    ("WEDNESDAY", "DAY", 3),
-    ("WEDNES", "DAY", 3),
-    ("THURSDAY", "DAY", 4),
-    ("THUR", "DAY", 4),
-    ("THURS", "DAY", 4),
-    ("FRIDAY", "DAY", 5),
-    ("SATURDAY", "DAY", 6),
+_MONTHS = (
+    "JANUARY",
+    "FEBRUARY",
+    "MARCH",
+    "APRIL",
+    "MAY",
+    "JUNE",
+    "JULY",
+    "AUGUST",
+    "SEPTEMBER",
+    "OCTOBER",
+    "NOVEMBER",
+    "DECEMBER",
 )
-_TIME_UNITS = {
-    "YEAR": ("YEAR_UNIT", 1),
-    "MONTH": ("MONTH_UNIT", 1),
-    "FORTNIGHT": ("DAY_UNIT", 14),
-    "WEEK": ("DAY_UNIT", 7),
-    "DAY": ("DAY_UNIT", 1),
-    "HOUR": ("HOUR_UNIT", 1),
-    "MINUTE": ("MINUTE_UNIT", 1),
-    "MIN": ("MINUTE_UNIT", 1),
-    "SECOND": ("SEC_UNIT", 1),
-    "SEC": ("SEC_UNIT", 1),
+_WEEKDAYS = (
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+)
+# Longer abbreviations date reads beside the three-letter ones.
+_NAMED_DAYS = {
+    "SEPT": ("month", 9),
+    "TUES": ("weekday", 2),
+    "WEDNES": ("weekday", 3),
 }
-_RELATIVE_WORDS = {
-    "TOMORROW": ("DAY_SHIFT", 1),
-    "YESTERDAY": ("DAY_SHIFT", -1),
-    "TODAY": ("DAY_SHIFT", 0),
-    "NOW": ("DAY_SHIFT", 0),
-    "LAST": ("ORDINAL", -1),
-    "THIS": ("ORDINAL", 0),
-    "NEXT": ("ORDINAL", 1),
-    "FIRST": ("ORDINAL", 1),
-    "THIRD": ("ORDINAL", 3),
-    "FOURTH": ("ORDINAL", 4),
-    "FIFTH": ("ORDINAL", 5),
-    "SIXTH": ("ORDINAL", 6),
-    "SEVENTH": ("ORDINAL", 7),
-    "EIGHTH": ("ORDINAL", 8),
-    "NINTH": ("ORDINAL", 9),
-    "TENTH": ("ORDINAL", 10),
-    "ELEVENTH": ("ORDINAL", 11),
-    "TWELFTH": ("ORDINAL", 12),
-    "AGO": ("AGO", -1),
-    "HENCE": ("AGO", 1),
+_NAMED_DAYS |= {"THUR": ("weekday", 4), "THURS": ("weekday", 4)}
+# (kind, amount): a unit counts months, days or seconds.
+_UNITS = {
+    "YEAR": ("months", 12),
+    "MONTH": ("months", 1),
+    "FORTNIGHT": ("days", 14),
+    "WEEK": ("days", 7),
+    "DAY": ("days", 1),
+    "HOUR": ("seconds", 3600),
+    "MINUTE": ("seconds", 60),
+    "MIN": ("seconds", 60),
+    "SECOND": ("seconds", 1),
+    "SEC": ("seconds", 1),
 }
-_UNIVERSAL_ZONES = {"GMT": 0, "UT": 0, "UTC": 0}
-# Seconds east of UTC; a DAYZONE is an hour more.
-_ZONES = {
-    "WET": ("ZONE", 0),
-    "WEST": ("DAYZONE", 0),
-    "BST": ("DAYZONE", 0),
-    "ART": ("ZONE", -3 * _HOUR),
-    "BRT": ("ZONE", -3 * _HOUR),
-    "BRST": ("DAYZONE", -3 * _HOUR),
-    "NST": ("ZONE", -(3 * _HOUR + 1800)),
-    "NDT": ("DAYZONE", -(3 * _HOUR + 1800)),
-    "AST": ("ZONE", -4 * _HOUR),
-    "ADT": ("DAYZONE", -4 * _HOUR),
-    "CLT": ("ZONE", -4 * _HOUR),
-    "CLST": ("DAYZONE", -4 * _HOUR),
-    "EST": ("ZONE", -5 * _HOUR),
-    "EDT": ("DAYZONE", -5 * _HOUR),
-    "CST": ("ZONE", -6 * _HOUR),
-    "CDT": ("DAYZONE", -6 * _HOUR),
-    "MST": ("ZONE", -7 * _HOUR),
-    "MDT": ("DAYZONE", -7 * _HOUR),
-    "PST": ("ZONE", -8 * _HOUR),
-    "PDT": ("DAYZONE", -8 * _HOUR),
-    "AKST": ("ZONE", -9 * _HOUR),
-    "AKDT": ("DAYZONE", -9 * _HOUR),
-    "HST": ("ZONE", -10 * _HOUR),
-    "HAST": ("ZONE", -10 * _HOUR),
-    "HADT": ("DAYZONE", -10 * _HOUR),
-    "SST": ("ZONE", -12 * _HOUR),
-    "WAT": ("ZONE", _HOUR),
-    "CET": ("ZONE", _HOUR),
-    "CEST": ("DAYZONE", _HOUR),
-    "MET": ("ZONE", _HOUR),
-    "MEZ": ("ZONE", _HOUR),
-    "MEST": ("DAYZONE", _HOUR),
-    "MESZ": ("DAYZONE", _HOUR),
-    "EET": ("ZONE", 2 * _HOUR),
-    "EEST": ("DAYZONE", 2 * _HOUR),
-    "CAT": ("ZONE", 2 * _HOUR),
-    "SAST": ("ZONE", 2 * _HOUR),
-    "EAT": ("ZONE", 3 * _HOUR),
-    "MSK": ("ZONE", 3 * _HOUR),
-    "MSD": ("DAYZONE", 3 * _HOUR),
-    "IST": ("ZONE", 5 * _HOUR + 1800),
-    "SGT": ("ZONE", 8 * _HOUR),
-    "KST": ("ZONE", 9 * _HOUR),
-    "JST": ("ZONE", 9 * _HOUR),
-    "GST": ("ZONE", 10 * _HOUR),
-    "NZST": ("ZONE", 12 * _HOUR),
-    "NZDT": ("DAYZONE", 12 * _HOUR),
+_DAY_WORDS = {"TOMORROW": 1, "YESTERDAY": -1, "TODAY": 0, "NOW": 0}
+# "SECOND" is the unit, so the second ordinal has no word.
+_ORDINALS = {"LAST": -1, "THIS": 0, "NEXT": 1, "FIRST": 1, "THIRD": 3}
+_ORDINALS |= {"FOURTH": 4, "FIFTH": 5, "SIXTH": 6, "SEVENTH": 7, "EIGHTH": 8}
+_ORDINALS |= {"NINTH": 9, "TENTH": 10, "ELEVENTH": 11, "TWELFTH": 12}
+_SUFFIXES = {"AGO": -1, "HENCE": 1}
+_MERIDIANS = {"AM": 0, "A.M.": 0, "PM": 12, "P.M.": 12}
+# The zone names date accepts, measured on coreutils 9.7, each at its UTC
+# offset in minutes as tzdata and RFC 5322 give it (SST is read at -12:00).
+# The second set names daylight time, which takes no "DST" and no offset
+# after it.
+_STANDARD_ZONES = {
+    "UT": 0,
+    "UTC": 0,
+    "GMT": 0,
+    "WET": 0,
+    "WAT": 60,
+    "CET": 60,
+    "MET": 60,
+    "MEZ": 60,
+    "EET": 120,
+    "CAT": 120,
+    "SAST": 120,
+    "EAT": 180,
+    "MSK": 180,
+    "IST": 330,
+    "SGT": 480,
+    "KST": 540,
+    "JST": 540,
+    "GST": 600,
+    "NZST": 720,
+    "ART": -180,
+    "BRT": -180,
+    "NST": -210,
+    "AST": -240,
+    "CLT": -240,
+    "EST": -300,
+    "CST": -360,
+    "MST": -420,
+    "PST": -480,
+    "AKST": -540,
+    "HST": -600,
+    "HAST": -600,
+    "SST": -720,
 }
-# The military letters, RFC 5322's way round; T is the ISO 8601
-# separator and J the local zone.
-_MILITARY = {
-    **{letter: (i + 1) * _HOUR for i, letter in enumerate("ABCDEFGHI")},
-    **{letter: (i + 10) * _HOUR for i, letter in enumerate("KLM")},
-    **{letter: -(i + 1) * _HOUR for i, letter in enumerate("NOPQRS")},
-    **{letter: -(i + 8) * _HOUR for i, letter in enumerate("UVWXY")},
-    "Z": 0,
+_DAYLIGHT_ZONES = {
+    "WEST": 60,
+    "BST": 60,
+    "CEST": 120,
+    "MEST": 120,
+    "MESZ": 120,
+    "EEST": 180,
+    "MSD": 240,
+    "NZDT": 780,
+    "BRST": -120,
+    "NDT": -150,
+    "ADT": -180,
+    "CLST": -180,
+    "EDT": -240,
+    "CDT": -300,
+    "MDT": -360,
+    "PDT": -420,
+    "AKDT": -480,
+    "HADT": -540,
 }
+# A zone correction reaches a whole day either way.
+_ZONE_LIMIT = 24 * 60
+_UNIT_KINDS = ("months", "days", "seconds")
+# Names the zone's own abbreviations never stand in for.
+_FIXED_NAMES = ("GMT", "UT", "UTC")
 
 
-@dataclass(frozen=True, slots=True)
+class _NotADate(Exception):
+    """A date expression date would answer with ``invalid date``."""
+
+
+@dataclass(frozen=True)
 class _Token:
-    """One lexeme of a date expression, gnulib's yylex output.
+    """One lexeme of a date expression.
 
-    Args:
-        kind (str): the token type: UNUMBER, SNUMBER, UDECIMAL,
-            SDECIMAL, a word's table type, or a lone character.
-        value (int): the number or table value.
-        digits (int): how many digits a number was written with.
-        ns (int): a decimal's nanoseconds, always a positive offset.
-        negative (bool): a number written with a minus sign, zero too.
-        offset (int | None): a local zone's offset east of UTC, None
-            when its abbreviation names both of the zone's offsets.
+    A number keeps its digits as typed, the sign that led it (``""`` for
+    none) and, after a ``.`` or ``,``, its fraction in nanoseconds; a word
+    is upper-cased, dots kept; anything else is a single character.
     """
 
     kind: str
+    text: str
+    sign: str = ""
     value: int = 0
-    digits: int = 0
-    ns: int = 0
-    negative: bool = False
-    offset: int | None = None
+    nanos: int | None = None
 
 
-@dataclass
-class _Rel:
-    year: int = 0
-    month: int = 0
-    day: int = 0
-    hour: int = 0
-    minutes: int = 0
-    seconds: int = 0
-    ns: int = 0
-
-
-@dataclass
-class _Parsed:
-    """What the items of an expression set, gnulib's parser_control: the
-    calendar fields start as the current moment's, the counters count each kind
-    of item.
-    """
-
-    year: int
-    year_digits: int
-    month: int
-    day: int
-    hour: int
-    minutes: int
-    seconds: int
-    ns: int
-    meridian: int = _MER24
-    rel: _Rel = field(default_factory=_Rel)
-    rels_seen: bool = False
-    day_ordinal: int = 0
-    day_number: int = 0
-    time_zone: int = 0
-    local_offset: int | None = None
-    dates_seen: int = 0
-    days_seen: int = 0
-    times_seen: int = 0
-    zones_seen: int = 0
-    local_zones_seen: int = 0
-    dsts_seen: int = 0
-    j_zones_seen: int = 0
-
-
-def _local_zones(tz: tzinfo | None, now: datetime) -> dict[str, int | None]:
-    """The zone abbreviations the reading zone itself uses, gnulib's
-    local_time_zone_table: the current one, and the first different
-    offset's in the next three quarters, each with the offset it
-    names. An abbreviation naming both offsets names neither.
+def _military(letter: str) -> int:
+    """Minutes east of UTC for a military zone letter, J excluded.
 
     Args:
-        tz (tzinfo | None): the zone the expression is read in.
-        now (datetime): the current moment.
+        letter (str): one upper-case letter.
     """
-    if tz is None or now.tzinfo is None:
-        return {}
-    table: dict[str, int | None] = {}
-    first = now.utcoffset()
-    name = now.tzname()
-    if name is None or first is None:
-        return table
-    table[name] = int(first.total_seconds())
-    for quarter in (1, 2, 3):
-        probe = datetime.fromtimestamp(
-            now.timestamp() + quarter * 90 * 86400, tz
-        )
-        offset = probe.utcoffset()
-        other = probe.tzname()
-        if offset is None or other is None or offset == first:
-            continue
-        if other == name:
-            table[name] = None
-        else:
-            table[other] = int(offset.total_seconds())
-        break
-    return table
+    if letter == "Z":
+        return 0
+    if letter < "J":
+        return (ord(letter) - ord("A") + 1) * 60
+    if letter < "N":
+        return (ord(letter) - ord("A")) * 60
+    return -(ord(letter) - ord("N") + 1) * 60
 
 
-def _zone_token(word: str, local: dict[str, int | None]) -> _Token | None:
-    if word in _UNIVERSAL_ZONES:
-        return _Token("ZONE", _UNIVERSAL_ZONES[word])
-    if word in local:
-        return _Token("LOCAL_ZONE", offset=local[word])
-    if word in _ZONES:
-        kind, value = _ZONES[word]
-        return _Token(kind, value)
-    return None
+def _meaning(word: str) -> tuple[str, int] | None:
+    """What an upper-cased word names, as ``(kind, value)``.
 
-
-def _word_token(text: str, local: dict[str, int | None]) -> _Token | None:
-    """A word as gnulib's lookup_word classifies it, None for one it
-    does not know.
+    Kinds: ``meridian`` (hours to add), ``month`` (1-12), ``weekday``
+    (0 is Sunday), ``dst``, a unit (``months``/``days``/``seconds`` with
+    its size), ``today`` (and its neighbours, in days), ``ordinal``,
+    ``suffix`` (ago, hence), ``zone`` and ``daylight`` (minutes east) and
+    ``local`` (J, the zone the expression is read in).
 
     Args:
-        text (str): the letters and dots as typed.
-        local (dict[str, int | None]): the reading zone's abbreviations.
+        word (str): the word, upper-cased, dots kept.
     """
-    word = text.upper()
     if word in _MERIDIANS:
-        return _Token("MERIDIAN", _MERIDIANS[word])
-    abbrev = len(word) == 3 or (len(word) == 4 and word[3] == ".")
-    for name, kind, value in _MONTHS_AND_DAYS:
-        if (name[:3] == word[:3]) if abbrev else name == word:
-            return _Token(kind, value)
-    zone = _zone_token(word, local)
-    if zone is not None:
-        return zone
+        return "meridian", _MERIDIANS[word]
+    if word in _MONTHS:
+        return "month", _MONTHS.index(word) + 1
+    if word in _WEEKDAYS:
+        return "weekday", _WEEKDAYS.index(word)
+    if word in _NAMED_DAYS:
+        return _NAMED_DAYS[word]
+    short = (
+        word[:3]
+        if len(word) == 3 or (len(word) == 4 and word[3] == ".")
+        else ""
+    )
+    if short.isalpha():
+        for at, name in enumerate(_MONTHS):
+            if name.startswith(short):
+                return "month", at + 1
+        for at, name in enumerate(_WEEKDAYS):
+            if name.startswith(short):
+                return "weekday", at
     if word == "DST":
-        return _Token("DST")
-    for unit in (word, word[:-1] if word.endswith("S") else None):
-        if unit in _TIME_UNITS:
-            kind, value = _TIME_UNITS[unit]
-            return _Token(kind, value)
-    if word in _RELATIVE_WORDS:
-        kind, value = _RELATIVE_WORDS[word]
-        return _Token(kind, value)
+        return "dst", 0
+    for unit in (word, word[:-1] if word.endswith("S") else ""):
+        if unit in _UNITS:
+            return _UNITS[unit]
+    if word in _DAY_WORDS:
+        return "today", _DAY_WORDS[word]
+    if word in _ORDINALS:
+        return "ordinal", _ORDINALS[word]
+    if word in _SUFFIXES:
+        return "suffix", _SUFFIXES[word]
+    bare = word.replace(".", "")
+    if bare in _STANDARD_ZONES and len(bare) > 1:
+        return "zone", _STANDARD_ZONES[bare]
+    if bare in _DAYLIGHT_ZONES:
+        return "daylight", _DAYLIGHT_ZONES[bare]
     if len(word) == 1:
-        if word in ("J", "T"):
-            return _Token(word)
-        if word in _MILITARY:
-            return _Token("ZONE", _MILITARY[word])
-    if "." in word:
-        return _zone_token(word.replace(".", ""), local)
+        return ("local", 0) if word == "J" else ("zone", _military(word))
     return None
 
 
-def _lex(text: str, local: dict[str, int | None]) -> list[_Token] | None:
-    """gnulib's yylex over the whole expression, None at a word it does not
-    know or a number past 64 bits. A sign binds to the number after it, ``.``
-    or ``,`` makes a decimal of up to nine fraction digits, and a parenthesized
-    comment is skipped.
+def _bare_token(kind: str, text: str) -> _Token:
+    """A word or a character, which carries no number."""
+    return _Token(kind, text)
+
+
+def _lex_number(text: str, at: int, sign: str) -> tuple[_Token, int]:
+    """The number whose digits start at ``at``, and where it ends.
 
     Args:
         text (str): the expression.
-        local (dict[str, int | None]): the reading zone's abbreviations.
+        at (int): the first digit.
+        sign (str): the sign that led it, or ``""``.
+    """
+    stop = at
+    while stop < len(text) and text[stop] in _DIGITS:
+        stop += 1
+    digits = text[at:stop]
+    nanos = None
+    if (
+        stop + 1 < len(text)
+        and text[stop] in ".,"
+        and text[stop + 1] in _DIGITS
+    ):
+        end = stop + 1
+        while end < len(text) and text[end] in _DIGITS:
+            end += 1
+        fraction = text[stop + 1 : end]
+        # Nanoseconds are all date keeps; further digits are dropped,
+        # though a negative number's nonzero ones still take it one
+        # nanosecond further down.
+        nanos = int(fraction[:9].ljust(9, "0"))
+        if sign == "-" and fraction[9:].strip("0"):
+            nanos += 1
+        stop = end
+    size = int(digits)
+    if size >= _INT64:
+        raise _NotADate
+    value = -size if sign == "-" else size
+    return _Token("number", digits, sign, value, nanos), stop
+
+
+def _lex(text: str) -> list[_Token]:
+    """Split a date expression into tokens.
+
+    White space and parenthesized comments (which nest, and run to the end
+    when unclosed) separate tokens. A run of signs and blanks before digits
+    signs the number with its last sign; one before anything else is
+    dropped.
+
+    Args:
+        text (str): the expression, after any ``TZ="..."`` prefix.
     """
     tokens: list[_Token] = []
-    at, end = 0, len(text)
-    while True:
-        while at < end and text[at] in _SPACES:
-            at += 1
-        if at >= end:
-            return tokens
+    at = 0
+    while at < len(text):
         char = text[at]
-        if char in "0123456789+-":
-            sign = 0
-            p = at
-            if char in "+-":
-                sign = -1 if char == "-" else 1
-                p += 1
-                while p < end and text[p] in _SPACES:
-                    p += 1
-                if p >= end or text[p] not in "0123456789":
-                    at = p
-                    continue
-            first = p
-            while p < end and text[p] in "0123456789":
-                p += 1
-            value = int(text[first:p])
-            if value > 2**63 - 1:
-                return None
-            if p + 1 < end and text[p] in ".," and text[p + 1] in "0123456789":
-                q = p + 1
-                while q < end and text[q] in "0123456789":
-                    q += 1
-                fraction = text[p + 1 : q]
-                ns = int(fraction[:9].ljust(9, "0"))
-                if sign < 0 and fraction[9:].strip("0"):
-                    ns += 1
-                seconds = -value if sign < 0 else value
-                if sign < 0 and ns:
-                    seconds -= 1
-                    ns = _BILLION - ns
-                kind = "SDECIMAL" if sign else "UDECIMAL"
-                tokens.append(_Token(kind, seconds, ns=ns))
-                at = q
-                continue
-            kind = "SNUMBER" if sign else "UNUMBER"
-            signed = -value if sign < 0 else value
-            tokens.append(
-                _Token(kind, signed, digits=p - first, negative=sign < 0)
-            )
-            at = p
-            continue
-        if char.isascii() and char.isalpha():
-            p = at
-            while p < end and (
-                (text[p].isascii() and text[p].isalpha()) or text[p] == "."
-            ):
-                p += 1
-            token = _word_token(text[at:p], local)
-            if token is None:
-                return None
-            tokens.append(token)
-            at = p
-            continue
-        if char == "(":
+        if char in _BLANKS:
+            at += 1
+        elif char == "(":
             depth = 0
-            while at < end:
-                if text[at] == "(":
-                    depth += 1
-                elif text[at] == ")":
-                    depth -= 1
+            while at < len(text):
+                depth += {"(": 1, ")": -1}.get(text[at], 0)
                 at += 1
                 if depth == 0:
                     break
-            if depth:
-                return tokens
-            continue
-        tokens.append(_Token(char))
-        at += 1
+        elif char in _SIGNS:
+            sign, probe = char, at + 1
+            while probe < len(text) and text[probe] in _SIGNS + _BLANKS:
+                if text[probe] in _SIGNS:
+                    sign = text[probe]
+                probe += 1
+            if probe < len(text) and text[probe] in _DIGITS:
+                token, at = _lex_number(text, probe, sign)
+                tokens.append(token)
+            else:
+                at = probe
+        elif char in _DIGITS:
+            token, at = _lex_number(text, at, "")
+            tokens.append(token)
+        elif char in _LETTERS:
+            stop = at
+            while stop < len(text) and (
+                text[stop] in _LETTERS or text[stop] == "."
+            ):
+                stop += 1
+            tokens.append(_bare_token("word", text[at:stop].upper()))
+            at = stop
+        else:
+            tokens.append(_bare_token("char", char))
+            at += 1
+    return tokens
 
 
-def _kind_at(tokens: list[_Token], at: int) -> str:
-    return tokens[at].kind if at < len(tokens) else ""
-
-
-def _unit_rel(token: _Token, count: int) -> _Rel:
-    """A relative unit times a count, gnulib's relunit.
+def _unit(token: _Token) -> tuple[str, int]:
+    """The kind and size of a unit word the parser looked at.
 
     Args:
-        token (_Token): the unit.
-        count (int): how many.
+        token (_Token): the word.
     """
-    return _Rel(**{_UNITS[token.kind]: count * token.value})
+    meaning = _meaning(token.text)
+    if meaning is None:
+        raise _NotADate
+    return meaning
 
 
-def _apply(parsed: _Parsed, rel: _Rel, factor: int) -> None:
-    """Add a relative item into the running sum, gnulib's
-    apply_relative_time.
-
-    Args:
-        parsed (_Parsed): the parse state.
-        rel (_Rel): the item.
-        factor (int): -1 under ``ago``, else 1.
-    """
-    total = parsed.rel
-    total.year += factor * rel.year
-    total.month += factor * rel.month
-    total.day += factor * rel.day
-    total.hour += factor * rel.hour
-    total.minutes += factor * rel.minutes
-    total.seconds += factor * rel.seconds
-    total.ns += factor * rel.ns
-    parsed.rels_seen = True
-
-
-def _relunit(tokens: list[_Token], at: int) -> tuple[_Rel, int] | None:
-    """A relative unit at ``at`` with its count, and where it ends.
+def _year_of(token: _Token) -> int:
+    """A year as typed: two digits are 1969-2068, any other count is literal.
 
     Args:
-        tokens (list[_Token]): the expression's tokens.
-        at (int): where the unit (or its count) starts.
-    """
-    head = tokens[at]
-    after = _kind_at(tokens, at + 1)
-    if head.kind in ("ORDINAL", "UNUMBER", "SNUMBER") and after in _UNITS:
-        return _unit_rel(tokens[at + 1], head.value), at + 2
-    if head.kind in ("UDECIMAL", "SDECIMAL") and after == "SEC_UNIT":
-        return _Rel(seconds=head.value, ns=head.ns), at + 2
-    if head.kind in _UNITS:
-        return _unit_rel(head, 1), at + 1
-    return None
-
-
-def _rel_item(parsed: _Parsed, tokens: list[_Token], at: int) -> int | None:
-    """``relunit [ago|hence]``: add one relative item.
-
-    Args:
-        parsed (_Parsed): the parse state.
-        tokens (list[_Token]): the expression's tokens.
-        at (int): where the item starts.
-    """
-    found = _relunit(tokens, at)
-    if found is None:
-        return None
-    rel, after = found
-    factor = 1
-    if _kind_at(tokens, after) == "AGO":
-        factor = tokens[after].value
-        after += 1
-    _apply(parsed, rel, factor)
-    return after
-
-
-def _zone_hhmm(tokens: list[_Token], at: int) -> tuple[int, int] | None:
-    """The numeric zone a signed number at ``at`` starts, in seconds east,
-    and where it ends: gnulib's time_zone_hhmm, one or two digits of hours
-    or more of hours and minutes, a ``:MM`` adding minutes, at most 24
-    hours either way.
-
-    Args:
-        tokens (list[_Token]): the expression's tokens.
-        at (int): the signed number's position.
-    """
-    number, minutes, after = tokens[at], -1, at + 1
-    if _kind_at(tokens, after) == ":":
-        if _kind_at(tokens, after + 1) != "UNUMBER":
-            return None
-        minutes = tokens[after + 1].value
-        after += 2
-    value = number.value
-    if number.digits <= 2 and minutes < 0:
-        value *= 100
-    if minutes < 0:
-        size = abs(value)
-        total = (size // 100 * 60 + size % 100) * (-1 if value < 0 else 1)
-    else:
-        total = value * 60 + (-minutes if number.negative else minutes)
-    if not -24 * 60 <= total <= 24 * 60:
-        return None
-    return total * 60, after
-
-
-def _zone_offset(parsed: _Parsed, tokens: list[_Token], at: int) -> int | None:
-    """An optional numeric zone after a time of day.
-
-    Args:
-        parsed (_Parsed): the parse state.
-        tokens (list[_Token]): the expression's tokens.
-        at (int): where the zone would start.
-    """
-    if _kind_at(tokens, at) != "SNUMBER":
-        return at
-    found = _zone_hhmm(tokens, at)
-    if found is None:
-        return None
-    parsed.time_zone, after = found
-    parsed.zones_seen += 1
-    return after
-
-
-def _set_time(
-    parsed: _Parsed,
-    hour: int,
-    minutes: int,
-    seconds: int,
-    ns: int,
-    meridian: int,
-) -> None:
-    parsed.hour, parsed.minutes = hour, minutes
-    parsed.seconds, parsed.ns = seconds, ns
-    parsed.meridian = meridian
-    parsed.times_seen += 1
-
-
-def _clock(
-    parsed: _Parsed, tokens: list[_Token], at: int, iso: bool
-) -> int | None:
-    """``H:MM[:SS[.frac]]`` with a meridian, or an ISO time with an
-    optional numeric zone; after a date's ``T`` only the ISO form.
-
-    Args:
-        parsed (_Parsed): the parse state.
-        tokens (list[_Token]): the expression's tokens.
-        at (int): the hour's position, its colon after it.
-        iso (bool): only the ISO 8601 form may follow.
-    """
-    if _kind_at(tokens, at + 2) != "UNUMBER":
-        return None
-    hour, minutes = tokens[at].value, tokens[at + 2].value
-    seconds, ns = 0, 0
-    after = at + 3
-    if _kind_at(tokens, after) == ":":
-        if _kind_at(tokens, after + 1) not in ("UNUMBER", "UDECIMAL"):
-            return None
-        seconds, ns = tokens[after + 1].value, tokens[after + 1].ns
-        after += 2
-    if not iso and _kind_at(tokens, after) == "MERIDIAN":
-        _set_time(parsed, hour, minutes, seconds, ns, tokens[after].value)
-        return after + 1
-    _set_time(parsed, hour, minutes, seconds, ns, _MER24)
-    return _zone_offset(parsed, tokens, after)
-
-
-def _iso_time(parsed: _Parsed, tokens: list[_Token], at: int) -> int | None:
-    """The time after a date's ``T``: an hour with a numeric zone, or a
-    clock.
-
-    Args:
-        parsed (_Parsed): the parse state.
-        tokens (list[_Token]): the expression's tokens.
-        at (int): just past the ``T``.
-    """
-    if _kind_at(tokens, at) != "UNUMBER":
-        return None
-    if _kind_at(tokens, at + 1) == ":":
-        return _clock(parsed, tokens, at, True)
-    if _kind_at(tokens, at + 1) != "SNUMBER":
-        return None
-    _set_time(parsed, tokens[at].value, 0, 0, 0, _MER24)
-    return _zone_offset(parsed, tokens, at + 1)
-
-
-def _digits_item(parsed: _Parsed, token: _Token) -> None:
-    """A bare number, gnulib's digits_to_date_time: the year of a date
-    that has none yet, a ``YYYYMMDD`` date past four digits, else
-    ``HH`` or ``HHMM``.
-
-    Args:
-        parsed (_Parsed): the parse state.
         token (_Token): the number.
     """
-    if (
-        parsed.dates_seen
-        and not parsed.year_digits
-        and not parsed.rels_seen
-        and (parsed.times_seen or token.digits > 2)
-    ):
-        parsed.year, parsed.year_digits = token.value, token.digits
-    elif token.digits > 4:
-        parsed.dates_seen += 1
-        parsed.day = token.value % 100
-        parsed.month = token.value // 100 % 100
-        parsed.year = token.value // 10000
-        parsed.year_digits = token.digits - 4
-    elif token.digits <= 2:
-        _set_time(parsed, token.value, 0, 0, 0, _MER24)
-    else:
-        _set_time(parsed, token.value // 100, token.value % 100, 0, 0, _MER24)
+    year = abs(token.value)
+    if len(token.text) == 2:
+        return year + (2000 if year < 69 else 1900)
+    return year
 
 
-def _number_item(parsed: _Parsed, tokens: list[_Token], at: int) -> int | None:
-    """An item that opens with an unsigned number, resolved by the token after
-    it as gnulib's LALR(1) parser resolves it; with none that fits, a bare
-    number.
+@dataclass
+class _Reading:
+    """What a date expression names, before it is placed in time.
 
-    Args:
-        parsed (_Parsed): the parse state.
-        tokens (list[_Token]): the expression's tokens.
-        at (int): the number's position.
+    ``date`` is ``(year, month, day)`` with no year until one is given;
+    ``clock`` is ``(hour, minute, second, nanos)``; ``zone`` is seconds
+    east, None with ``zoned`` set for J or a name of the zone the
+    expression is read in, which sets ``named``, and ``dst`` to whether it
+    names daylight time (None for a name both seasons use); ``weekday`` is
+    ``(ordinal, day)``; the relative items sum into ``months``, ``days``,
+    ``seconds`` and ``nanos``, the fractions of a second, and ``counts``
+    holds each unit's own count, by kind and size, a week's and a
+    fortnight's as days.
     """
-    number = tokens[at]
-    after = _kind_at(tokens, at + 1)
-    if after == "MERIDIAN":
-        _set_time(parsed, number.value, 0, 0, 0, tokens[at + 1].value)
-        return at + 2
-    if after == ":":
-        return _clock(parsed, tokens, at, False)
-    if after == "/":
-        if _kind_at(tokens, at + 2) != "UNUMBER":
-            return None
-        second = tokens[at + 2]
-        parsed.dates_seen += 1
-        if _kind_at(tokens, at + 3) != "/":
-            parsed.month, parsed.day = number.value, second.value
-            return at + 3
-        if _kind_at(tokens, at + 4) != "UNUMBER":
-            return None
-        third = tokens[at + 4]
-        if number.digits >= 4:
-            parsed.year, parsed.year_digits = number.value, number.digits
-            parsed.month, parsed.day = second.value, third.value
-        else:
-            parsed.month, parsed.day = number.value, second.value
-            parsed.year, parsed.year_digits = third.value, third.digits
-        return at + 5
-    if after == "SNUMBER":
-        following = _kind_at(tokens, at + 2)
-        if following == "SNUMBER":
-            parsed.year, parsed.year_digits = number.value, number.digits
-            parsed.month = -tokens[at + 1].value
-            parsed.day = -tokens[at + 2].value
-            parsed.dates_seen += 1
-            if _kind_at(tokens, at + 3) == "T":
-                return _iso_time(parsed, tokens, at + 4)
-            return at + 3
-        if following in _UNITS:
-            _digits_item(parsed, number)
-            _apply(parsed, _unit_rel(tokens[at + 2], tokens[at + 1].value), 1)
-            return at + 3
-        _set_time(parsed, number.value, 0, 0, 0, _MER24)
-        return _zone_offset(parsed, tokens, at + 1)
-    if after == "MONTH":
-        parsed.day, parsed.month = number.value, tokens[at + 1].value
-        parsed.dates_seen += 1
-        following = _kind_at(tokens, at + 2)
-        if following == "SNUMBER":
-            parsed.year = -tokens[at + 2].value
-            parsed.year_digits = tokens[at + 2].digits
-            return at + 3
-        if following == "UNUMBER":
-            parsed.year = tokens[at + 2].value
-            parsed.year_digits = tokens[at + 2].digits
-            return at + 3
-        return at + 2
-    if after == "DAY":
-        parsed.day_ordinal = number.value
-        parsed.day_number = tokens[at + 1].value
-        parsed.days_seen += 1
-        return at + 2
-    if after in _UNITS:
-        return _rel_item(parsed, tokens, at)
-    _digits_item(parsed, number)
-    return at + 1
+
+    date: tuple[int | None, int, int] | None = None
+    clock: tuple[int, int, int, int] | None = None
+    zone: int | None = None
+    zoned: bool = False
+    named: bool = False
+    dst: bool | None = None
+    weekday: tuple[int, int] | None = None
+    months: int = 0
+    days: int = 0
+    seconds: int = 0
+    nanos: int = 0
+    counts: dict[tuple[str, int], int] = field(default_factory=dict)
+    relative: bool = False
+    epoch: tuple[int, int] | None = None
 
 
-def _item(parsed: _Parsed, tokens: list[_Token], at: int) -> int | None:
-    """One item of gnulib's grammar at ``at``; where it ends, or None
-    when the tokens there form none.
+class _Parser:
+    """Reads the items of a tokenized date expression into a ``_Reading``.
 
-    Args:
-        parsed (_Parsed): the parse state.
-        tokens (list[_Token]): the expression's tokens.
-        at (int): where the item starts.
+    Each date, time of day, zone and day of the week may appear once;
+    relative items add up. Every refusal raises ``_NotADate``.
     """
-    token = tokens[at]
-    kind = token.kind
-    after = _kind_at(tokens, at + 1)
-    if kind == "UNUMBER":
-        return _number_item(parsed, tokens, at)
-    if kind in ("SNUMBER", "UDECIMAL", "SDECIMAL") or kind in _UNITS:
-        return _rel_item(parsed, tokens, at)
-    if kind == "ORDINAL":
-        if after == "DAY":
-            parsed.day_ordinal = token.value
-            parsed.day_number = tokens[at + 1].value
-            parsed.days_seen += 1
-            return at + 2
-        return _rel_item(parsed, tokens, at)
-    if kind == "DAY_SHIFT":
-        _apply(parsed, _Rel(day=token.value), 1)
-        return at + 1
-    if kind == "MONTH":
-        parsed.month = token.value
-        parsed.dates_seen += 1
-        if after == "SNUMBER":
-            if _kind_at(tokens, at + 2) != "SNUMBER":
-                return None
-            parsed.day = -tokens[at + 1].value
-            parsed.year = -tokens[at + 2].value
-            parsed.year_digits = tokens[at + 2].digits
-            return at + 3
-        if after != "UNUMBER":
+
+    def __init__(
+        self, tokens: list[_Token], names: dict[str, bool | None]
+    ) -> None:
+        self.tokens = tokens
+        self.names = names
+        self.at = 0
+        self.reading = _Reading()
+        # Where the last ISO date ended, for the "T" that may follow it.
+        self.iso_end = -1
+
+    def peek(self, ahead: int = 0) -> _Token | None:
+        at = self.at + ahead
+        return self.tokens[at] if at < len(self.tokens) else None
+
+    def take(self) -> _Token:
+        token = self.peek()
+        if token is None:
+            raise _NotADate
+        self.at += 1
+        return token
+
+    def mean(self, token: _Token) -> tuple[str, int] | None:
+        """What a word names: a month, a weekday or a meridian, then the
+        zone's own abbreviations, then every other word.
+
+        One of the zone's names, dots dropped, is a ``named`` zone, 1 for
+        daylight time and -1 for a name both seasons use; GMT, UT and UTC
+        keep their fixed meaning even where the zone uses them.
+
+        Args:
+            token (_Token): a word.
+        """
+        found = _meaning(token.text)
+        if found is not None and found[0] in ("meridian", "month", "weekday"):
+            return found
+        bare = token.text.replace(".", "")
+        if bare in self.names and bare not in _FIXED_NAMES:
+            dst = self.names[bare]
+            return "named", -1 if dst is None else int(dst)
+        return found
+
+    def kind(self, ahead: int = 0) -> str | None:
+        """The kind of the token ``ahead``: a word's meaning, else its own."""
+        token = self.peek(ahead)
+        if token is None:
             return None
-        parsed.day = tokens[at + 1].value
-        if _kind_at(tokens, at + 2) != ",":
-            return at + 2
-        if _kind_at(tokens, at + 3) != "UNUMBER":
-            return None
-        parsed.year = tokens[at + 3].value
-        parsed.year_digits = tokens[at + 3].digits
-        return at + 4
-    if kind == "DAY":
-        parsed.day_ordinal, parsed.day_number = 0, token.value
-        parsed.days_seen += 1
-        return at + 2 if after == "," else at + 1
-    if kind in ("ZONE", "T"):
-        zone = -7 * _HOUR if kind == "T" else token.value
-        parsed.time_zone = zone
-        parsed.zones_seen += 1
-        if after == "SNUMBER" and _kind_at(tokens, at + 2) in _UNITS:
-            _apply(parsed, _unit_rel(tokens[at + 2], tokens[at + 1].value), 1)
-            return at + 3
-        if kind == "T":
-            return at + 1
-        if after == "DST":
-            parsed.time_zone = zone + _HOUR
-            return at + 2
-        if after != "SNUMBER":
-            return at + 1
-        found = _zone_hhmm(tokens, at + 1)
-        if found is None:
-            return None
-        parsed.time_zone += found[0]
-        return found[1]
-    if kind == "DAYZONE":
-        parsed.time_zone = token.value + _HOUR
-        parsed.zones_seen += 1
-        return at + 1
-    if kind == "LOCAL_ZONE":
-        parsed.local_zones_seen += 1
-        parsed.local_offset = token.offset
-        if after == "DST":
-            parsed.dsts_seen += 1
-            parsed.local_offset = (
-                None if token.offset is None else token.offset + _HOUR
+        if token.kind == "word":
+            meaning = self.mean(token)
+            return None if meaning is None else meaning[0]
+        return token.kind
+
+    def value(self, token: _Token) -> int:
+        """The value of a word whose kind was looked at."""
+        meaning = self.mean(token)
+        if meaning is None:
+            raise _NotADate
+        return meaning[1]
+
+    def char(self, char: str, ahead: int = 0) -> bool:
+        token = self.peek(ahead)
+        return (
+            token is not None and token.kind == "char" and token.text == char
+        )
+
+    def plain(self, ahead: int = 0) -> bool:
+        """Whether the token ``ahead`` is a whole number with no sign."""
+        token = self.peek(ahead)
+        return (
+            token is not None
+            and token.kind == "number"
+            and not token.sign
+            and token.nanos is None
+        )
+
+    def minus(self, ahead: int = 0) -> bool:
+        """Whether the token ``ahead`` is a whole number ``-`` signs."""
+        token = self.peek(ahead)
+        return (
+            token is not None
+            and token.kind == "number"
+            and token.sign == "-"
+            and token.nanos is None
+        )
+
+    def signed(self, ahead: int = 0) -> bool:
+        """Whether the token ``ahead`` is a signed whole number: a signed
+        fraction is never a zone correction, only seconds."""
+        token = self.peek(ahead)
+        return (
+            token is not None
+            and token.kind == "number"
+            and bool(token.sign)
+            and token.nanos is None
+        )
+
+    def unit(self, ahead: int = 0) -> bool:
+        return self.kind(ahead) in _UNIT_KINDS
+
+    def whole(self) -> _Token:
+        """Take a whole number with no sign."""
+        if not self.plain():
+            raise _NotADate
+        return self.take()
+
+    def parse(self) -> _Reading:
+        if self.char("@"):
+            self.take()
+            stamp = self.take()
+            if stamp.kind != "number" or self.peek() is not None:
+                raise _NotADate
+            nanos = abs(stamp.value) * _NANOS + (stamp.nanos or 0)
+            self.reading.epoch = divmod(
+                -nanos if stamp.sign == "-" else nanos, _NANOS
             )
-            return at + 2
-        return at + 1
-    if kind == "J":
-        parsed.j_zones_seen += 1
-        return at + 1
-    return None
+            return self.reading
+        while self.peek() is not None:
+            self.item()
+        return self.reading
+
+    def item(self) -> None:
+        token = self.take()
+        if token.kind == "number":
+            self.number(token)
+            return
+        meaning = self.mean(token) if token.kind == "word" else None
+        if meaning is None:
+            raise _NotADate
+        kind, value = meaning
+        if kind == "month":
+            self.month(value)
+        elif kind == "weekday":
+            self.set_weekday(0, value)
+            # Only a bare weekday takes a comma after it.
+            if self.char(","):
+                self.take()
+        elif kind == "ordinal":
+            if self.kind() == "weekday":
+                self.set_weekday(value, self.value(self.take()))
+            elif self.unit():
+                self.relative(value)
+            else:
+                raise _NotADate
+        elif kind in _UNIT_KINDS:
+            self.add(kind, value, 1)
+        elif kind == "today":
+            self.tally("days", 1, value)
+        elif (
+            kind == "zone"
+            and token.text == "T"
+            and self.iso_end == self.at - 1
+        ):
+            # A time of day: `H:M[:S]`, or an hour that a zone correction
+            # must follow.
+            if self.plain() and self.char(":", 1):
+                self.clock(self.take(), meridian=False)
+            elif self.plain() and self.signed(1):
+                self.set_clock(self.take().value, 0, 0, 0)
+                self.set_zone(self.zone_number(self.take()))
+            else:
+                raise _NotADate
+        elif kind == "zone":
+            offset = value * 60
+            if self.kind() == "dst":
+                self.take()
+                offset += 3600
+            elif self.signed_zone():
+                offset += self.zone_number(self.take())
+            elif self.signed() and self.unit(1):
+                # `UTC +1 day` is the zone and a relative item, which then
+                # takes no `ago`.
+                self.set_zone(offset)
+                count = self.take().value
+                kind, size = _unit(self.take())
+                self.add(kind, size, count, suffix=False)
+                return
+            self.set_zone(offset)
+        elif kind == "daylight":
+            self.set_zone(value * 60)
+        elif kind == "local":
+            self.set_zone(None)
+        elif kind == "named":
+            if self.kind() == "dst":
+                self.take()
+                value = 1
+            self.set_zone(None)
+            self.reading.named = True
+            self.reading.dst = None if value < 0 else bool(value)
+        else:
+            raise _NotADate
+
+    def number(self, token: _Token) -> None:
+        if token.nanos is not None:
+            self.fraction(token)
+        elif token.sign:
+            if not self.unit():
+                raise _NotADate
+            self.relative(token.value)
+        elif self.char(":"):
+            self.clock(token, meridian=True)
+        elif self.char("/"):
+            self.slashed(token)
+        elif self.minus() and self.minus(1):
+            self.iso(token)
+        elif self.kind() == "month":
+            self.day_month(token)
+        elif self.unit():
+            self.relative(token.value)
+        elif self.kind() == "weekday":
+            self.set_weekday(token.value, self.value(self.take()))
+        elif self.kind() == "meridian":
+            hour = self.meridian(token.value, self.value(self.take()))
+            self.set_clock(hour, 0, 0, 0)
+        else:
+            self.pure(token)
+
+    def pure(self, token: _Token) -> None:
+        """A number standing alone: a year, a date, or a time of day.
+
+        One a zone correction follows is an hour, whatever its digits, and
+        no signed number may follow a ``±HHMM`` correction there (one may
+        follow ``±H:M``). Otherwise, after a date with no year and before
+        any relative item, it is the year, when a time of day came first or
+        it has three digits or more; five digits or more are ``[YY]YYMMDD``
+        and fewer are ``HH`` or ``HHMM``.
+        """
+        reading, digits, value = self.reading, len(token.text), token.value
+        date = reading.date
+        if self.signed_zone():
+            colon = self.char(":", 1) and self.plain(2)
+            self.set_clock(value, 0, 0, 0)
+            self.set_zone(self.zone_number(self.take()))
+            if not colon and self.signed():
+                raise _NotADate
+        elif (
+            date is not None
+            and date[0] is None
+            and not reading.relative
+            and (reading.clock is not None or digits > 2)
+        ):
+            reading.date = (_year_of(token), date[1], date[2])
+        elif digits > 4:
+            year = value // 10000
+            if digits == 6:
+                year += 2000 if year < 69 else 1900
+            self.set_date(year, value // 100 % 100, value % 100)
+        elif digits <= 2:
+            self.set_clock(value, 0, 0, 0)
+        else:
+            self.set_clock(value // 100, value % 100, 0, 0)
+
+    def clock(self, hour: _Token, meridian: bool) -> None:
+        """``H:M[:S[.frac]]``, then a meridian or a zone correction."""
+        self.take()
+        minute = self.whole().value
+        second = nanos = 0
+        if self.char(":"):
+            self.take()
+            token = self.take()
+            if token.kind != "number" or token.sign:
+                raise _NotADate
+            second, nanos = token.value, token.nanos or 0
+        value = hour.value
+        if meridian and self.kind() == "meridian":
+            value = self.meridian(value, self.value(self.take()))
+            self.set_clock(value, minute, second, nanos)
+            return
+        self.set_clock(value, minute, second, nanos)
+        if self.signed():
+            self.set_zone(self.zone_number(self.take()))
+
+    def slashed(self, first: _Token) -> None:
+        """``M/D``, ``M/D/Y`` or, four digits leading, ``Y/M/D``."""
+        self.take()
+        second = self.whole()
+        third = None
+        if self.char("/"):
+            self.take()
+            third = self.whole()
+        if len(first.text) >= 4:
+            if third is None:
+                raise _NotADate
+            self.set_date(first.value, second.value, third.value)
+        else:
+            self.set_date(
+                None if third is None else _year_of(third),
+                first.value,
+                second.value,
+            )
+
+    def iso(self, year: _Token) -> None:
+        """``Y-M-D``, read as the year and two ``-`` signed numbers."""
+        month, day = self.take(), self.take()
+        self.set_date(_year_of(year), -month.value, -day.value)
+        self.iso_end = self.at
+
+    def day_month(self, day: _Token) -> None:
+        """``D [-]MONTH [Y]``: a number after the month is its year."""
+        month = self.value(self.take())
+        year = None
+        if self.plain() or self.minus():
+            year = _year_of(self.take())
+        self.set_date(year, month, day.value)
+
+    def month(self, month: int) -> None:
+        """``MONTH D[, Y]`` or ``MONTH -D -Y``."""
+        if self.plain():
+            day = self.take().value
+            year = None
+            if self.char(","):
+                self.take()
+                year = _year_of(self.whole())
+            self.set_date(year, month, day)
+        elif self.minus() and self.minus(1):
+            dash_day, dash_year = self.take(), self.take()
+            self.set_date(_year_of(dash_year), month, -dash_day.value)
+        else:
+            raise _NotADate
+
+    def fraction(self, token: _Token) -> None:
+        """``N.F SECONDS [ago|hence]``: only seconds take a fraction."""
+        if self.kind() != "seconds" or self.value(self.take()) != 1:
+            raise _NotADate
+        times = -1 if token.sign == "-" else 1
+        if self.kind() == "suffix":
+            times *= self.value(self.take())
+        self.tally("seconds", 1, times * abs(token.value))
+        self.reading.nanos += times * (token.nanos or 0)
+
+    def relative(self, count: int) -> None:
+        """``count UNIT [ago|hence]``, the unit next."""
+        kind, size = _unit(self.take())
+        self.add(kind, size, count)
+
+    def add(
+        self, kind: str, size: int, count: int, suffix: bool = True
+    ) -> None:
+        if suffix and self.kind() == "suffix":
+            count *= self.value(self.take())
+        self.tally(kind, size, count)
+
+    def tally(self, kind: str, size: int, count: int) -> None:
+        """Add ``count`` units of ``size`` to the relative ``kind``, each
+        unit counted on its own, a week's and a fortnight's as days."""
+        if kind == "days":
+            count, size = count * size, 1
+        reading = self.reading
+        total = reading.counts.get((kind, size), 0) + count
+        if not (-_INT64 <= count < _INT64 and -_INT64 <= total < _INT64):
+            raise _NotADate
+        reading.counts[kind, size] = total
+        setattr(reading, kind, getattr(reading, kind) + size * count)
+        reading.relative = True
+
+    def signed_zone(self) -> bool:
+        """Whether a signed number comes next that is no relative item's."""
+        return self.signed() and not self.unit(1)
+
+    def zone_number(self, token: _Token) -> int:
+        """A zone correction in seconds east.
+
+        ``±H`` and ``±HH`` are hours, a longer number hours and minutes as
+        ``±HHMM`` reads, its leading zeros aside, and ``±H:M`` takes any
+        count of minutes.
+        """
+        if token.nanos is not None:
+            raise _NotADate
+        size = abs(token.value)
+        if self.char(":") and self.plain(1):
+            self.take()
+            minutes = size * 60 + self.take().value
+        elif len(token.text) <= 2:
+            minutes = size * 60
+        else:
+            minutes = size // 100 * 60 + size % 100
+        if minutes > _ZONE_LIMIT:
+            raise _NotADate
+        return (-minutes if token.sign == "-" else minutes) * 60
+
+    def meridian(self, hour: int, add: int) -> int:
+        if not 1 <= hour <= 12:
+            raise _NotADate
+        return hour % 12 + add
+
+    def set_date(self, year: int | None, month: int, day: int) -> None:
+        if self.reading.date is not None:
+            raise _NotADate
+        self.reading.date = (year, month, day)
+
+    def set_clock(
+        self, hour: int, minute: int, second: int, nanos: int
+    ) -> None:
+        if self.reading.clock is not None:
+            raise _NotADate
+        self.reading.clock = (hour, minute, second, nanos)
+
+    def set_zone(self, offset: int | None) -> None:
+        if self.reading.zoned:
+            raise _NotADate
+        self.reading.zoned = True
+        self.reading.zone = offset
+
+    def set_weekday(self, ordinal: int, day: int) -> None:
+        if self.reading.weekday is not None:
+            raise _NotADate
+        self.reading.weekday = (ordinal, day)
 
 
-def _to_hour(hour: int, meridian: int) -> int:
-    """An hour on the 24-hour clock, -1 when the meridian refuses it.
+def _civil_days(year: int, month: int, day: int) -> int:
+    """Days from 1970-01-01 to a proleptic Gregorian date.
 
-    Args:
-        hour (int): the hour as written.
-        meridian (int): _MER24, _AM or _PM.
-    """
-    if meridian == _MER24:
-        return hour if 0 <= hour < 24 else -1
-    if not 0 < hour <= 12:
-        return -1
-    return hour % 12 + (12 if meridian == _PM else 0)
-
-
-def _normalized(year: int, month: int, day: int, clock: datetime) -> datetime:
-    """A wall clock from fields that may overflow, normalized the way
-    mktime carries them: months into years, days across months.
+    A month past 12 or below 1 carries into the year, and a day past the
+    month's end into the months after, as a calendar shift needs.
 
     Args:
         year (int): the year.
-        month (int): the month, 1-based, any integer.
-        day (int): the day of the month, any integer.
-        clock (datetime): whose time of day the result keeps.
+        month (int): the month, 1 for January.
+        day (int): the day of the month.
     """
     year += (month - 1) // 12
     month = (month - 1) % 12 + 1
-    first = datetime(year, month, 1, clock.hour, clock.minute, clock.second)
-    return first + timedelta(days=day - 1)
+    # Counted from March, so February's leap day ends the year.
+    shifted = year - (month <= 2)
+    march = month + 9 if month <= 2 else month - 3
+    days = 365 * shifted + shifted // 4 - shifted // 100 + shifted // 400
+    return days + (153 * march + 2) // 5 + day - 1 - 719468
 
 
-def _fixed(wall: datetime, offset: int) -> float:
-    """The epoch second a wall clock is at a fixed offset east of UTC.
-
-    Args:
-        wall (datetime): the naive wall clock.
-        offset (int): seconds east of UTC.
-    """
-    return wall.replace(tzinfo=timezone.utc).timestamp() - offset
-
-
-def _offset_seconds(moment: datetime) -> int | None:
-    """A moment's offset east of UTC in seconds, None when naive.
+def _wall_fields(wall: int) -> tuple[int, int, int, int, int, int]:
+    """The calendar fields of wall-clock seconds read as UTC.
 
     Args:
-        moment (datetime): the moment.
+        wall (int): seconds since 1970-01-01 00:00:00 on that clock.
     """
-    offset = moment.utcoffset()
-    return None if offset is None else int(offset.total_seconds())
+    shown = datetime(1970, 1, 1) + timedelta(seconds=wall)
+    return (
+        shown.year,
+        shown.month,
+        shown.day,
+        shown.hour,
+        shown.minute,
+        shown.second,
+    )
 
 
-def _local_reading(wall: datetime, tz: tzinfo, offset: int) -> datetime | None:
-    """The reading of a wall clock that carries a local abbreviation's
-    offset, None when the zone does not show the wall clock under it
-    (``CET`` on a summer date in Europe/Berlin), as mktime refuses a
-    tm_isdst that does not hold.
+class _Clock:
+    """The UTC offsets a zone shows, ``tz`` or the host's own for None."""
+
+    def __init__(self, tz: tzinfo | None) -> None:
+        self.tz = tz
+
+    def offset(self, instant: int) -> int:
+        """Seconds east of UTC at an instant.
+
+        Args:
+            instant (int): epoch seconds; one outside what mirage holds
+                reads as the nearest it does, a few days in.
+        """
+        instant = min(
+            max(instant, _FIRST_SECOND + 2 * _DAY), _LAST_SECOND - 2 * _DAY
+        )
+        if self.tz is None:
+            return time.localtime(instant).tm_gmtoff
+        shift = datetime.fromtimestamp(instant, self.tz).utcoffset()
+        return 0 if shift is None else int(shift.total_seconds())
+
+    def abbreviation(self, instant: int) -> str:
+        """The zone's abbreviation at an instant, upper-cased.
+
+        Args:
+            instant (int): epoch seconds.
+        """
+        if self.tz is None:
+            return time.localtime(instant).tm_zone.upper()
+        return (
+            datetime.fromtimestamp(instant, self.tz).tzname() or ""
+        ).upper()
+
+    def isdst(self, instant: int) -> bool:
+        """Whether an instant is in daylight time: ahead of the lesser of
+        the offsets its year shows on January 1 and July 1, or behind the
+        offsets of both the January 1 or July 1 before it and the one
+        after, as Ramadan's hour back in Casablanca is.
+
+        Args:
+            instant (int): epoch seconds.
+        """
+        year = _wall_fields(min(max(instant, _FIRST_SECOND), _LAST_SECOND))[0]
+        winter = self.offset(_civil_days(year, 1, 1) * _DAY)
+        july = _civil_days(year, 7, 1) * _DAY
+        summer = self.offset(july)
+        shown = self.offset(instant)
+        if shown > min(winter, summer):
+            return True
+        if instant < july:
+            before, after = winter, summer
+        else:
+            before, after = (
+                summer,
+                self.offset(_civil_days(year + 1, 1, 1) * _DAY),
+            )
+        return shown < before and shown < after
+
+    def names(self, now: int) -> dict[str, bool | None]:
+        """The abbreviations the zone shows now and 90, 180 and 270 days
+        on, the instants date reads its names at, each with whether it
+        names daylight time, None for one both seasons use.
+
+        Args:
+            now (int): the current epoch second.
+        """
+        found: dict[str, bool | None] = {}
+        for step in range(4):
+            instant = min(now + step * 90 * _DAY, _LAST_SECOND)
+            name = self.abbreviation(instant)
+            dst = self.isdst(instant)
+            found[name] = dst if found.get(name, dst) == dst else None
+        return found
+
+    def rule_changes(self, wall: int) -> tuple[int, ...]:
+        """When a POSIX rule changes the clock in ``wall``'s year; none for
+        a zone from tzdata.
+
+        Args:
+            wall (int): wall-clock seconds, the fields read as UTC.
+        """
+        if self.tz is None:
+            return ()
+        year = _wall_fields(min(max(wall, _FIRST_SECOND), _LAST_SECOND))[0]
+        return posix_transitions(self.tz, year) or ()
+
+    def readings(self, wall: int) -> list[int]:
+        """The instants this zone's clock reads ``wall`` at: one, two in an
+        hour repeated when DST ends, none in one skipped when it starts.
+
+        Args:
+            wall (int): wall-clock seconds, the fields read as UTC.
+        """
+        offsets = {self.offset(wall - _DAY), self.offset(wall + _DAY)}
+        # A POSIX rule's daylight time can be shorter than a day.
+        offsets.update(
+            self.offset(change) for change in self.rule_changes(wall)
+        )
+        return sorted(
+            wall - offset
+            for offset in offsets
+            if self.offset(wall - offset) == offset
+        )
+
+    def place(self, wall: int, guess: int) -> int:
+        """The instant this zone's clock reads ``wall`` at.
+
+        The search starts under ``guess``, so a reading the clock shows
+        twice takes the side of the change whose offset ``guess`` is. One
+        it never shows is read under the offset before the change.
+
+        Args:
+            wall (int): wall-clock seconds, the fields read as UTC.
+            guess (int): the offset to start from, seconds east.
+        """
+        instant = wall - guess
+        for _ in range(2):
+            shown = self.offset(instant)
+            if self.offset(wall - shown) == shown:
+                return wall - shown
+            instant = wall - shown
+        return wall - self.offset(wall - _DAY)
+
+    def settle(self, wall: int, guess: int, dst: bool | None) -> int | None:
+        """The instant a wall clock the expression names reads at, None
+        when the clock never reads it (or not in the daylight state ``dst``
+        asks for).
+
+        Args:
+            wall (int): wall-clock seconds, the fields read as UTC.
+            guess (int): the offset that picks between two readings.
+            dst (bool | None): the daylight state required, None for any.
+        """
+        shown = [
+            instant
+            for instant in self.readings(wall)
+            if dst is None or self.isdst(instant) == dst
+        ]
+        if len(shown) == 2:
+            placed = self.place(wall, guess)
+            return placed if placed in shown else shown[-1]
+        return shown[0] if shown else None
+
+    def keep_state(self, wall: int, dst: bool, guess: int) -> int:
+        """The instant a moved wall clock reads at, kept in daylight state
+        ``dst``: a reading in another state, or none, is read under the
+        offset of the nearest time in that state.
+
+        Args:
+            wall (int): wall-clock seconds, the fields read as UTC.
+            dst (bool): the daylight state to keep.
+            guess (int): the offset that picks between two readings.
+        """
+        shown = [
+            instant
+            for instant in self.readings(wall)
+            if self.isdst(instant) == dst
+        ]
+        if shown:
+            return self.place(wall, guess) if len(shown) == 2 else shown[0]
+        # A POSIX rule's daylight time can be shorter than any step.
+        for change in self.rule_changes(wall):
+            if self.isdst(change) == dst:
+                return wall - self.offset(change)
+        for step in range(1, 14):
+            for instant in (wall - step * 30 * _DAY, wall + step * 30 * _DAY):
+                if self.isdst(instant) == dst:
+                    return wall - self.offset(instant)
+        return self.place(wall, guess)
+
+
+def _weekday_shift(base: int, ordinal: int, day: int) -> int:
+    """Days from a weekday to the ``ordinal``-th ``day`` from it.
+
+    Ordinal 0 is that day this week, today included; a positive one counts
+    occurrences after today; -1 is the last one before it.
 
     Args:
-        wall (datetime): the naive wall clock.
-        tz (tzinfo): the reading zone.
-        offset (int): the abbreviation's seconds east of UTC.
+        base (int): the starting weekday, 0 for Sunday.
+        ordinal (int): which occurrence.
+        day (int): the weekday sought, 0 for Sunday.
     """
-    for fold in (0, 1):
-        reading = wall.replace(tzinfo=tz, fold=fold)
-        shown = reading.astimezone(timezone.utc).astimezone(tz)
-        held = reading.utcoffset()
-        if (
-            shown.replace(tzinfo=None) == wall
-            and held is not None
-            and int(held.total_seconds()) == offset
-        ):
-            return reading
-    return None
-
-
-def _held(wall: datetime, tz: tzinfo, offset: int) -> datetime:
-    """A wall clock as mktime reads it under an explicit tm_isdst: the
-    reading at that offset, or the wall clock taken at the offset where
-    the zone does not show it under it, which is how mktime extrapolates
-    a tm_isdst the date does not observe.
-
-    Args:
-        wall (datetime): the naive wall clock.
-        tz (tzinfo): the reading zone.
-        offset (int): the tm_isdst's seconds east of UTC.
-    """
-    reading = _local_reading(wall, tz, offset)
-    if reading is not None:
-        return reading
-    return datetime.fromtimestamp(_fixed(wall, offset), tz)
+    ahead = (day - base) % 7
+    if ordinal > 0:
+        return (ahead or 7) + 7 * (ordinal - 1)
+    if ordinal == 0:
+        return ahead
+    return -((base - day) % 7 or 7) + 7 * (ordinal + 1)
 
 
 def _resolve(
-    parsed: _Parsed, tz: tzinfo | None, now: datetime
-) -> datetime | None:
-    """The moment the parsed items name, gnulib's parse_datetime body: the
-    fields placed in the zone as mktime places them, a weekday moved to, then
-    the summed relative days moved on the calendar once and the relative
-    seconds added on the timeline.
+    reading: _Reading, clock: _Clock, now: int, now_nanos: int, guess: int
+) -> tuple[int, int] | None:
+    """Place a reading in time, as ``(epoch seconds, nanoseconds)``.
+
+    A field left out comes from now on the zone's clock, and the time of
+    day is midnight unless only relative items (and a zone) were given.
+    The wall clock named must exist on the zone's clock, a skipped hour
+    refused and a repeated one read on now's side, unless a zone given
+    reads it. A weekday moves the date, then days, months
+    and years move it on the calendar, read from the side of any change
+    the base was on; the zone and the hours, minutes and seconds then
+    move the instant. A shift keeps the daylight state a name of the zone
+    gives, and a shift of now's own clock now's, as date's does.
 
     Args:
-        parsed (_Parsed): the parse state.
-        tz (tzinfo | None): the reading zone, None for the host's.
-        now (datetime): the current moment in ``tz``.
+        reading (_Reading): the parsed expression.
+        clock (_Clock): the zone it is read in.
+        now (int): the current epoch second.
+        now_nanos (int): its nanoseconds.
+        guess (int): the offset a repeated wall clock is first read under:
+            now's, in the zone the command runs in even when ``TZ="..."``
+            names another.
     """
-    if 1 < (
-        parsed.times_seen
-        | parsed.dates_seen
-        | parsed.days_seen
-        | parsed.dsts_seen
-        | (parsed.j_zones_seen + parsed.local_zones_seen + parsed.zones_seen)
-    ):
-        return None
-    year = parsed.year
-    if parsed.year_digits == 2 and 0 <= year:
-        year += 2000 if year < 69 else 1900
-    absolute = bool(parsed.dates_seen or parsed.days_seen or parsed.times_seen)
-    if parsed.times_seen or (parsed.rels_seen and not absolute):
-        hour = _to_hour(parsed.hour, parsed.meridian)
-        minute, second, ns = parsed.minutes, parsed.seconds, parsed.ns
-    else:
-        hour, minute, second, ns = 0, 0, 0, 0
-    if not (
-        1 <= year <= 9999
-        and 1 <= parsed.month <= 12
-        and 0 <= hour <= 23
-        and 0 <= minute <= 59
-        and 0 <= second <= 59
-    ):
-        return None
-    if not 1 <= parsed.day <= monthrange(year, parsed.month)[1]:
-        return None
-    wall = datetime(year, parsed.month, parsed.day, hour, minute, second)
-    rel = parsed.rel
-    if parsed.zones_seen or tz is None:
-        if parsed.days_seen and not parsed.dates_seen:
-            wall += timedelta(days=_weekday_shift(parsed, wall))
-        if rel.year or rel.month or rel.day:
-            wall = _normalized(
-                wall.year + rel.year,
-                wall.month + rel.month,
-                wall.day + rel.day,
-                wall,
-            )
-        if not parsed.zones_seen:
-            moment = wall.replace(microsecond=ns // 1000)
-            return moment + timedelta(
-                hours=rel.hour,
-                minutes=rel.minutes,
-                seconds=rel.seconds,
-                microseconds=rel.ns // 1000,
-            )
-        epoch = _fixed(wall, parsed.time_zone)
-    else:
-        # What gnulib hands mktime as tm_isdst for the calendar move: -1
-        # (None here) after a date, weekday or time, else an explicit
-        # one, the local abbreviation's or the current moment's, which
-        # mktime holds to even where the moved date does not observe it.
-        hint = (
-            parsed.local_offset
-            if parsed.local_zones_seen
-            else None
-            if absolute
-            else _offset_seconds(now)
-        )
-        if parsed.local_zones_seen and parsed.local_offset is not None:
-            placed = _local_reading(wall, tz, parsed.local_offset)
-        elif absolute or hint is None:
-            placed = _localize(wall, tz)
-        else:
-            placed = _held(wall, tz, hint)
-        if placed is None:
-            return None
-        if parsed.days_seen and not parsed.dates_seen:
-            shown = placed.replace(tzinfo=None)
-            moved = shown + timedelta(days=_weekday_shift(parsed, shown))
-            placed = _place(moved, tz, placed.utcoffset())
-        if rel.year or rel.month or rel.day:
-            shown = placed.replace(tzinfo=None)
-            moved = _normalized(
-                shown.year + rel.year,
-                shown.month + rel.month,
-                shown.day + rel.day,
-                wall,
-            )
-            placed = (
-                _place(moved, tz, placed.utcoffset())
-                if hint is None
-                else _held(moved, tz, hint)
-            )
-        epoch = placed.timestamp()
-    seconds = epoch + rel.hour * _HOUR + rel.minutes * 60 + rel.seconds
-    total_ns = ns + rel.ns
-    seconds += total_ns // _BILLION
-    micros = total_ns % _BILLION // 1000
-    if not _FIRST_SECOND <= seconds <= _LAST_SECOND:
-        return None
-    moment = datetime.fromtimestamp(seconds, timezone.utc).astimezone(tz)
-    return moment.replace(microsecond=micros)
-
-
-def _weekday_shift(parsed: _Parsed, base: datetime) -> int:
-    """Days from ``base`` to the weekday the items name: on or after ``base``,
-    ``next`` or a count skipping more weeks, ``last`` going back.
-
-    Args:
-        parsed (_Parsed): the parse state.
-        base (datetime): the wall clock to move from.
-    """
-    weekday = (base.weekday() + 1) % 7
-    ordinal = parsed.day_ordinal - (
-        1 if parsed.day_ordinal > 0 and weekday != parsed.day_number else 0
+    if reading.epoch is not None:
+        return reading.epoch
+    here = clock.offset(now)
+    year, month, day, hour, minute, second = _wall_fields(now + here)
+    nanos = now_nanos
+    from_now = (
+        reading.relative
+        and reading.date is None
+        and reading.clock is None
+        and reading.weekday is None
     )
-    return ordinal * 7 + (parsed.day_number - weekday + 7) % 7
+    if reading.date is not None:
+        given, month, day = reading.date
+        year = year if given is None else given
+    if reading.clock is not None:
+        hour, minute, second, nanos = reading.clock
+    elif not from_now:
+        hour = minute = second = nanos = 0
+    if not 1 <= month <= 12:
+        return None
+    month_days = _civil_days(year, month + 1, 1) - _civil_days(year, month, 1)
+    if not 1 <= day <= month_days:
+        return None
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    days = _civil_days(year, month, day)
+    within = hour * 3600 + minute * 60 + second
+    state = clock.isdst(now) if reading.dst is None else reading.dst
+    if reading.zone is not None:
+        # A zone given reads the wall clock as its own, whether or not the
+        # zone's clock shows it.
+        instant = days * _DAY + within - reading.zone
+    elif from_now and reading.dst is None:
+        instant = now
+    else:
+        # A shift of now's wall clock starts in the daylight state the zone
+        # name asks for.
+        settled = clock.settle(days * _DAY + within, guess, reading.dst)
+        if settled is None:
+            return None
+        instant = settled
+    moving = bool(reading.days or reading.months)
+    if reading.weekday is not None and reading.date is None:
+        days += _weekday_shift((days + 4) % 7, *reading.weekday)
+        year, month, day = _wall_fields(days * _DAY)[:3]
+        moving = True
+    if moving:
+        wall = (
+            _civil_days(year, month + reading.months, day) + reading.days
+        ) * _DAY + within
+        # A name both seasons use places the shift where it lands.
+        if reading.dst is not None or (from_now and not reading.named):
+            instant = clock.keep_state(wall, state, guess)
+        else:
+            instant = clock.place(wall, clock.offset(instant))
+        if reading.zone is not None:
+            instant += clock.offset(instant) - reading.zone
+    carry, nanos = divmod(nanos + reading.nanos, _NANOS)
+    return instant + reading.seconds + carry, nanos
 
 
-def _tz_prefix(text: str) -> tuple[str, str] | None:
-    """A leading ``TZ="..."``: the zone it names and the text after it,
-    with ``\\`` and ``"`` escaped by a backslash inside the quotes.
+def _split_zone(text: str) -> tuple[str | None, str]:
+    """A leading ``TZ="..."`` and the rest, or no zone and the text.
+
+    Inside the quotes a backslash escapes a backslash or a quote, and
+    nothing else.
 
     Args:
-        text (str): the expression, leading blanks removed.
+        text (str): the expression.
     """
-    if not text.startswith('TZ="'):
-        return None
-    name: list[str] = []
+    lead = text.lstrip(_BLANKS)
+    if not lead.startswith('TZ="'):
+        return None, text
+    value: list[str] = []
     at = 4
-    while at < len(text):
-        char = text[at]
-        if char == "\\" and at + 1 < len(text) and text[at + 1] in '\\"':
-            name.append(text[at + 1])
-            at += 2
-            continue
+    while at < len(lead):
+        char = lead[at]
         if char == '"':
-            return "".join(name), text[at + 1 :]
-        name.append(char)
+            return "".join(value), lead[at + 1 :]
+        if char == "\\":
+            escaped = lead[at + 1 : at + 2]
+            if escaped not in ("\\", '"'):
+                raise _NotADate
+            char = escaped
+            at += 1
+        value.append(char)
         at += 1
-    return None
+    raise _NotADate
 
 
 def parse_date_expr(
-    text: str, *, tz: tzinfo | None = None, now: datetime | None = None
+    text: str, tz: tzinfo | None = None, now: datetime | None = None
 ) -> datetime | None:
-    """Parse a GNU ``date -d`` expression, None when GNU says ``invalid date``.
-    A port of gnulib's parse-datetime grammar as coreutils 9.7 builds it; one
-    divergence: a moment outside years 1-9999 is not a date, the range
-    ``datetime`` holds.
+    """Parse a free-form date expression as ``date -d`` reads it.
+
+    The grammar is coreutils 9.7's as measured on debian:stable-slim:
+    calendar dates (``2026-01-15``, ``1/15/26``, ``15 Jan 2026``,
+    ``Jan 15, 2026``, ``20260115``), times of day (``10:30:45.5``,
+    ``9pm``) with zone corrections (``+05:30``), zone names (``UTC``,
+    ``EST DST``, ``UTC+3``, military letters), days of the week
+    (``next monday``), relative items (``2 days ago``, ``tomorrow``),
+    ``@epoch`` and a leading ``TZ="zone"``, with parenthesized comments
+    ignored. None is date's ``invalid date``; mirage also refuses a
+    moment outside years 1-9999, which date shows.
 
     Args:
-        text (str): the -d argument as typed.
-        tz (tzinfo | None): the zone the result is read and rendered
-            in: UTC under ``-u``, the zone ``TZ`` names, or None for
-            the host's local zone, which keeps the result naive.
-        now (datetime | None): the current moment, injectable for tests.
+        text (str): the expression.
+        tz (tzinfo | None): the zone it is read and returned in, None for
+            the host's local zone (and a naive result).
+        now (datetime | None): the current moment, injectable for tests;
+            a naive one is the host's local time.
     """
-    raw = text.lstrip(_SPACES)
-    reading = tz
-    prefixed = _tz_prefix(raw)
-    if prefixed is not None:
-        reading = resolve_tz(prefixed[0])
-        raw = prefixed[1]
-    raw = raw.strip(_SPACES)
-    if raw.startswith("@"):
-        # gnulib's epoch grammar (findutils 4.10): blanks, a sign, a
-        # decimal count of seconds and a fraction with digits on both
-        # sides; `@0x1`, `@1e2`, `@1.` and `@.5` are not dates, however
-        # readily float() would take them.
-        if _EPOCH_RE.fullmatch(raw) is None:
-            return None
-        return datetime.fromtimestamp(float(raw[1:]), tz=tz)
-    if now is None:
-        now = datetime.now(reading)
-    elif reading is not None:
-        now = (
-            now.astimezone(reading)
-            if now.tzinfo
-            else now.replace(tzinfo=reading)
-        )
-    tokens = _lex(raw, _local_zones(reading, now))
-    if tokens is None:
-        return None
-    parsed = _Parsed(
-        year=now.year,
-        year_digits=0,
-        month=now.month,
-        day=now.day,
-        hour=now.hour,
-        minutes=now.minute,
-        seconds=now.second,
-        ns=now.microsecond * 1000,
-    )
-    at = 0
-    while at < len(tokens):
-        after = _item(parsed, tokens, at)
-        if after is None:
-            return None
-        at = after
     try:
-        moment = _resolve(parsed, reading, now)
-    except (OverflowError, ValueError, OSError):
+        inner, rest = _split_zone(text)
+        if now is None:
+            current, current_nanos = divmod(time.time_ns(), _NANOS)
+        else:
+            current = round(now.replace(microsecond=0).timestamp())
+            current_nanos = now.microsecond * 1000
+        outer = _Clock(tz)
+        clock = outer if inner is None else _Clock(resolve_tz(inner))
+        reading = _Parser(_lex(rest), clock.names(current)).parse()
+        placed = _resolve(
+            reading, clock, current, current_nanos, outer.offset(current)
+        )
+        if placed is None:
+            return None
+        instant, nanos = placed
+        if not _FIRST_SECOND <= instant <= _LAST_SECOND:
+            return None
+        micros = nanos // 1000
+        if tz is None:
+            return datetime.fromtimestamp(instant).replace(microsecond=micros)
+        moment = datetime.fromtimestamp(instant, timezone.utc).replace(
+            microsecond=micros
+        )
+        return moment.astimezone(tz)
+    except (_NotADate, OverflowError, ValueError, OSError):
         return None
-    if moment is None or reading is tz:
-        return moment
-    return moment.astimezone(tz)
 
 
-def _place(wall: datetime, tz: tzinfo, offset: timedelta | None) -> datetime:
-    """Put a displaced wall clock back on the timeline, the way mktime
-    does when gnulib hands it the base moment's ``tm_isdst``.
+def _localize(wall: datetime, tz: tzinfo | None) -> datetime | None:
+    """The moment ``tz``'s clock reads a naive wall time, None if it never does.
 
-    A wall clock the zone shows once is that instant. One it shows
-    twice (the hour repeated when DST ends) is the reading under the
-    base's offset, so a summer base stays in summer time and a winter
-    one in winter time, else the later reading. One it never shows
-    (the hour skipped when DST starts) is read under the offset in
-    force before the change and lands past the gap whichever side the
-    base was on: ``2025-03-29 02:30 CET 1 day`` and ``2025-03-31 02:30
-    CEST 1 day ago`` are both ``03:30 CEST`` under GNU.
+    A reading the clock shows twice is the later. The host's zone is not
+    checked: the wall time comes back naive, read as local when used.
 
     Args:
-        wall (datetime): the naive wall clock after the displacement.
-        tz (tzinfo): the zone it is read in.
-        offset (timedelta | None): the base moment's UTC offset.
-    """
-    first = wall.replace(tzinfo=tz, fold=0)
-    second = wall.replace(tzinfo=tz, fold=1)
-    shown = [
-        reading
-        for reading in (first, second)
-        if reading.astimezone(timezone.utc).astimezone(tz).replace(tzinfo=None)
-        == wall
-    ]
-    if not shown:
-        return first.astimezone(timezone.utc).astimezone(tz)
-    if first.utcoffset() == second.utcoffset():
-        return first
-    for reading in shown:
-        if reading.utcoffset() == offset:
-            return reading
-    return second
-
-
-def _localize(dt: datetime, tz: tzinfo | None) -> datetime | None:
-    """Place a parsed moment on the timeline the caller reads in.
-
-    A moment carrying its own zone is converted; a naive one is read
-    as a wall clock in ``tz``, or stays naive (host local) when there
-    is none, which is how GNU reads ``-d '2026-01-01 00:00'`` under a
-    ``TZ``. Two wall clocks a zone does not show once are read as
-    glibc's mktime reads them: the hour repeated when DST ends is the
-    later (standard-time) instant, and the hour skipped when it starts
-    is no moment at all, GNU's ``invalid date``.
-
-    Args:
-        dt (datetime): the parsed moment.
+        wall (datetime): the naive wall-clock time.
         tz (tzinfo | None): the zone, None for the host's local zone.
-
-    Returns:
-        datetime | None: the moment, or None for a skipped wall clock.
     """
-    if dt.tzinfo is not None:
-        return dt.astimezone(tz)
     if tz is None:
-        return dt
-    placed = dt.replace(tzinfo=tz, fold=1)
-    shown = placed.astimezone(timezone.utc).astimezone(tz)
-    if shown.replace(tzinfo=None) != dt:
+        return wall
+    seconds = _civil_days(wall.year, wall.month, wall.day) * _DAY
+    seconds += wall.hour * 3600 + wall.minute * 60 + wall.second
+    shown = _Clock(tz).readings(seconds)
+    if not shown:
         return None
-    return placed
+    return datetime.fromtimestamp(shown[-1], tz)
 
 
 def parse_posix_time(
@@ -1192,7 +1259,9 @@ def parse_posix_time(
         first = placed.timestamp()
         if first < _FIRST_SECOND or first + leap > _LAST_SECOND:
             return None
-        return placed + timedelta(seconds=leap)
+        # Adding to an aware moment resets ``fold``, so only a leap second
+        # does: the later of two readings stays the later.
+        return placed + timedelta(seconds=1) if leap else placed
     except (OverflowError, ValueError):
         return None
 
