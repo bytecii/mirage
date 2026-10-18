@@ -3,8 +3,15 @@ title: "Weights & Biases"
 description: "Read experiment runs, configuration, summaries, history, and run files."
 ---
 
+## Credentials
+
+Create a key in [W&B User Settings](https://wandb.ai/settings) and store it in
+`WANDB_API_KEY`. Set `entities` to the username or team segment from a project
+URL; Mirage does not discover entities from the key.
+
 ```python
 import os
+
 from mirage import Workspace, MountMode
 from mirage.vfs.wandb import WandbConfig, WandbVFS
 
@@ -16,11 +23,18 @@ ws = Workspace({
 }, mode=MountMode.READ)
 ```
 
+After mounting, `find /wandb/my-team -maxdepth 3 -name run.json` discovers
+available run paths.
+
 The mount exposes `/<entity>/<project>/<run-id>/` with `run.json`,
 `config.json`, `summary.json`, `history.jsonl`, and `files/`.
 Configure one or more entities explicitly; project and run listings are fetched
 on demand and follow service pagination. Run IDs identify directories; duplicate
 display names remain separate runs.
+
+For TypeScript, use the [Node and browser example](/typescript/setup/wandb).
+
+## Run data reference
 
 `run.json` contains the run metadata exposed by the supported W&B API fields:
 

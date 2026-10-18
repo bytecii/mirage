@@ -199,6 +199,7 @@
             "group": "Mirage Shell",
             "pages": [
               "home/core/shell",
+              "home/core/output-limits",
               "home/core/tools",
               "home/core/data-network"
             ]
@@ -491,6 +492,7 @@
             "pages": [
               "typescript/install",
               "typescript/quickstart",
+              "typescript/browser-quickstart",
               "typescript/setup/fuse",
               "typescript/python",
               "typescript/limitations"

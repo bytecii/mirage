@@ -90,6 +90,7 @@ import os
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
+from mirage.commands.cli.builtin.gws import GWS
 from mirage.vfs.gslides import GSlidesConfig, GSlidesVFS
 
 load_dotenv(".env.development")
@@ -104,6 +105,7 @@ vfs = GSlidesVFS(config=config)
 
 async def main():
     ws = Workspace({"/gslides": vfs}, mode=MountMode.READ)
+    ws.register_cli("gws", GWS, config)
 
     # List structure
     r = await ws.shell("ls /gslides/")
@@ -149,7 +151,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-See `examples/gslides/gslides.py` for the full working example.
+See [`examples/python/gslides/gslides.py`](https://github.com/strukto-ai/mirage/blob/main/examples/python/gslides/gslides.py) for the full working example.
 
 ## Shell Commands
 

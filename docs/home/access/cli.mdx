@@ -28,14 +28,22 @@ npm install -g @struktoai/mirage-cli
 
 ## Quickstart
 
+Create a RAM-backed workspace that needs no credentials:
+
 ```bash
-mirage workspace create workspace.yaml --id demo   # starts the server
-mirage shell -w demo -c 'ls / | head'
-mirage tools grep -w demo -i error /
-mirage workspace delete demo
+cat > workspace.yaml <<'EOF'
+mounts:
+  /data:
+    vfs: ram
+    mode: write
+EOF
+
+mirage workspace create workspace.yaml --id demo
+mirage shell -w demo -c 'echo "hello mirage" > /data/hello.txt && grep -n hello /data/hello.txt'
 ```
 
-`workspace.yaml` is a workspace config.
+This prints `1:hello mirage`. Keep `demo` for the [MCP](/home/access/mcp) or
+[RPC](/home/access/rpc) examples, then remove it with `mirage workspace delete demo`.
 
 ## Exit codes
 

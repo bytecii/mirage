@@ -11,6 +11,10 @@ Both Python and TypeScript require an explicit workspace host and token.
 The token can be a personal access token, an OAuth access token, or a callback
 that supplies the current access token. No extra Python package is required.
 
+Obtain a workspace access token. For local testing, you can create a personal
+access token under **Settings → Developer → Access tokens**. Scoped tokens
+need the [`files` API scope](https://docs.databricks.com/api/files/v2/file).
+
 ### Set the workspace host
 
 Use your workspace origin, such as
@@ -18,6 +22,14 @@ Use your workspace origin, such as
 `https://adb-xxxxxxxxxxxx.xx.azuredatabricks.net` on Azure.
 The host accepts HTTP or HTTPS and rejects a path, query, fragment, or userinfo.
 A trailing slash is allowed.
+
+### Find a readable volume
+
+Choose a volume in Catalog Explorer. Its
+`/Volumes/<catalog>/<schema>/<volume>/...` path supplies the three config
+fields. The principal needs `USE CATALOG`, `USE SCHEMA`, and `READ VOLUME`; a
+write mount also needs `WRITE VOLUME`. See [volume
+permissions](https://docs.databricks.com/aws/en/volumes/utility-commands).
 
 ### Supply a token
 
@@ -42,4 +54,4 @@ caches. Token refresh for the same principal and scope can use the existing VFS.
 
 See the [Python Databricks Volume VFS](/python/vfs/databricks_volume) or
 [TypeScript Databricks Volume VFS](/typescript/setup/databricks_volume) page for
-configuration examples.
+configuration and first-read examples.

@@ -1,5 +1,5 @@
 {
-  "baseline": 3285,
+  "baseline": 3271,
  "modules": {
   "runtime/sandbox/microsandbox/config": {
    "typescript_only": {
