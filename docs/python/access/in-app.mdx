@@ -41,7 +41,9 @@ One virtual terminal over the backends mounted at each prefix.
   Answers an ask while the line waits. Without one, asks wait in [`ws.decisions`](#ws-decisions).
 </ResponseField>
 
-The other parameters (`cache`, `index`, `store`, `runtimes`, `clis`, `env`, `secrets`, `command_limits`, ...) are the top-level YAML keys.
+The [workspace configuration reference](/home/configuration) maps every
+portable YAML key to its Python and TypeScript constructor option. Direct SDK
+construction defaults `mode` to `READ`; YAML defaults it to `write`.
 
 ```python
 from mirage import MountMode, Workspace

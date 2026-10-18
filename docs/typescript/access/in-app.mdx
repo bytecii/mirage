@@ -42,7 +42,9 @@ One virtual terminal over the backends mounted at each prefix.
   Answers an ask while the line waits. Without one, asks wait in [`ws.decisions`](#ws-decisions).
 </ResponseField>
 
-The other options (`cache`, `index`, `store`, `runtimes`, `clis`, `env`, `secrets`, `commandLimits`, ...) are the top-level YAML keys, in camelCase.
+The [workspace configuration reference](/home/configuration) maps every
+portable `snake_case` YAML key to its TypeScript constructor option. Direct SDK
+construction defaults `mode` to `READ`; YAML defaults it to `write`.
 
 ```ts
 import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
