@@ -22,6 +22,16 @@ A runtime runs the programs in a line. Mirage's own commands (`grep`, `cat`, pip
 | [`local`](/home/setup/runtime/local) | the host's `python3`, and any host program you capture | host | Python, Node |
 | [Sandboxes](/home/setup/runtime/sandbox) | native programs | a container, VM, cloud sandbox or SSH machine, or this Linux host with Sandlock | Python, Node |
 
+Start with the defaults unless the program needs something they do not provide:
+
+- Use Monty for fast Python automation within its supported subset, and
+  QuickJS for JavaScript.
+- Use WASI (Python SDK) or Pyodide (TypeScript SDK) when Python needs CPython
+  or packages the Monty subset does not support.
+- Use `local` for trusted programs that should run directly on the host.
+- Use a sandbox for native dependencies, a process or kernel boundary, or a
+  remote execution environment.
+
 ## Routing
 
 `runtimes` is an ordered list: the first runtime whose `captures` name a program runs it, and `workspace` takes the rest. Without the key, the list is `[monty, quickjs, workspace]` in both SDKs.
@@ -86,11 +96,33 @@ Here `python3 job.py | grep error` runs `python3` in the container and
 
 | Where | Reaches the workspace through | Outside the workspace |
 | --- | --- | --- |
-| In-process | directly: every file it opens is the workspace's | nothing: no host files, no network, unless a Pyodide `init_module` adds them |
+| Monty, WASI, QuickJS | directly: every file they open is the workspace's | no host files or network |
+| Pyodide | directly, through the workspace's file bridge | Varies by host: browser workers retain JavaScript host and network access subject to the page's CSP, while an `init_module` deliberately opts into process reach. See [containment](/typescript/runtime/python#containment). |
 | `local`, Sandlock | a [FUSE folder](/home/setup/fuse) you mount | the host's disk and network; under Sandlock, only the paths you grant |
 | Other sandboxes | SFTP and `sshfs` with `mount_type: ssh` (`docker`, `e2b`, `ssh`, `smolvm`, `apple_container`), or a Mirage inside the sandbox | that sandbox's disk and network |
 
-Mount modes, profiles and policies apply to every file call that reaches the workspace. A host or sandbox runtime also has its own files and network, which they do not cover; only an all in-process list, with no Pyodide `init_module`, keeps agent code inside them.
+Mount modes, profiles and policies apply to every file call that reaches the
+workspace. A host or sandbox runtime also has its own files and network, which
+they do not cover. Pyodide has its own containment limits; use a sandbox with
+a process and kernel boundary for hostile code.
+
+### Verify workspace file access
+
+Once a runtime capturing `python3` can see `/data`, this credential-free check
+proves that a program can read a workspace file, write one back, and return
+visible output:
+
+```bash
+printf 'hello\n' > /data/input.txt
+python3 -c 'from pathlib import Path; text = Path("/data/input.txt").read_text(); Path("/data/output.txt").write_text(text.upper()); print(text, end="")'
+cat /data/output.txt
+# hello
+# HELLO
+```
+
+In-process runtimes use the file bridge automatically. For `local` and
+Sandlock, first mount a [FUSE folder](/home/setup/fuse). For other sandboxes,
+finish the provider page's **Connecting the workspace** steps first.
 
 ## Resource limits
 

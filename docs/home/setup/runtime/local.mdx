@@ -82,6 +82,9 @@ runtimes:
     captures: ["python3", "@external"]
 ```
 
+After the folder is mounted, run the shared
+[workspace file check](/home/setup/runtime/overview#verify-workspace-file-access).
+
 - Put the folder at the mount's own path when you can, so a path typed in
   the shell names the same file in the program.
 - Calls into the folder follow mount modes and policies. A folder added in
