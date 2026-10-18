@@ -39,14 +39,15 @@ ws = Workspace({"/email": vfs}, mode=MountMode.READ)
 
 ### Common VFS Settings
 
-| VFS    | IMAP Host               | SMTP Host             | Notes                      |
+| Provider    | IMAP Host               | SMTP Host             | Notes                      |
 | ----------- | ----------------------- | --------------------- | -------------------------- |
-| Outlook/365 | `outlook.office365.com` | `smtp.office365.com`  | App password or OAuth2     |
 | Yahoo       | `imap.mail.yahoo.com`   | `smtp.mail.yahoo.com` | App password required      |
 | Fastmail    | `imap.fastmail.com`     | `smtp.fastmail.com`   | App password               |
 | iCloud      | `imap.mail.me.com`      | `smtp.mail.me.com`    | App password               |
 | ProtonMail  | `127.0.0.1` (Bridge)    | `127.0.0.1` (Bridge)  | Requires ProtonMail Bridge |
 | Self-hosted | Your server hostname    | Your server hostname  | Whatever you configured    |
+
+For credentials and provider support, see [Email setup](/home/setup/email).
 
 ## Filesystem Layout
 
