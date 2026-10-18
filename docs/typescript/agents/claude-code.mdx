@@ -15,7 +15,7 @@ icon: /images/claude-logo.svg
 npm install -g @struktoai/mirage-cli
 ```
 
-On macOS, FUSE also needs the [macFUSE 4 workaround](/typescript/setup/fuse#macos-4-symlink-workaround). Install [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) separately.
+Install [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) separately.
 
 ## Workspace
 
@@ -24,13 +24,6 @@ mode: write
 mounts:
   /:
     vfs: ram
-    backend: fuse                 # FUSE only
-    mountpoint: /tmp/mirage-demo  # FUSE only
-  /s3:
-    vfs: s3
-    mode: read
-    config:
-      bucket: my-bucket
 ```
 
 ```bash
@@ -47,8 +40,20 @@ Claude Code gets `shell`, `read`, `write`, `edit`, `ls`, `grep` and `glob` from 
 
 ## FUSE
 
+Install your platform's [FUSE driver](/home/setup/fuse). On macOS, also follow the [macFUSE 4 workaround](/typescript/setup/fuse#macos-4-symlink-workaround). Then expose the RAM mount at a local folder:
+
+```yaml workspace-fuse.yaml
+mode: write
+mounts:
+  /:
+    vfs: ram
+    backend: fuse
+    mountpoint: /tmp/mirage-demo
+```
+
 ```bash
+mirage workspace create workspace-fuse.yaml --id demo-fuse
 cd /tmp/mirage-demo && claude
 ```
 
-Every file and shell call Claude Code makes goes through Mirage: `/tmp/mirage-demo/s3` is the bucket. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
+File operations under `/tmp/mirage-demo` go through Mirage. Claude Code still runs as a host process, so its shell and file tools can access paths outside that folder when host permissions allow. `mirage workspace delete demo-fuse` unmounts it. On macOS the daemon holds one FUSE mount at a time.

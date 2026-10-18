@@ -11,10 +11,13 @@ icon: /images/opencode-logo.svg
 Create a `mirage.yaml` in your project:
 
 ```yaml mirage.yaml
+mode: write
 mounts:
   /:
     vfs: ram
 ```
+
+This starter is an empty scratch workspace. Its files live in memory until the plugin closes, and it does not expose the project directory on the host.
 
 Add the plugin to `opencode.json`:
 
@@ -26,6 +29,19 @@ Add the plugin to `opencode.json`:
 ```
 
 Run `opencode` normally. Mirage searches the project and parent directories for `mirage.yaml`, `workspace.yaml`, `.mirage/workspace.yaml`, and their `.yml` variants.
+
+## Use an existing project
+
+To work on existing files, mount the project directory explicitly with [Disk](/typescript/setup/disk):
+
+```yaml mirage.yaml
+mode: write
+mounts:
+  /:
+    vfs: disk
+    config:
+      root: /absolute/path/to/project
+```
 
 To select another config or disable stale-write protection, pass plugin options:
 

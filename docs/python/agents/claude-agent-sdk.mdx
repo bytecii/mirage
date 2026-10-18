@@ -21,14 +21,13 @@ uv add 'mirage-ai[claude-agent-sdk]'
 ```python
 from claude_agent_sdk import query
 
-from mirage import Workspace
+from mirage import MountMode, RAMVFS, Workspace
 from mirage.agents.claude_agent_sdk import build_options
-from mirage.vfs.s3 import S3Config, S3VFS
 
-ws = Workspace({"/s3": S3VFS(S3Config(bucket="my-bucket"))})
+ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
 
 async for msg in query(
-    prompt="cat /s3/data.csv | grep error",
+    prompt="Write 'hi from mirage' to /hello.txt, then cat it.",
     options=await build_options(ws),
 ):
     print(msg)

@@ -15,7 +15,7 @@ icon: /images/grok-logo.svg
 npm install -g @struktoai/mirage-cli
 ```
 
-On macOS, FUSE also needs the [macFUSE 4 workaround](/typescript/setup/fuse#macos-4-symlink-workaround). Install [Grok Build](https://x.ai/cli) separately; its command is `grok`.
+Install [Grok Build](https://x.ai/cli) separately; its command is `grok`.
 
 ## Workspace
 
@@ -24,13 +24,6 @@ mode: write
 mounts:
   /:
     vfs: ram
-    backend: fuse                 # FUSE only
-    mountpoint: /tmp/mirage-demo  # FUSE only
-  /s3:
-    vfs: s3
-    mode: read
-    config:
-      bucket: my-bucket
 ```
 
 ## CLI
@@ -43,9 +36,20 @@ The plugin runs `mirage mcp` through `npx` on your project's `.mirage/workspace.
 
 ## FUSE
 
+Install your platform's [FUSE driver](/home/setup/fuse). On macOS, also follow the [macFUSE 4 workaround](/typescript/setup/fuse#macos-4-symlink-workaround). For this route, add the kernel backend and local mountpoint to `.mirage/workspace.yaml`:
+
+```yaml .mirage/workspace.yaml
+mode: write
+mounts:
+  /:
+    vfs: ram
+    backend: fuse
+    mountpoint: /tmp/mirage-demo
+```
+
 ```bash
 mirage workspace create .mirage/workspace.yaml --id demo
 cd /tmp/mirage-demo && grok
 ```
 
-Every file and shell call Grok makes goes through Mirage: `/tmp/mirage-demo/s3` is the bucket. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
+File operations under `/tmp/mirage-demo` go through Mirage. Grok still runs as a host process, so its shell and file tools can access paths outside that folder when host permissions allow. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
