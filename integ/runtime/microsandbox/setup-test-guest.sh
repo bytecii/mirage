@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Provision only a dedicated, running test guest; this does not create or remove it.
-sandbox="${1:?usage: setup.sh SANDBOX MIRAGE_WHEEL [NATIVE_WHEEL]}"
-wheel="${2:?usage: setup.sh SANDBOX MIRAGE_WHEEL [NATIVE_WHEEL]}"
+sandbox="${1:?usage: setup-test-guest.sh SANDBOX MIRAGE_WHEEL [NATIVE_WHEEL]}"
+wheel="${2:?usage: setup-test-guest.sh SANDBOX MIRAGE_WHEEL [NATIVE_WHEEL]}"
 native_wheel="${3:-}"
 test -f "$wheel"
 test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

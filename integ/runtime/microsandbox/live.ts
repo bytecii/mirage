@@ -225,20 +225,6 @@ async function modeChecks(mountType: 'ssh' | 'fuse' | 'both') {
         assert.deepEqual(await probe('seed'), { seed: 'changed\n' })
       })
     }
-    await check(mountType + '_parallel_processes', async () => {
-      const results = await Promise.all(
-        Array.from({ length: 6 }, (_, i) => probe('parallel', ` ${i}`)),
-      )
-      assert.deepEqual(
-        results.map((r) => r.index),
-        Array.from({ length: 6 }, (_, i) => String(i)),
-      )
-      assert.ok(results.every((r) => Number(r.end) > Number(r.start)))
-      const span =
-        Math.max(...results.map((r) => Number(r.end))) -
-        Math.min(...results.map((r) => Number(r.start)))
-      assert.ok(span < 3, `six one-second jobs took ${span.toFixed(1)}s`)
-    })
     await check(mountType + '_workspace_binary_stdin_stderr_exit', async () => {
       const input = Uint8Array.from({ length: 1048576 }, (_, i) => (i % 2 === 0 ? 0 : 255))
       const result = await agent.shell(

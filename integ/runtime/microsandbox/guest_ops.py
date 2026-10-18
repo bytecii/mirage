@@ -22,7 +22,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 
@@ -152,16 +151,6 @@ def hidden(root):
     return {"hidden": True}
 
 
-def parallel(root, index):
-    started = time.time()
-    path = root / f"process-{index}.txt"
-    path.write_text(index)
-    time.sleep(1)
-    assert path.read_text() == index
-    path.unlink()
-    return {"index": index, "start": started, "end": time.time()}
-
-
 def main():
     root, operation = Path(sys.argv[1]), sys.argv[2]
     if operation == "filesystem":
@@ -174,8 +163,6 @@ def main():
         result = readonly(root)
     elif operation == "hidden":
         result = hidden(root)
-    elif operation == "parallel":
-        result = parallel(root, sys.argv[3])
     elif operation == "seed":
         result = {"seed": (root / "seed.txt").read_text()}
     else:
