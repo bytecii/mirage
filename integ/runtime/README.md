@@ -43,7 +43,7 @@ differs.
 | [`host/`](host/)                       | runtime | the SDK's in-process entry point: `with ws:` and `patchNodeFs`                                    |
 | [`sandlock/`](sandlock/)               | runtime | Landlock limits on a host process                                                                 |
 | [`apple_container/`](apple_container/) | runtime | Apple's container: stderr, sessions, an unserved cwd                                              |
-| [`microsandbox/`](microsandbox/)       | runtime | Microsandbox: an unserved cwd and real-guest checks                                              |
+| [`microsandbox/`](microsandbox/)       | runtime | microsandbox: an unserved cwd and real-guest checks                                              |
 | [`e2b/`](e2b/)                         | scripts | manual checks against a live E2B sandbox, not run by the runners                                  |
 
 ## Runtimes
