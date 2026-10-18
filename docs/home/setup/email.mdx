@@ -11,9 +11,8 @@ The Email VFS connects to password-authenticated IMAP (reading) and SMTP
 password accepted by that provider.
 
 <Warning>
-Microsoft 365 / Exchange Online is not supported by this setup. Microsoft
-removed Basic authentication for IMAP, including app passwords, while the
-current Email VFS does not accept OAuth credentials.
+Microsoft 365 is unsupported because it requires OAuth for IMAP, while the
+current Email VFS accepts only passwords.
 </Warning>
 
 ### 1. Find Your IMAP/SMTP Settings
@@ -71,15 +70,10 @@ EMAIL_USERNAME=you@fastmail.com
 EMAIL_PASSWORD=your-app-password
 ```
 
-This is a dotenv file example, not automatic SDK configuration. Load the file
-in your application, as the linked Python example does, or export and pass the
-values yourself.
-
 ## Troubleshooting
 
 **"Authentication failed"** - Check whether your provider accepts passwords
-for IMAP/SMTP and whether it requires an app password. Microsoft 365 requires
-OAuth, which this adapter does not currently support.
+for IMAP/SMTP and whether it requires an app password.
 
 **"Connection refused"** - Check the hostname and port. Some networks
 block port 993/587. For ProtonMail, make sure Bridge is running.

@@ -63,10 +63,8 @@ modes are supported.
 drive the mount is, so set **at most one**. Setting two raises at config time
 rather than silently addressing whichever came first, which otherwise surfaces
 much later as an unexplained 404. Setting none means `/me/drive`, the
-signed-in user's own drive, which is the only form that needs no extra
-identifier and the only one unavailable to an app-only token. App-only auth
-therefore needs one suitable explicit selector, plus the Graph permissions to
-read that target.
+signed-in user's own drive, which requires delegated auth; app-only auth must
+set one selector and the permissions to read that target.
 
 ### The service root
 

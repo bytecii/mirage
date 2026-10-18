@@ -28,9 +28,8 @@ This is a **delegated** token, so it works against your own `/me/drive` and you 
 
 ### Option B: Interactive device-code token
 
-Use this to obtain a delegated token through your own app registration. The
-initial sign-in is interactive, so this is a development bootstrap rather than
-an unattended CI credential.
+Use this to obtain a delegated token through your own app registration; the
+initial sign-in makes it a development bootstrap, not an unattended credential.
 
 1. In the [Microsoft Entra admin center](https://entra.microsoft.com), go to
    **Identity** -> **Applications** -> **App registrations** -> **New registration**.
@@ -39,9 +38,8 @@ an unattended CI credential.
 1. Under **Authentication** -> **Advanced settings**, set
    **Allow public client flows** to **Yes**.
 1. Under **API permissions** -> **Microsoft Graph** -> **Delegated**, add
-   `Files.Read.All` for read-only access or `Files.ReadWrite.All` for writes.
-   For SharePoint libraries, add the corresponding `Sites.Read.All` or
-   `Sites.ReadWrite.All` permission.
+   `Files.Read` for your own drive or `Files.ReadWrite` for writes. Other drives
+   or SharePoint may require the corresponding `Files.*.All` or `Sites.*` scope.
 1. Run the device-code flow with your **Application (client) ID**:
 
 ```bash
@@ -50,7 +48,7 @@ CLIENT_ID="<your app client id>"
 # 1) request a device code
 curl -s -X POST "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode" \
   -d "client_id=$CLIENT_ID" \
-  -d "scope=Files.ReadWrite.All offline_access"
+  -d "scope=Files.ReadWrite offline_access"
 #   -> open https://microsoft.com/devicelogin and enter the user_code it prints
 
 # 2) after you sign in, exchange the device_code for a token
@@ -60,18 +58,13 @@ curl -s -X POST "https://login.microsoftonline.com/common/oauth2/v2.0/token" \
   -d "device_code=<device_code from step 1>"
 ```
 
-The response includes a short-lived access token and, because the request used
-`offline_access`, a refresh token. Do not reduce the response to only
-`access_token` if the application needs to survive token expiry. Mirage accepts
-an access-token callback and retries it once after a `401`; your callback must
-use an OAuth library or credential service to refresh the token. Mirage does
-not persist Microsoft refresh tokens for you.
+The response includes access and refresh tokens. Mirage accepts an access
+token or provider callback but does not refresh Microsoft tokens itself, so a
+long-running application must refresh through that callback.
 
 <Note>
-**App-only tokens** (client-credentials flow) have no signed-in user, so
-`/me/drive` returns an error. With an app-only token you **must** pass one of
-`drive_id`, `site_id`, `group_id`, or `user_id`. Delegated tokens (Options A and
-B) can use `/me/drive` with no explicit selector.
+App-only tokens cannot use `/me/drive`; set one of `drive_id`, `site_id`,
+`group_id`, or `user_id`. Delegated tokens can use `/me/drive` directly.
 </Note>
 
 ### Get your drive ID
@@ -105,10 +98,6 @@ The drive ID looks like `b!a1B2c3...`.
 MS_GRAPH_DRIVE_TOKEN=<token>
 MS_GRAPH_DRIVE_ID=<drive id>   # optional; use at most one drive selector
 ```
-
-The Python example loads `.env.development` explicitly and passes these values
-to the SDK. For a long-running process, replace the static token with an
-access-token callback as described above.
 
 <Note>
 Snapshots and version pinning rely on OneDrive/SharePoint **version history**,

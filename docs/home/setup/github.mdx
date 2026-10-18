@@ -25,28 +25,4 @@ description: Set up a GitHub Personal Access Token for the GitHub VFS.
 GITHUB_TOKEN=ghp_xxxx...
 ```
 
-This is a dotenv file entry. Load it in your application or export the value,
-then pass it to the GitHub VFS or CLI config.
-
-## Optional CLI permissions
-
-**Contents: Read-only** is enough for the VFS read path. If you register the
-[GitHub CLI](/home/setup/cli/gh), add fine-grained permissions for the command
-groups you will use:
-
-| Commands | Repository permission |
-| --- | --- |
-| Read issues or pull requests | Issues: Read-only; Pull requests: Read-only |
-| Create, edit, close, or comment on issues | Issues: Read and write |
-| Create, edit, close, or comment on pull requests | Pull requests: Read and write |
-| Merge pull requests | Contents: Read and write |
-| Create releases or change repository content | Contents: Read and write |
-| View workflow runs; rerun workflow runs | Actions: Read-only; Actions: Read and write |
-| Change repository settings | Administration: Read and write |
-
-Repository creation, forking, deletion, and arbitrary `gh api` calls can need
-account-level or endpoint-specific access. Check the
-[GitHub fine-grained token permission table](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)
-for those commands instead of widening every token by default.
-
 For Python configuration, see the [Python GitHub VFS](/python/vfs/github) page.

@@ -18,8 +18,11 @@ description: Set up a Slack Bot Token for the Slack VFS.
 1. Under **Bot Token Scopes**, add:
    - `channels:history` - read messages in public channels
    - `channels:read` - list public channels
-   - `groups:history` - read messages in private channels (optional)
-   - `groups:read` - list private channels (optional)
+   - `groups:history`, `groups:read` - private channels (optional)
+   - `im:history`, `im:read` - direct messages (optional)
+   - `users:read` - the VFS `users/` directory
+
+Add `chat:write` only for VFS write mode or the CLI `send-message` command.
 
 ### 3. Install to Workspace
 
@@ -47,9 +50,6 @@ SLACK_BOT_TOKEN=xoxb-xxxx...
 SLACK_USER_TOKEN=xoxp-xxxx...  # optional, only needed for workspace search
 ```
 
-These are dotenv file entries. Load the file in your application or export the
-values, then pass them to `SlackConfig`.
-
 ### 6. Invite the Bot
 
 The bot must be invited to channels it needs to read:
@@ -57,23 +57,5 @@ The bot must be invited to channels it needs to read:
 ```
 /invite @Mirage
 ```
-
-## Optional CLI permissions
-
-The scopes above cover the read-only VFS and optional search. If you register
-the [Slack CLI](/home/setup/cli/slack), add the scopes for the commands you
-plan to use:
-
-| Commands | Additional bot-token scopes |
-| --- | --- |
-| VFS write mode or `send-message` | `chat:write` |
-| `react`; `reactions` | `reactions:write`; `reactions:read` |
-| `pin-message`, `unpin-message`; `list-pins` | `pins:write`; `pins:read` |
-| `member-info`, `list-members` | `users:read` |
-| `emoji-list` | `emoji:read` |
-
-Reinstall or reauthorize the Slack app after changing scopes. Inviting the bot
-to a channel remains necessary; `chat:write.public` is only needed if you want
-it to post to public channels it has not joined.
 
 For Python configuration, see the [Python Slack VFS](/python/vfs/slack) page.

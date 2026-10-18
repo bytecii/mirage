@@ -52,11 +52,6 @@ fastest path, no redirect URI, no client secret, no curl exchange:
 The token expires in **60 minutes** and there is no programmatic way to renew it; you regenerate
 by hand. For long-running processes, use the OAuth flow below instead.
 
-The repository examples load this dotenv file and pass `BOX_DEVELOPER_TOKEN`
-as the VFS `access_token` / `accessToken`. The SDK does not discover that
-environment variable by itself. A directly supplied access token skips the
-OAuth refresh path.
-
 ## Setup (long-running OAuth flow)
 
 ### 1. Create a Box App

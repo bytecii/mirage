@@ -38,12 +38,10 @@ Enable the API for each service you plan to use:
 | Slides | Google Slides API | `https://www.googleapis.com/auth/presentations` |
 | Gmail | Gmail API | `https://www.googleapis.com/auth/gmail.modify` |
 | Calendar | Google Calendar API | `https://www.googleapis.com/auth/calendar` |
-| Forms | Google Forms API | `https://www.googleapis.com/auth/forms.body` and `https://www.googleapis.com/auth/forms.responses.readonly` |
 
 Keep the Drive API and scope when using Google file mounts. The `gws` create
-commands also use Drive to place newly created Docs, Sheets, Slides, and Forms.
-For a production integration, review each service's authorization reference;
-some of these scopes are sensitive or restricted and can require Google review.
+commands also use Drive to place newly created Docs, Sheets, and Slides. For
+read-only use, select the corresponding read-only scopes.
 
 ### 3. Configure Google Auth Platform
 
@@ -80,9 +78,8 @@ The OAuth settings are under **Google Auth Platform** in the Cloud Console left 
 
 ### 5. Get the Refresh Token
 
-**A) Build and open the authorization URL.** Replace `YOUR_CLIENT_ID`, then
-add the scopes you selected in Steps 2 and 3 to the space-separated `scope`
-parameter. This example requests Drive and Docs:
+**A) Build and open the authorization URL.** Replace `YOUR_CLIENT_ID` and add
+the scopes selected above to `scope`. This example requests Drive and Docs:
 
 ```
 https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:1&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/documents&access_type=offline&prompt=consent
@@ -117,10 +114,6 @@ GOOGLE_CLIENT_SECRET=GOCSPx-xxx
 GOOGLE_REFRESH_TOKEN=1//0abc...
 ```
 
-Mirage examples load `.env.development` explicitly and pass these values to
-the SDK. If your application does not use dotenv, export the same variables or
-pass the credentials from your own secret store.
-
 ## Token Lifetime
 
 | App Publishing Status | Typical behavior |
@@ -128,25 +121,12 @@ pass the credentials from your own secret store.
 | Testing (default) | External-user grants expire after 7 days unless only basic profile scopes are requested |
 | In production | Long-lived while the grant remains valid |
 
-To publish, go to **Audience** and click **Publish App**. An unverified-app
-warning is expected during private testing; a public application can require
-Google verification before users should rely on it.
+To publish, go to **Audience** and click **Publish App**.
 
 The `TokenManager` exchanges a valid refresh token for short-lived access
-tokens automatically. A refresh token can stop working after user revocation,
-inactivity, account or administrator policy changes, token limits, or other
-[Google lifecycle events](https://developers.google.com/identity/protocols/oauth2#expiration).
-When that happens, repeat the authorization flow. A password change invalidates
-some grants that include Gmail scopes; it is not a universal rule for every
-Google token.
-
-## Use narrower scopes when possible
-
-The setup table uses read/write scopes because Mirage exposes write-capable
-mounts and `gws` commands. For a read-only integration, select the corresponding
-read-only scopes from each API's authorization reference. Google recommends
-requesting the narrowest scopes your application needs; changing scopes later
-requires authorization and consent again.
+tokens automatically. Refresh tokens can still be revoked or expire; repeat
+authorization when that happens. See
+[Google's token lifecycle documentation](https://developers.google.com/identity/protocols/oauth2#expiration).
 
 ## Troubleshooting
 
@@ -158,4 +138,7 @@ requires authorization and consent again.
 | Refresh token expires after 7 days | Publish the app under **Audience**, or re-authorize while testing |
 | Auth code doesn't work twice       | Codes are single-use - re-authorize if exchange fails             |
 
-For Python configuration, see the VFS pages: [Gmail](/python/vfs/gmail), [Drive](/python/vfs/gdrive), [Docs](/python/vfs/gdocs), [Sheets](/python/vfs/gsheets), [Slides](/python/vfs/gslides). For Calendar, Forms, and the service command trees, see [GWS setup](/home/setup/cli/gws).
+For Python configuration, see [Gmail](/python/vfs/gmail),
+[Drive](/python/vfs/gdrive), [Docs](/python/vfs/gdocs),
+[Sheets](/python/vfs/gsheets), and [Slides](/python/vfs/gslides). For Calendar,
+Forms, and service command trees, see [GWS setup](/home/setup/cli/gws).
