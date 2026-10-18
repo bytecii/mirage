@@ -580,7 +580,7 @@ async function* streamRefusingDirs(
   yield* files.readStream(p)
 }
 
-// Read stream for the read-family per-operand chokepoint (`readOperands`):
+// The per-operand read stream, `read(path)`, the read family takes:
 // the operand is stat'ed first so a directory fails with EISDIR before any
 // backend read runs (sftp reads of a directory raise an opaque `Failure`,
 // not ENOENT), and an ENOENT for an implicit keyed-backend directory or a

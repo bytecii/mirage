@@ -748,7 +748,7 @@ async def _stream_refusing_dirs(
 
 
 def dir_aware_stream(files: CommandFiles, ctx: Context) -> ReadStreamFn:
-    """The per-operand read stream, ``read(path)``, for ``read_operands``.
+    """The per-operand read stream, ``read(path)``, the read family takes.
 
     The operand is stat'ed first so a directory fails with EISDIR before
     any backend read runs (sftp reads of a directory raise an opaque
