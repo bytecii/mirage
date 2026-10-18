@@ -18,6 +18,7 @@ import zlib
 
 import pytest
 
+from mirage.io import yield_budget
 from mirage.io.stream import yield_bytes
 from mirage.io.types import materialize
 from mirage.utils.compress import (
@@ -395,8 +396,13 @@ async def test_gzip_stream_produces_output_before_eof_and_closes_its_source():
 
 
 @pytest.mark.asyncio
-async def test_output_only_draining_yields_to_cancellation_and_closes_source():
-    archive = gzip.compress(b"x" * (32 * 1024 * 1024))
+async def test_output_only_draining_yields_to_cancellation_and_closes_source(
+    monkeypatch,
+):
+    monkeypatch.setattr(yield_budget, "YIELD_INTERVAL", 0)
+    size = GZIP_CHUNK_SIZE * 20
+    archive = gzip.compress(b"x" * size)
+    first_output = asyncio.Event()
     closed = asyncio.Event()
     written = 0
 
@@ -410,13 +416,16 @@ async def test_output_only_draining_yields_to_cancellation_and_closes_source():
         nonlocal written
         async for data in gunzip_stream(source()):
             written += len(data)
+            first_output.set()
 
     task = asyncio.create_task(consume())
-    timer = asyncio.get_running_loop().call_later(0.001, task.cancel)
     try:
+        await asyncio.wait_for(first_output.wait(), 1)
+        task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert 0 < written < 32 * 1024 * 1024
+        assert 0 < written < size
         assert closed.is_set()
     finally:
-        timer.cancel()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
