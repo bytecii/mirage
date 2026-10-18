@@ -274,7 +274,6 @@ class PcreTranslator:
         self.group_map: dict[int, int] = {}
         self.names: set[str] = set()
         self.keeps = 0
-        self.atomics = 0
         self.caseless_backref = False
         self.case_sensitive_text = False
         self.backrefs: list[tuple[int, int]] = []

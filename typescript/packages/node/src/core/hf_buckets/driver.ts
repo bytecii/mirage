@@ -89,35 +89,6 @@ async function* listChildren(conn: HfConn, pfx: string): AsyncIterable<ChildEntr
   }
 }
 
-async function* listTree(conn: HfConn, pfx: string): AsyncIterable<TreeEntry> {
-  const path = dirPath(pfx)
-  let entries
-  try {
-    entries = await conn.op.list(path, { recursive: true })
-  } catch (err) {
-    if (isNotFound(err)) return
-    throw err
-  }
-  for (const entry of entries) {
-    const rel = entry.path()
-    if (rel === '') continue
-    if (rstripSlash(rel) === rstripSlash(path)) {
-      // The scanned directory itself, translated to the key the kit
-      // compares against the prefix.
-      yield { key: pfx }
-      continue
-    }
-    const md = entry.metadata()
-    if (rel.endsWith('/') || md.isDirectory()) {
-      yield { key: `${rstripSlash(rel)}/` }
-      continue
-    }
-    const size = sizeOf(md)
-    const modified = md.lastModified ?? ''
-    yield size === null ? { key: rel, modified } : { key: rel, size, modified }
-  }
-}
-
 async function* listSubtree(conn: HfConn, stem: string): AsyncIterable<TreeEntry> {
   if (stem !== '') {
     let md: Metadata | null = null
@@ -242,7 +213,6 @@ export const DRIVER: ObjectStoreDriver<HfBucketsAccessor, HfConn> = {
   keyPrefixOf,
   connect,
   listChildren,
-  listTree,
   listSubtree,
   head,
   get,

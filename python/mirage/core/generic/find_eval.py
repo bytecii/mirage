@@ -274,10 +274,6 @@ def bind_tree(
     return node
 
 
-def eval_predicate(node: PredNode, entry: FindEntry) -> bool:
-    return evaluate(node, entry, Effects())
-
-
 def evaluate(node: PredNode, entry: FindEntry, effects: Effects) -> bool:
     """Whether the expression holds for one entry, recording what it did.
 
@@ -656,15 +652,6 @@ def build_tree(
     if len(kids) == 1:
         return kids[0]
     return And(kids)
-
-
-def compute_nonempty_dirs(keys: list[str]) -> set[str]:
-    nonempty: set[str] = set()
-    for k in keys:
-        cut = k.rfind("/")
-        parent = k[:cut] if cut > 0 else "/"
-        nonempty.add(parent)
-    return nonempty
 
 
 @dataclass

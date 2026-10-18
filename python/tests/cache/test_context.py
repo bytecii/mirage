@@ -12,63 +12,27 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
 import contextlib
+from dataclasses import replace
 
 import pytest
 
 from mirage.cache.context import (
-    active_cache_manager,
     capture_read,
     native_condition,
     own_write_version,
     publish_read,
-    push_cache_manager,
-    push_write_context,
     settle_after,
     write_condition,
 )
 from mirage.cache.types import LiveVersion, WriteCondition, WriteContext
+from mirage.context.session_context import (
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.errors.types import OperationNotSupportedError
 from mirage.types import PathSpec
-
-
-def _run(coro):
-    return asyncio.run(coro)
-
-
-class FakeManager:
-    def probed_stat(self, _path):
-        return None
-
-
-def _spec(virtual: str) -> PathSpec:
-    return PathSpec(
-        vfs_path=virtual.strip("/"),
-        virtual=virtual,
-        directory="/",
-        pattern=None,
-        resolved=True,
-    )
-
-
-async def _push_restores() -> tuple[object, object, object]:
-    first = FakeManager()
-    second = FakeManager()
-    prev0 = push_cache_manager(first)
-    prev1 = push_cache_manager(second)
-    active = active_cache_manager()
-    push_cache_manager(prev1)
-    restored = active_cache_manager()
-    push_cache_manager(prev0)
-    return prev1, active, restored
-
-
-def test_push_returns_previous_manager():
-    prev1, active, restored = _run(_push_restores())
-    assert prev1 is not None
-    assert active is not restored
-    assert restored is prev1
 
 
 class _OpFailed(Exception):
@@ -167,12 +131,12 @@ async def test_an_own_version_conditions_only_its_own_path(own_path, want):
         drop=_noop,
         keep=_noop,
     )
-    prev = push_write_context(context)
+    prev = bind_caller(replace(current_caller(), write_context=context))
     try:
         with own_write_version(other, "v2"):
             cond = await write_condition(path, "put")
     finally:
-        push_write_context(prev)
+        reset_caller(prev)
     assert cond is not None and cond.if_match == want
 
 
@@ -188,7 +152,7 @@ async def test_native_condition_names_the_op_it_cannot_condition(kind):
         drop=_noop,
         keep=_noop,
     )
-    prev = push_write_context(context)
+    prev = bind_caller(replace(current_caller(), write_context=context))
     try:
         with pytest.raises(OperationNotSupportedError) as info:
             await native_condition(
@@ -198,5 +162,5 @@ async def test_native_condition_names_the_op_it_cannot_condition(kind):
                 kind,
             )
     finally:
-        push_write_context(prev)
+        reset_caller(prev)
     assert f"conditional {kind}" in str(info.value)

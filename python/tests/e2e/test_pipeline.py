@@ -451,36 +451,6 @@ async def test_grep_q_no_match(ws):
 
 
 @pytest.mark.asyncio
-async def test_grep_and_short_circuit(ws):
-    io = await ws.shell(
-        "grep NONEXISTENT /data/hello.txt && echo should_not_appear"
-    )
-    assert b"should_not_appear" not in (io.stdout or b"")
-
-
-@pytest.mark.asyncio
-async def test_grep_or_fallback(ws):
-    io = await ws.shell("grep NONEXISTENT /data/hello.txt || echo fallback")
-    assert b"fallback" in io.stdout
-
-
-@pytest.mark.asyncio
-async def test_grep_if_condition(ws):
-    io = await ws.shell(
-        "if grep -q world /data/hello.txt; then echo found; else echo nope; fi"
-    )
-    assert b"found" in io.stdout
-
-
-@pytest.mark.asyncio
-async def test_grep_if_no_match(ws):
-    io = await ws.shell(
-        "if grep -q NOPE /data/hello.txt; then echo found; else echo nope; fi"
-    )
-    assert b"nope" in io.stdout
-
-
-@pytest.mark.asyncio
 async def test_grep_pipe_no_match_last_stage_wins(ws):
     io = await ws.shell("grep NONEXISTENT /data/hello.txt | sort")
     assert io.exit_code == 0

@@ -21,16 +21,8 @@ from mirage.policy import (
     VfsContext,
 )
 from mirage.policy.rule import RulePolicy
-from mirage.types import MountMode, PathSpec
-from mirage.vfs.ram import RAMVFS
+from mirage.types import PathSpec
 from mirage.workspace.dispatcher.constants import CALLS
-from mirage.workspace.mount import MountRegistry
-
-
-def _registry() -> MountRegistry:
-    registry = MountRegistry()
-    registry.mount("/data", RAMVFS(), MountMode.WRITE)
-    return registry
 
 
 def _path(virtual: str, raw: str | None = None) -> PathSpec:

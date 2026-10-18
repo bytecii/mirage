@@ -92,21 +92,6 @@ async def _list_children(conn: S3Conn, pfx: str) -> AsyncIterator[ChildEntry]:
                 yield ChildEntry(key=obj["Key"], kind="marker")
 
 
-async def _list_tree(conn: S3Conn, pfx: str) -> AsyncIterator[TreeEntry]:
-    paginator = conn.client.get_paginator("list_objects_v2")
-    async for page in paginator.paginate(
-        Bucket=conn.config.bucket, Prefix=pfx
-    ):
-        for obj in page.get("Contents") or []:
-            yield TreeEntry(
-                key=obj["Key"],
-                size=obj.get("Size", 0),
-                modified=to_iso_z(obj["LastModified"])
-                if obj.get("LastModified")
-                else "",
-            )
-
-
 async def _list_subtree(conn: S3Conn, stem: str) -> AsyncIterator[TreeEntry]:
     # The prefix listing also matches sibling keys sharing the stem as a
     # name prefix ("data-old" under stem "data"), so each key is checked
@@ -837,7 +822,6 @@ DRIVER: ObjectStoreDriver[S3Accessor, S3Conn] = ObjectStoreDriver(
     key_prefix_of=_key_prefix_of,
     connect=_connect,
     list_children=_list_children,
-    list_tree=_list_tree,
     list_subtree=_list_subtree,
     head=_head,
     get=_get,

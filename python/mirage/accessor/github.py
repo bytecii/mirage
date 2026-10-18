@@ -114,7 +114,6 @@ class GitHubAccessor(Accessor):
         # it, or None when it is not known (a tree handed in, a truncated
         # or sha-less response). Every listing out of the tree carries it
         # as its version.
-        self.tree_version: str | None = None
 
     async def close(self) -> None:
         await self.account.close()

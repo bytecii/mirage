@@ -99,36 +99,6 @@ async def _list_children(conn: HfConn, pfx: str) -> AsyncIterator[ChildEntry]:
         return
 
 
-async def _list_tree(conn: HfConn, pfx: str) -> AsyncIterator[TreeEntry]:
-    path = _dir_path(pfx)
-    try:
-        async for entry in await conn.op.list(path, recursive=True):
-            rel = entry.path
-            if not rel:
-                continue
-            if rel.rstrip("/") == path.rstrip("/"):
-                # The scanned directory itself, translated to the key the
-                # kit compares against the prefix.
-                yield TreeEntry(key=pfx)
-                continue
-            meta = entry.metadata
-            is_dir = rel.endswith("/") or (
-                meta is not None and meta.mode == EntryMode.Dir
-            )
-            if is_dir:
-                yield TreeEntry(key=rel.rstrip("/") + "/")
-                continue
-            size = meta.content_length if meta is not None else None
-            modified = (
-                meta.last_modified.isoformat()
-                if meta is not None and meta.last_modified
-                else ""
-            )
-            yield TreeEntry(key=rel, size=size, modified=modified)
-    except NotFound:
-        return
-
-
 async def _list_subtree(conn: HfConn, stem: str) -> AsyncIterator[TreeEntry]:
     if stem:
         md = None
@@ -252,7 +222,6 @@ DRIVER: ObjectStoreDriver[HfBucketsAccessor, HfConn] = ObjectStoreDriver(
     key_prefix_of=_key_prefix_of,
     connect=_connect,
     list_children=_list_children,
-    list_tree=_list_tree,
     list_subtree=_list_subtree,
     head=_head,
     get=_get,

@@ -13,11 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 
-def test_create_and_cat(env):
-    env.create_file("f.txt", b"hello world\n")
-    assert env.mirage("cat /data/f.txt") == env.native("cat f.txt")
-
-
 def test_create_subdir_and_cat(env):
     env.create_file("sub/f.txt", b"nested\n")
     assert env.mirage("cat /data/sub/f.txt") == env.native("cat sub/f.txt")

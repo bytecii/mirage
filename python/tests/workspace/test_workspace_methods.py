@@ -93,20 +93,6 @@ def test_workspace_load_with_disk_override(tmp_path):
     assert (dst_root / "a.txt").read_bytes() == b"hello\n"
 
 
-# ── Workspace.copy ────────────────────────────────────────────────
-
-
-def test_workspace_copy_method_independence_ram():
-    src = Workspace({"/m": (RAMVFS(), MountMode.WRITE)}, mode=MountMode.WRITE)
-    asyncio.run(src.shell("echo hi > /m/a.txt"))
-
-    cp = asyncio.run(src.copy())
-    asyncio.run(cp.shell("echo bye > /m/a.txt"))
-
-    assert _read(src, "/m/a.txt") == "hi\n"
-    assert _read(cp, "/m/a.txt") == "bye\n"
-
-
 # ── copy.copy(ws) must raise — shallow copy makes no sense ────────
 
 

@@ -129,6 +129,3 @@ async def test_rename_names_the_side_that_does_not_resolve(src, dst, named):
                 ),
             )
     assert exc.value.filename == named
-
-
-_FILE = {"payload": {"id": "1", "file": {}}}

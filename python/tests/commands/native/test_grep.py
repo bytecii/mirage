@@ -13,93 +13,51 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 
-def test_grep_basic(env):
-    env.create_file("f.txt", b"hello world\nfoo bar\nhello again\n")
-    assert env.mirage("grep hello /data/f.txt") == env.native(
-        "grep hello f.txt"
-    )
+import pytest
 
 
-def test_grep_i(env):
-    env.create_file("f.txt", b"Hello\nworld\nHELLO\n")
-    assert env.mirage("grep -i hello /data/f.txt") == env.native(
-        "grep -i hello f.txt"
-    )
-
-
-def test_grep_v(env):
-    env.create_file("f.txt", b"hello\nworld\nfoo\n")
-    assert env.mirage("grep -v hello /data/f.txt") == env.native(
-        "grep -v hello f.txt"
-    )
-
-
-def test_grep_n(env):
-    env.create_file("f.txt", b"hello\nworld\nhello\n")
-    assert env.mirage("grep -n hello /data/f.txt") == env.native(
-        "grep -n hello f.txt"
-    )
-
-
-def test_grep_c(env):
-    env.create_file("f.txt", b"hello\nworld\nhello\n")
-    assert env.mirage("grep -c hello /data/f.txt") == env.native(
-        "grep -c hello f.txt"
-    )
-
-
-def test_grep_w(env):
-    env.create_file("f.txt", b"hello\nhelloworld\nhello there\n")
-    assert env.mirage("grep -w hello /data/f.txt") == env.native(
-        "grep -w hello f.txt"
-    )
-
-
-def test_grep_F(env):
-    env.create_file("f.txt", b"a.b\na*b\naXb\n")
-    assert env.mirage("grep -F 'a.b' /data/f.txt") == env.native(
-        "grep -F 'a.b' f.txt"
-    )
-
-
-def test_grep_o(env):
-    env.create_file("f.txt", b"hello world\nfoo hello\n")
-    assert env.mirage("grep -o hello /data/f.txt") == env.native(
-        "grep -o hello f.txt"
-    )
-
-
-def test_grep_m(env):
-    env.create_file("f.txt", b"a\na\na\na\n")
-    assert env.mirage("grep -m 2 a /data/f.txt") == env.native(
-        "grep -m 2 a f.txt"
-    )
-
-
-def test_grep_iv(env):
-    env.create_file("f.txt", b"Hello\nworld\nHELLO\nfoo\n")
-    assert env.mirage("grep -iv hello /data/f.txt") == env.native(
-        "grep -iv hello f.txt"
-    )
-
-
-def test_grep_nw(env):
-    env.create_file("f.txt", b"hello\nhelloworld\nhello there\n")
-    assert env.mirage("grep -nw hello /data/f.txt") == env.native(
-        "grep -nw hello f.txt"
-    )
-
-
-def test_grep_Fc(env):
-    env.create_file("f.txt", b"a.b\na.b\naXb\n")
-    assert env.mirage("grep -Fc 'a.b' /data/f.txt") == env.native(
-        "grep -Fc 'a.b' f.txt"
-    )
-
-
-def test_grep_no_match(env):
-    env.create_file("f.txt", b"hello\nworld\n")
-    assert env.mirage("grep zzz /data/f.txt") == env.native("grep zzz f.txt")
+@pytest.mark.parametrize(
+    "cmd, data",
+    [
+        pytest.param(
+            "grep hello", b"hello world\nfoo bar\nhello again\n", id="basic"
+        ),
+        pytest.param("grep -i hello", b"Hello\nworld\nHELLO\n", id="i"),
+        pytest.param("grep -v hello", b"hello\nworld\nfoo\n", id="v"),
+        pytest.param("grep -n hello", b"hello\nworld\nhello\n", id="n"),
+        pytest.param("grep -c hello", b"hello\nworld\nhello\n", id="c"),
+        pytest.param(
+            "grep -w hello", b"hello\nhelloworld\nhello there\n", id="w"
+        ),
+        pytest.param("grep -F 'a.b'", b"a.b\na*b\naXb\n", id="F"),
+        pytest.param("grep -o hello", b"hello world\nfoo hello\n", id="o"),
+        pytest.param("grep -m 2 a", b"a\na\na\na\n", id="m"),
+        pytest.param("grep -iv hello", b"Hello\nworld\nHELLO\nfoo\n", id="iv"),
+        pytest.param(
+            "grep -nw hello", b"hello\nhelloworld\nhello there\n", id="nw"
+        ),
+        pytest.param("grep -Fc 'a.b'", b"a.b\na.b\naXb\n", id="Fc"),
+        pytest.param("grep zzz", b"hello\nworld\n", id="no_match"),
+        pytest.param("grep -A 1 c", b"a\nb\nc\nd\ne\n", id="A"),
+        pytest.param("grep -B 1 c", b"a\nb\nc\nd\ne\n", id="B"),
+        pytest.param("grep -C 1 c", b"a\nb\nc\nd\ne\n", id="C"),
+        pytest.param(
+            "grep -A 1 a", b"x\na\nb\nc\na\nd\ne\n", id="A_multiple_matches"
+        ),
+        pytest.param(
+            "grep -B 1 a", b"x\ny\na\nb\nc\na\n", id="B_multiple_matches"
+        ),
+        pytest.param(
+            "grep -C 1 a", b"w\nx\na\ny\nz\na\nb\n", id="C_multiple_matches"
+        ),
+        pytest.param("grep -A 2 a", b"a\nb\na\nc\nd\n", id="A_overlapping"),
+        pytest.param("grep -n -A 1 c", b"a\nb\nc\nd\ne\n", id="An_combined"),
+        pytest.param("grep -C 1 -i aaa", b"aaa\nbbb\nAAA\nccc\n", id="Ci"),
+    ],
+)
+def test_grep_file(env, cmd, data):
+    env.create_file("f.txt", data)
+    assert env.mirage(f"{cmd} /data/f.txt") == env.native(f"{cmd} f.txt")
 
 
 def test_grep_stdin(env):
@@ -123,73 +81,10 @@ def test_grep_stdin_c(env):
     )
 
 
-def test_grep_A(env):
-    env.create_file("f.txt", b"a\nb\nc\nd\ne\n")
-    assert env.mirage("grep -A 1 c /data/f.txt") == env.native(
-        "grep -A 1 c f.txt"
-    )
-
-
-def test_grep_B(env):
-    env.create_file("f.txt", b"a\nb\nc\nd\ne\n")
-    assert env.mirage("grep -B 1 c /data/f.txt") == env.native(
-        "grep -B 1 c f.txt"
-    )
-
-
-def test_grep_C(env):
-    env.create_file("f.txt", b"a\nb\nc\nd\ne\n")
-    assert env.mirage("grep -C 1 c /data/f.txt") == env.native(
-        "grep -C 1 c f.txt"
-    )
-
-
-def test_grep_A_multiple_matches(env):
-    env.create_file("f.txt", b"x\na\nb\nc\na\nd\ne\n")
-    assert env.mirage("grep -A 1 a /data/f.txt") == env.native(
-        "grep -A 1 a f.txt"
-    )
-
-
-def test_grep_B_multiple_matches(env):
-    env.create_file("f.txt", b"x\ny\na\nb\nc\na\n")
-    assert env.mirage("grep -B 1 a /data/f.txt") == env.native(
-        "grep -B 1 a f.txt"
-    )
-
-
-def test_grep_C_multiple_matches(env):
-    env.create_file("f.txt", b"w\nx\na\ny\nz\na\nb\n")
-    assert env.mirage("grep -C 1 a /data/f.txt") == env.native(
-        "grep -C 1 a f.txt"
-    )
-
-
-def test_grep_A_overlapping(env):
-    env.create_file("f.txt", b"a\nb\na\nc\nd\n")
-    assert env.mirage("grep -A 2 a /data/f.txt") == env.native(
-        "grep -A 2 a f.txt"
-    )
-
-
 def test_grep_e_stdin(env):
     data = b"hello\nworld\nfoo\n"
     assert env.mirage("grep -e hello", stdin=data) == env.native(
         "grep -e hello", stdin=data
-    )
-
-
-def test_grep_An_combined(env):
-    env.create_file("f.txt", b"a\nb\nc\nd\ne\n")
-    assert env.mirage("grep -n -A 1 c /data/f.txt") == env.native(
-        "grep -n -A 1 c f.txt"
-    )
-
-
-def test_grep_Ci(env):
-    env.create_file("f.txt", b"aaa\nbbb\nAAA\nccc\n")
-    assert env.mirage("grep -C 1 -i aaa /data/f.txt") == env.native(
-        "grep -C 1 -i aaa f.txt"
     )
 
 

@@ -157,12 +157,10 @@ export interface ObjectStoreDriver<A extends Accessor, C> {
    * repeat directories, the kit deduplicates.
    */
   listChildren: (conn: C, pfx: string) => AsyncIterable<ChildEntry>
-  /** Recursive listing of every key under a prefix, markers included. */
-  listTree: (conn: C, pfx: string) => AsyncIterable<TreeEntry>
   /**
    * The key at `stem` itself plus every key under `stem + '/'` — du's
-   * walk, which unlike `listTree` must not match sibling keys sharing
-   * the stem as a name prefix.
+   * walk, which must not match sibling keys sharing the stem as a
+   * name prefix.
    */
   listSubtree: (conn: C, stem: string) => AsyncIterable<TreeEntry>
   /**

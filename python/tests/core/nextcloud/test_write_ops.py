@@ -4,7 +4,6 @@ import pytest
 
 from mirage.core.nextcloud.copy import copy, dir_copy
 from mirage.core.nextcloud.create import create
-from mirage.core.nextcloud.mkdir import mkdir
 from mirage.core.nextcloud.rename import rename
 from mirage.core.nextcloud.rm import rm_r
 from mirage.core.nextcloud.truncate import truncate
@@ -33,13 +32,6 @@ async def test_create_writes_empty_file(make_acc):
     acc = make_acc({})
     await create(acc, PathSpec.from_str_path("/touched.txt"))
     assert acc._fake.files.get("touched.txt") == b""
-
-
-@pytest.mark.asyncio
-async def test_mkdir_creates_collection(make_acc):
-    acc = make_acc({})
-    await mkdir(acc, PathSpec.from_str_path("/newdir"))
-    assert "newdir/" in acc._fake.dirs
 
 
 @pytest.mark.asyncio

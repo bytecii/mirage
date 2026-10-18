@@ -16,14 +16,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { materialize } from '../io/types.ts'
 import { yieldBytes } from '../io/stream.ts'
-import {
-  GZIP_CHUNK_SIZE,
-  crc32,
-  gunzipStream,
-  gunzipPartial,
-  gzip,
-  gzipCompressStream,
-} from './compress.ts'
+import { GZIP_CHUNK_SIZE, crc32, gunzipStream, gzip, gzipCompressStream } from './compress.ts'
 import { GzipDataError } from './compress.ts'
 
 const ENC = new TextEncoder()
@@ -73,7 +66,21 @@ function render(err: unknown): string {
   return err.render('f')
 }
 
-describe('gunzipPartial', () => {
+async function gunzipPartial(
+  bytes: Uint8Array,
+  passthrough = false,
+): Promise<[Uint8Array, GzipDataError | null]> {
+  const parts: Uint8Array[] = []
+  try {
+    for await (const part of gunzipStream(yieldBytes(bytes), false, passthrough)) parts.push(part)
+  } catch (err) {
+    if (!(err instanceof GzipDataError)) throw err
+    return [cat(...parts), err]
+  }
+  return [cat(...parts), null]
+}
+
+describe('gunzipStream', () => {
   it('decompresses every member', async () => {
     const hello = await gzip(ENC.encode('hello\n'))
     const both = new Uint8Array([...hello, ...hello])

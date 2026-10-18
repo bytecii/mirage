@@ -14,7 +14,7 @@
 
 import type { Accessor } from '../../accessor/base.ts'
 import type { FileStat } from '../../types.ts'
-import { DirListing, FileType, PathSpec } from '../../types.ts'
+import { DirListing, PathSpec } from '../../types.ts'
 import { mountKey, mountPrefixOf, mountedPath } from '../../utils/key_prefix.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
@@ -41,38 +41,6 @@ export function parentSpec(path: PathSpec): PathSpec {
 /** The listed directory's own children, whichever shape listed them. */
 export function rowsOf(listed: readonly FileStat[] | DirListing): readonly FileStat[] {
   return listed instanceof DirListing ? listed.entries : listed
-}
-
-/** Whether a listed row is a directory to walk into. */
-export function isDirectory(row: FileStat): boolean {
-  return row.type === FileType.DIRECTORY
-}
-
-/**
- * Every row below `directory`, walked through the backend's own listings,
- * each directory handed the row its parent's listing named. Mirrors Python's
- * `rows_under`.
- */
-export async function rowsUnder<A extends Accessor>(
-  readdir: ReaddirFn<A>,
-  accessor: A,
-  directory: PathSpec,
-  entry: FileStat | null,
-  parent: FileStat | null = null,
-  isDir: (row: FileStat) => boolean = isDirectory,
-): Promise<[PathSpec, FileStat][]> {
-  const found: [PathSpec, FileStat][] = []
-  const pending: [PathSpec, FileStat | null, FileStat | null][] = [[directory, entry, parent]]
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    const [current, row, above] = next
-    const base = rstripSlash(current.mountPath)
-    for (const child of rowsOf(await readdir(accessor, current, row, above))) {
-      const path = mountedPath(current, `${base}/${child.name}`)
-      found.push([path, child])
-      if (isDir(child)) pending.push([path, child, row])
-    }
-  }
-  return found
 }
 
 /**

@@ -140,16 +140,6 @@ def test_manager_sessions_isolated():
     assert s2.cwd == "/"
 
 
-def test_manager_lock_for():
-    mgr = SessionManager("default")
-    lock = mgr.lock_for("default")
-    assert lock is not None
-
-    mgr.create("s1")
-    lock2 = mgr.lock_for("s1")
-    assert lock2 is not lock
-
-
 def test_manager_create_with_mount_modes():
     mgr = SessionManager("default")
     grants = {"/s3": MountMode.READ, "/slack": MountMode.WRITE}

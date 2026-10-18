@@ -117,6 +117,3 @@ async def test_rename_conflict_keeps_error_for_nonempty_dir():
                 PathSpec.from_str_path("/src"),
                 PathSpec.from_str_path("/dst"),
             )
-
-
-_FILE = {"payload": {"id": "1", "file": {}}}

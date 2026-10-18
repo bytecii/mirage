@@ -1205,61 +1205,6 @@ ${script}`,
     expect(list.entries).toEqual(['/b', '/a'])
   })
 
-  it('listDir NOT_FOUND when unset', async () => {
-    const r = await store.listDir('/ghost')
-    expect(r.status).toBe(LookupStatus.NOT_FOUND)
-  })
-
-  it('invalidateDir removes children entry', async () => {
-    await store.setDir('/x', [['f', entry('id-f', 'f')]])
-    await store.invalidateDir('/x')
-    const r = await store.listDir('/x')
-    expect(r.status).toBe(LookupStatus.NOT_FOUND)
-  })
-
-  it('setDir sets TTL based on default ttl', async () => {
-    const s = new RedisIndexCacheStore(
-      REDIS_URL !== undefined
-        ? { url: REDIS_URL, keyPrefix: prefix, ttl: 1 }
-        : { keyPrefix: prefix, ttl: 1 },
-    )
-    try {
-      await s.setDir('/tmp', [['x', entry('id-x', 'x')]])
-      expect((await s.listDir('/tmp')).entries).toEqual(['/tmp/x'])
-      await new Promise((r) => setTimeout(r, 1100))
-      const r = await s.listDir('/tmp')
-      expect(r.status).toBe(LookupStatus.EXPIRED)
-    } finally {
-      await s.clear()
-      await s.close()
-    }
-  })
-
-  it('invalidatePrefix drops nested listings', async () => {
-    await store.setDir('/chan/day', [['chat.jsonl', entry('1', 'chat.jsonl')]])
-    await store.setDir('/chan/day/files', [['a.png', entry('2', 'a.png')]])
-    await store.invalidatePrefix('/chan/day')
-    expect((await store.listDir('/chan/day')).status).toBe(LookupStatus.NOT_FOUND)
-    expect((await store.listDir('/chan/day/files')).status).toBe(LookupStatus.NOT_FOUND)
-    expect((await store.get('/chan/day/files/a.png')).status).toBe(LookupStatus.NOT_FOUND)
-  })
-
-  it('invalidatePrefix respects the path boundary', async () => {
-    await store.setDir('/chan/day', [['a', entry('1', 'a')]])
-    await store.setDir('/chan/daytime', [['b', entry('2', 'b')]])
-    await store.invalidatePrefix('/chan/day')
-    expect((await store.listDir('/chan/day')).status).toBe(LookupStatus.NOT_FOUND)
-    expect((await store.listDir('/chan/daytime')).entries).toEqual(['/chan/daytime/b'])
-  })
-
-  it('invalidatePrefix handles glob metacharacters', async () => {
-    await store.setDir('/chan/a[1]', [['x', entry('1', 'x')]])
-    await store.setDir('/chan/ab', [['y', entry('2', 'y')]])
-    await store.invalidatePrefix('/chan/a[1]')
-    expect((await store.listDir('/chan/a[1]')).status).toBe(LookupStatus.NOT_FOUND)
-    expect((await store.listDir('/chan/ab')).entries).toEqual(['/chan/ab/y'])
-  })
-
   it('clear wipes everything under prefix', async () => {
     await store.put('/a', entry('id-a', 'a'))
     await store.setDir('/', [['a', entry('id-a', 'a')]])

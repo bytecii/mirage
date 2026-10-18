@@ -13,96 +13,34 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 
-def test_exit_code_true(shell):
-    cmd = "true; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
+import pytest
 
 
-def test_exit_code_false(shell):
-    cmd = "false; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_pipe_last(shell):
-    cmd = "true | false; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_pipe_success(shell):
-    cmd = "false | true; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_and_success(shell):
-    cmd = "true && echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_and_short_circuit(shell):
-    cmd = "false && echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_or_fallback(shell):
-    cmd = "false || echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_or_short_circuit(shell):
-    cmd = "true || echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_and_then_semi(shell):
-    cmd = "true && false; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_or_then_semi(shell):
-    cmd = "false || true; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_if_true(shell):
-    cmd = "if true; then echo $?; fi"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_if_else(shell):
-    cmd = "if false; then echo a; else echo $?; fi"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_semicolon_chain_true(shell):
-    cmd = "false; true; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_semicolon_chain_false(shell):
-    cmd = "true; false; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_if_resets(shell):
-    cmd = "false; if true; then echo $?; fi"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_subshell(shell):
-    cmd = "true; (false); echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_while_no_body(shell):
-    cmd = "false; while false; do echo x; done; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_negation_true(shell):
-    cmd = "! true; echo $?"
-    assert shell.mirage(cmd) == shell.native(cmd)
-
-
-def test_exit_code_negation_false(shell):
-    cmd = "! false; echo $?"
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        pytest.param("true; echo $?", id="true"),
+        pytest.param("false; echo $?", id="false"),
+        pytest.param("true | false; echo $?", id="pipe_last"),
+        pytest.param("false | true; echo $?", id="pipe_success"),
+        pytest.param("true && echo $?", id="and_success"),
+        pytest.param("false && echo $?", id="and_short_circuit"),
+        pytest.param("false || echo $?", id="or_fallback"),
+        pytest.param("true || echo $?", id="or_short_circuit"),
+        pytest.param("true && false; echo $?", id="and_then_semi"),
+        pytest.param("false || true; echo $?", id="or_then_semi"),
+        pytest.param("if true; then echo $?; fi", id="if_true"),
+        pytest.param("if false; then echo a; else echo $?; fi", id="if_else"),
+        pytest.param("false; true; echo $?", id="semicolon_chain_true"),
+        pytest.param("true; false; echo $?", id="semicolon_chain_false"),
+        pytest.param("false; if true; then echo $?; fi", id="if_resets"),
+        pytest.param("true; (false); echo $?", id="subshell"),
+        pytest.param(
+            "false; while false; do echo x; done; echo $?", id="while_no_body"
+        ),
+        pytest.param("! true; echo $?", id="negation_true"),
+        pytest.param("! false; echo $?", id="negation_false"),
+    ],
+)
+def test_exit_code(shell, cmd):
     assert shell.mirage(cmd) == shell.native(cmd)

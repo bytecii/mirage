@@ -101,11 +101,6 @@ async def list_children(
             yield ChildEntry(key=child, kind="d")
 
 
-async def list_tree(conn: FakeStore, pfx: str) -> AsyncIterator[TreeEntry]:
-    for key in conn.under(pfx):
-        yield TreeEntry(key=key, size=len(conn.objects[key]))
-
-
 async def list_subtree(conn: FakeStore, stem: str) -> AsyncIterator[TreeEntry]:
     for key in conn.under(""):
         if not stem or key == stem or key.startswith(stem + "/"):
@@ -184,7 +179,6 @@ def make_driver(
         key_prefix_of=key_prefix_of,
         connect=connect,
         list_children=list_children,
-        list_tree=list_tree,
         list_subtree=list_subtree,
         head=head,
         get=get,

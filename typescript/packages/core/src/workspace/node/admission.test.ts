@@ -495,11 +495,6 @@ describe('admission', () => {
       scoped: true,
     })
     granted.check('/data/asked/a')
-    // refuses answers exactly where check throws, without throwing.
-    expect(
-      ['/data', '/data/open/o', '/data/sealed/s', '/data/asked/a'].map((p) => gate.refuses(p)),
-    ).toEqual([false, false, true, true])
-    expect(judged.refuses('/data/asked/a') || granted.refuses('/data/asked/a')).toBe(false)
   })
 
   it('the admitted gate scopes each start point on its own', () => {

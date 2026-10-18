@@ -172,20 +172,6 @@ export function gunzipStream(
   return codecStream(source, { operation: 'decode', format: 'gzip', test, passthrough })
 }
 
-export async function gunzipPartial(
-  bytes: Uint8Array,
-  passthrough = false,
-): Promise<[Uint8Array, GzipDataError | null]> {
-  const parts: Uint8Array[] = []
-  try {
-    for await (const part of gunzipStream(yieldBytes(bytes), false, passthrough)) parts.push(part)
-  } catch (error) {
-    if (!(error instanceof GzipDataError)) throw error
-    return [concat(parts), error]
-  }
-  return [concat(parts), null]
-}
-
 export function deflateRawStream(
   source: AsyncIterable<Uint8Array>,
 ): AsyncGenerator<Uint8Array, void> {
@@ -196,12 +182,6 @@ export function inflateRawStream(
   source: AsyncIterable<Uint8Array>,
 ): AsyncGenerator<Uint8Array, void> {
   return codecStream(source, { operation: 'decode', format: 'raw' })
-}
-
-export async function deflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
-  const parts: Uint8Array[] = []
-  for await (const part of deflateRawStream(yieldBytes(bytes))) parts.push(part)
-  return concat(parts)
 }
 
 export async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {

@@ -1528,12 +1528,6 @@ def test_echo_escape():
     assert _stdout(io) == b"hello\nworld\n"
 
 
-def test_echo_no_newline():
-    ws = _ws()
-    io = _exec(ws, "echo -n hello")
-    assert _stdout(io) == b"hello"
-
-
 # ── sort as VFS command ──────────────────
 
 

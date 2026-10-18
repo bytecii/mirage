@@ -101,7 +101,7 @@ export class GitHubVFS extends BaseVFS {
     )
     const repoInfo = await fetchGitHubRepoInfo(account.transport, config.owner, config.repo)
     const ref = config.ref ?? repoInfo.default_branch
-    const { tree, truncated, sha } = await fetchGitHubTree(
+    const { tree, truncated } = await fetchGitHubTree(
       account.transport,
       config.owner,
       config.repo,
@@ -116,7 +116,6 @@ export class GitHubVFS extends BaseVFS {
       defaultBranch: repoInfo.default_branch,
       truncated,
       tree: treeMap,
-      treeVersion: truncated ? null : sha,
     })
     return new GitHubVFS(config, accessor)
   }

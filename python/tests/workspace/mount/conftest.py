@@ -44,12 +44,6 @@ def ram_vfs():
 
 
 @pytest.fixture
-def empty_vfs():
-    """An empty RAMVFS."""
-    return RAMVFS()
-
-
-@pytest.fixture
 def disk_vfs(tmp_path):
     """A DiskVFS backed by a temporary directory."""
     data_dir = tmp_path / "disk_data"

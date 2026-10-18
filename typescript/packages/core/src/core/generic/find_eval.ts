@@ -115,10 +115,6 @@ function freshEffects(): Effects {
   return { acted: false, pruned: false, deferred: [] }
 }
 
-export function evalPredicate(node: PredNode, entry: FindEntry): boolean {
-  return evaluate(node, entry, freshEffects())
-}
-
 // Whether the expression holds for one entry, recording what it did.
 // Evaluation short-circuits the way GNU's does (`-a` stops at the first
 // false, `-o` at the first true), so an action or a prune is reached
@@ -506,15 +502,6 @@ export function optionsTree(options: {
       empty: options.empty,
     })
   )
-}
-
-export function computeNonemptyDirs(keys: string[]): Set<string> {
-  const nonempty = new Set<string>()
-  for (const k of keys) {
-    const cut = k.lastIndexOf('/')
-    nonempty.add(cut > 0 ? k.slice(0, cut) : '/')
-  }
-  return nonempty
 }
 
 // Map one respelled display row back to its virtual path: the inverse of

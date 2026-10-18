@@ -521,15 +521,12 @@ class SessionManager(SessionOwner):
         self._persisted.pop(session_id, None)
         await self._store.delete([session_id])
 
-    def lock_for(self, session_id: str) -> asyncio.Lock:
-        return self._locks[session_id]
-
     def line_lock_for(self, session_id: str) -> asyncio.Lock:
         """The lock a top-level line on ``session_id`` holds while it runs.
 
         One line of a session at a time, as one bash process runs one line
-        at a time. Kept apart from ``lock_for``: a line holds this lock
-        for its whole run and flushes under that one at its end.
+        at a time. Kept apart from the persistence lock: a line holds
+        this lock for its whole run and flushes under that one at its end.
 
         Args:
             session_id (str): an existing session.

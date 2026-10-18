@@ -17,10 +17,10 @@ import { DIR_SIZE } from '../../utils/stat_view.ts'
 import {
   bindTree,
   buildTree,
-  computeNonemptyDirs,
   dropPruned,
-  evalPredicate,
+  evaluate,
   type FindEntry,
+  type Effects,
   keep,
   pendingPrunes,
   type PredNode,
@@ -34,62 +34,66 @@ import {
   withoutPrune,
 } from './find_eval.ts'
 
+function effects(): Effects {
+  return { acted: false, pruned: false, deferred: [] }
+}
+
 function entry(over: Partial<FindEntry> = {}): FindEntry {
   return { key: '/data/a.txt', name: 'a.txt', kind: 'f', depth: 1, ...over }
 }
 
 describe('empty', () => {
   it('empty node matches only isEmpty entries', () => {
-    expect(evalPredicate({ op: 'empty' }, entry({ isEmpty: true }))).toBe(true)
-    expect(evalPredicate({ op: 'empty' }, entry({ isEmpty: false }))).toBe(false)
-    expect(evalPredicate({ op: 'empty' }, entry({}))).toBe(false)
+    expect(evaluate({ op: 'empty' }, entry({ isEmpty: true }), effects())).toBe(true)
+    expect(evaluate({ op: 'empty' }, entry({ isEmpty: false }), effects())).toBe(false)
+    expect(evaluate({ op: 'empty' }, entry({}), effects())).toBe(false)
   })
 
   it('buildTree empty combines with type', () => {
     const tree = buildTree({ type: 'd', empty: true })
-    expect(evalPredicate(tree, entry({ kind: 'd', isEmpty: true }))).toBe(true)
-    expect(evalPredicate(tree, entry({ kind: 'd', isEmpty: false }))).toBe(false)
-    expect(evalPredicate(tree, entry({ kind: 'f', isEmpty: true }))).toBe(false)
-  })
-
-  it('computeNonemptyDirs', () => {
-    const keys = ['/data', '/data/a.txt', '/data/sub', '/data/sub/x', '/data/emptydir']
-    const ne = computeNonemptyDirs(keys)
-    expect(ne.has('/data')).toBe(true)
-    expect(ne.has('/data/sub')).toBe(true)
-    expect(ne.has('/data/emptydir')).toBe(false)
+    expect(evaluate(tree, entry({ kind: 'd', isEmpty: true }), effects())).toBe(true)
+    expect(evaluate(tree, entry({ kind: 'd', isEmpty: false }), effects())).toBe(false)
+    expect(evaluate(tree, entry({ kind: 'f', isEmpty: true }), effects())).toBe(false)
   })
 })
 
-describe('evalPredicate', () => {
+describe('evaluate', () => {
   it('name matches glob', () => {
-    expect(evalPredicate({ op: 'name', pattern: '*.txt', icase: false }, entry())).toBe(true)
-    expect(evalPredicate({ op: 'name', pattern: '*.md', icase: false }, entry())).toBe(false)
+    expect(evaluate({ op: 'name', pattern: '*.txt', icase: false }, entry(), effects())).toBe(true)
+    expect(evaluate({ op: 'name', pattern: '*.md', icase: false }, entry(), effects())).toBe(false)
   })
 
   it('iname is case insensitive', () => {
     const e = entry({ name: 'A.TXT' })
-    expect(evalPredicate({ op: 'name', pattern: '*.txt', icase: true }, e)).toBe(true)
-    expect(evalPredicate({ op: 'name', pattern: '*.txt', icase: false }, e)).toBe(false)
+    expect(evaluate({ op: 'name', pattern: '*.txt', icase: true }, e, effects())).toBe(true)
+    expect(evaluate({ op: 'name', pattern: '*.txt', icase: false }, e, effects())).toBe(false)
   })
 
   it('path matches key', () => {
     const e = entry({ key: '/data/sub/x', name: 'x' })
-    expect(evalPredicate({ op: 'path', pattern: '*/sub/*' }, e)).toBe(true)
-    expect(evalPredicate({ op: 'path', pattern: '*/other/*' }, e)).toBe(false)
+    expect(evaluate({ op: 'path', pattern: '*/sub/*' }, e, effects())).toBe(true)
+    expect(evaluate({ op: 'path', pattern: '*/other/*' }, e, effects())).toBe(false)
   })
 
   it('type matches kind', () => {
-    expect(evalPredicate({ op: 'type', kind: 'f' }, entry({ kind: 'f' }))).toBe(true)
-    expect(evalPredicate({ op: 'type', kind: 'd' }, entry({ kind: 'f' }))).toBe(false)
+    expect(evaluate({ op: 'type', kind: 'f' }, entry({ kind: 'f' }), effects())).toBe(true)
+    expect(evaluate({ op: 'type', kind: 'd' }, entry({ kind: 'f' }), effects())).toBe(false)
   })
 
   it('not negates', () => {
     expect(
-      evalPredicate({ op: 'not', kid: { op: 'name', pattern: '*.txt', icase: false } }, entry()),
+      evaluate(
+        { op: 'not', kid: { op: 'name', pattern: '*.txt', icase: false } },
+        entry(),
+        effects(),
+      ),
     ).toBe(false)
     expect(
-      evalPredicate({ op: 'not', kid: { op: 'name', pattern: '*.md', icase: false } }, entry()),
+      evaluate(
+        { op: 'not', kid: { op: 'name', pattern: '*.md', icase: false } },
+        entry(),
+        effects(),
+      ),
     ).toBe(true)
   })
 
@@ -101,7 +105,7 @@ describe('evalPredicate', () => {
         { op: 'type' as const, kind: 'f' as const },
       ],
     }
-    expect(evalPredicate(node, entry())).toBe(true)
+    expect(evaluate(node, entry(), effects())).toBe(true)
   })
 
   it('or requires any', () => {
@@ -112,11 +116,11 @@ describe('evalPredicate', () => {
         { op: 'name' as const, pattern: '*.txt', icase: false },
       ],
     }
-    expect(evalPredicate(node, entry())).toBe(true)
+    expect(evaluate(node, entry(), effects())).toBe(true)
   })
 
   it('true matches everything', () => {
-    expect(evalPredicate({ op: 'true' }, entry())).toBe(true)
+    expect(evaluate({ op: 'true' }, entry(), effects())).toBe(true)
   })
 })
 
@@ -131,58 +135,60 @@ describe('keep', () => {
 
 describe('buildTree', () => {
   it('empty options is true', () => {
-    expect(evalPredicate(buildTree({}), entry())).toBe(true)
+    expect(evaluate(buildTree({}), entry(), effects())).toBe(true)
   })
 
   it('name and type', () => {
     const tree = buildTree({ name: '*.txt', type: 'f' })
-    expect(evalPredicate(tree, entry({ kind: 'f' }))).toBe(true)
-    expect(evalPredicate(tree, entry({ name: 'a.md', kind: 'f' }))).toBe(false)
-    expect(evalPredicate(tree, entry({ kind: 'd' }))).toBe(false)
+    expect(evaluate(tree, entry({ kind: 'f' }), effects())).toBe(true)
+    expect(evaluate(tree, entry({ name: 'a.md', kind: 'f' }), effects())).toBe(false)
+    expect(evaluate(tree, entry({ kind: 'd' }), effects())).toBe(false)
   })
 
   it('nameExclude is negated', () => {
     const tree = buildTree({ nameExclude: '*.txt' })
-    expect(evalPredicate(tree, entry({ name: 'a.txt' }))).toBe(false)
-    expect(evalPredicate(tree, entry({ name: 'a.md' }))).toBe(true)
+    expect(evaluate(tree, entry({ name: 'a.txt' }), effects())).toBe(false)
+    expect(evaluate(tree, entry({ name: 'a.md' }), effects())).toBe(true)
   })
 
   it('orNames', () => {
     const tree = buildTree({ orNames: ['*.md', '*.txt'] })
-    expect(evalPredicate(tree, entry({ name: 'a.txt' }))).toBe(true)
-    expect(evalPredicate(tree, entry({ name: 'a.rst' }))).toBe(false)
+    expect(evaluate(tree, entry({ name: 'a.txt' }), effects())).toBe(true)
+    expect(evaluate(tree, entry({ name: 'a.rst' }), effects())).toBe(false)
   })
 
   it('iname', () => {
     const tree = buildTree({ iname: '*.txt' })
-    expect(evalPredicate(tree, entry({ name: 'A.TXT' }))).toBe(true)
+    expect(evaluate(tree, entry({ name: 'A.TXT' }), effects())).toBe(true)
   })
 })
 
 describe('bindTree', () => {
   it('matches -path against the display path (#396)', () => {
     const tree = bindTree({ op: 'path', pattern: '*data/sub*' }, '/data')
-    expect(evalPredicate(tree, { key: '/sub', name: 'sub', kind: 'd', depth: 1 })).toBe(true)
-    expect(evalPredicate(tree, { key: '/other', name: 'other', kind: 'd', depth: 1 })).toBe(false)
+    expect(evaluate(tree, { key: '/sub', name: 'sub', kind: 'd', depth: 1 }, effects())).toBe(true)
+    expect(evaluate(tree, { key: '/other', name: 'other', kind: 'd', depth: 1 }, effects())).toBe(
+      false,
+    )
     const exact = bindTree({ op: 'path', pattern: '/data/sub' }, '/data')
-    expect(evalPredicate(exact, { key: '/sub', name: 'sub', kind: 'd', depth: 1 })).toBe(true)
+    expect(evaluate(exact, { key: '/sub', name: 'sub', kind: 'd', depth: 1 }, effects())).toBe(true)
   })
 
   // `find . -path ./skip` prints and matches `./skip`: the row is the
   // display path respelled under the operand as typed (#1147).
   it('matches -path against the row as typed', () => {
     const tree = bindTree({ op: 'path', pattern: './skip' }, '/w', '/w', '.')
-    expect(evalPredicate(tree, entry({ key: '/skip', name: 'skip', kind: 'd' }))).toBe(true)
-    expect(evalPredicate(tree, entry({ key: '/skip/a', name: 'a' }))).toBe(false)
+    expect(evaluate(tree, entry({ key: '/skip', name: 'skip', kind: 'd' }), effects())).toBe(true)
+    expect(evaluate(tree, entry({ key: '/skip/a', name: 'a' }), effects())).toBe(false)
     const absolute = bindTree({ op: 'path', pattern: './skip' }, '/w', '/w', '/w')
-    expect(evalPredicate(absolute, entry({ key: '/skip', kind: 'd' }))).toBe(false)
+    expect(evaluate(absolute, entry({ key: '/skip', kind: 'd' }), effects())).toBe(false)
     const nested = bindTree({ op: 'path', pattern: 'sub/deep' }, '/data', '/data/sub', 'sub')
-    expect(evalPredicate(nested, entry({ key: '/sub/deep', kind: 'd' }))).toBe(true)
+    expect(evaluate(nested, entry({ key: '/sub/deep', kind: 'd' }), effects())).toBe(true)
   })
 
   it('rewrites nested nodes and copies every ledger', () => {
     const tree = bindTree({ op: 'and', kids: [{ op: 'path', pattern: '/data/*' }] }, '/data')
-    expect(evalPredicate(tree, { key: '/x', name: 'x', kind: 'f', depth: 1 })).toBe(true)
+    expect(evaluate(tree, { key: '/x', name: 'x', kind: 'f', depth: 1 }, effects())).toBe(true)
     const shared: Parameters<typeof bindTree>[0] = {
       op: 'and',
       kids: [
@@ -228,7 +234,7 @@ describe('actions and -prune', () => {
       '/w',
       '.',
     )
-    expect(evalPredicate(tree, entry({ key: '/skip', kind: 'd' }))).toBe(true)
+    expect(evaluate(tree, entry({ key: '/skip', kind: 'd' }), effects())).toBe(true)
     expect(keep(entry({ key: '/skip', name: 'skip', kind: 'd' }), tree, null)).toBe(false)
     expect(keep(entry({ key: '/keep/f', name: 'f' }), tree, null)).toBe(true)
     expect(keep(entry({ key: '/keep', name: 'keep', kind: 'd' }), tree, null)).toBe(false)
@@ -382,10 +388,12 @@ describe('time tests and -prune', () => {
 
   it('an mtime node answers from the entry and defers without one', () => {
     const node: PredNode = { op: 'mtime', lo: 100, hi: null }
-    expect(evalPredicate(node, entry({ mtime: 150 }))).toBe(true)
-    expect(evalPredicate(node, entry({ mtime: 50 }))).toBe(false)
-    expect(evalPredicate(node, entry())).toBe(true)
-    expect(evalPredicate({ op: 'mtime', lo: null, hi: 100 }, entry({ mtime: 150 }))).toBe(false)
+    expect(evaluate(node, entry({ mtime: 150 }), effects())).toBe(true)
+    expect(evaluate(node, entry({ mtime: 50 }), effects())).toBe(false)
+    expect(evaluate(node, entry(), effects())).toBe(true)
+    expect(evaluate({ op: 'mtime', lo: null, hi: 100 }, entry({ mtime: 150 }), effects())).toBe(
+      false,
+    )
   })
 
   it('a prune past an undecided time test is pending until settled', () => {

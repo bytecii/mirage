@@ -90,21 +90,6 @@ async def test_query_pages_shared_contract(monkeypatch, case):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
-async def test_query_collector_shared_contract(monkeypatch, case):
-    replies = QueryReplies(case["responses"])
-    monkeypatch.setattr(pages_mod, "notion_post", replies.post)
-    if "error" in case:
-        with pytest.raises((NotionAPIError, PaginationStalledError)) as exc:
-            await pages_mod.query_data_source(ACCESSOR, "ds")
-        assert_query_error(exc.value, case["error"])
-    else:
-        rows = await pages_mod.query_data_source(ACCESSOR, "ds")
-        assert rows == [row for page in case["pages"] for row in page]
-    assert [r.get("start_cursor") for r in replies.requests] == case["cursors"]
-
-
-@pytest.mark.asyncio
 async def test_closing_query_pages_stops_requests(monkeypatch):
     replies = QueryReplies(CASES[0]["responses"])
     monkeypatch.setattr(pages_mod, "notion_post", replies.post)

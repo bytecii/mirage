@@ -268,12 +268,9 @@ class ObjectStoreDriver(Generic[A, C]):
         list_children (Callable): one-level listing of a prefix as
             :class:`ChildEntry` items; may repeat directories, the kit
             deduplicates.
-        list_tree (Callable): recursive listing of every key under a
-            prefix, markers included.
         list_subtree (Callable): the key at ``stem`` itself plus every
-            key under ``stem + "/"`` — du's walk, which unlike
-            ``list_tree`` must not match sibling keys sharing the stem
-            as a name prefix.
+            key under ``stem + "/"`` — du's walk, which must not
+            match sibling keys sharing the stem as a name prefix.
         head (Callable): point lookup of one key, None when absent;
             classification failures propagate.
         get (Callable): full object bytes, None when absent.
@@ -339,7 +336,6 @@ class ObjectStoreDriver(Generic[A, C]):
     key_prefix_of: Callable[[A], str]
     connect: Callable[[A], AbstractAsyncContextManager[C]]
     list_children: Callable[[C, str], AsyncIterator[ChildEntry]]
-    list_tree: Callable[[C, str], AsyncIterator[TreeEntry]]
     list_subtree: Callable[[C, str], AsyncIterator[TreeEntry]]
     head: Callable[[C, str], Awaitable[ObjectMeta | None]]
     get: Callable[[C, str], Awaitable[bytes | None]]

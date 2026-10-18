@@ -24,16 +24,6 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _stdout(io):
-    if io.stdout is None:
-        return b""
-    if isinstance(io.stdout, bytes):
-        return io.stdout
-    if isinstance(io.stdout, memoryview):
-        return bytes(io.stdout)
-    return b""
-
-
 # ── RAM index integration ─────────────────────
 
 

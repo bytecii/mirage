@@ -1,5 +1,4 @@
 import asyncio
-import os
 from pathlib import Path
 
 from mirage.accessor.disk import DiskAccessor
@@ -13,17 +12,6 @@ def _accessor(root: Path) -> DiskAccessor:
 
 def _root(virtual: str, vfs_path: str) -> PathSpec:
     return PathSpec(virtual=virtual, directory=virtual, vfs_path=vfs_path)
-
-
-def _touch(root: Path, relative: str, body: bytes, mtime: float) -> None:
-    target = root / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(body)
-    os.utime(target, (mtime, mtime))
-
-
-async def _collect(walk, root):
-    return [entry async for entry in walk(root)]
 
 
 def _map(tmp_path, event_type, payload):

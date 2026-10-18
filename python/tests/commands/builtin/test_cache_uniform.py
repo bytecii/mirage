@@ -14,8 +14,6 @@
 
 import pytest
 
-from mirage.cache.file.ram import RAMFileCacheStore
-from mirage.cache.manager import CacheManager
 from mirage.commands.builtin.generic.grep import grep_generic
 from mirage.commands.config import Context
 from mirage.io.types import materialize
@@ -45,12 +43,6 @@ def _spec() -> PathSpec:
     )
 
 
-async def _warm_manager() -> CacheManager:
-    cache = RAMFileCacheStore()
-    await cache.set("/s3/a.txt", _PAYLOAD)
-    return CacheManager(cache, None, "/s3/", True)
-
-
 async def _stat(path) -> FileStat:
     return FileStat(
         name="a.txt",
@@ -62,10 +54,6 @@ async def _stat(path) -> FileStat:
 
 async def _readdir(path) -> list[str]:
     return ["/s3/a.txt"]
-
-
-async def _drain(source) -> bytes:
-    return b"".join([c async for c in source])
 
 
 @pytest.mark.asyncio

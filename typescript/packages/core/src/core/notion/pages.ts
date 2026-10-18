@@ -68,18 +68,6 @@ export async function getDataSource(
   return transport.callTool('API-retrieve-a-data-source', { data_source_id: dataSourceId })
 }
 
-export async function queryDataSource(
-  transport: NotionTransport,
-  dataSourceId: string,
-  body: Json = {},
-): Promise<Json[]> {
-  const rows: Json[] = []
-  for await (const page of queryDataSourcePages(transport, dataSourceId, body)) {
-    rows.push(...page)
-  }
-  return rows
-}
-
 /**
  * Yield query pages only as the caller requests them. Each page is checked
  * for an incomplete response before yielding its rows. Closing the iterator

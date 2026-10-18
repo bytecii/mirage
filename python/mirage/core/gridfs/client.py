@@ -35,14 +35,6 @@ def _key(path: str, config: GridFSConfig) -> str:
     return kp.apply(config.key_prefix or "", path)
 
 
-def _prefix(path: str, config: GridFSConfig) -> str:
-    return kp.apply_dir(config.key_prefix or "", path)
-
-
-def _strip_key_prefix(key: str, config: GridFSConfig) -> str:
-    return kp.strip(config.key_prefix or "", key)
-
-
 def database(accessor: GridFSAccessor) -> AsyncDatabase[dict[str, Any]]:
     return accessor.client[accessor.config.database]
 

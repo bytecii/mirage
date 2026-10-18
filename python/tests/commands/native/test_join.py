@@ -13,57 +13,37 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 
-def test_join_a1(env):
-    env.create_file("a.txt", b"1 a\n2 b\n3 c\n")
-    env.create_file("b.txt", b"2 x\n3 y\n4 z\n")
-    assert env.mirage("join -a 1 /data/a.txt /data/b.txt") == env.native(
-        "join -a 1 a.txt b.txt"
-    )
+import pytest
 
 
-def test_join_v1(env):
-    env.create_file("a.txt", b"1 a\n2 b\n3 c\n")
-    env.create_file("b.txt", b"2 x\n3 y\n4 z\n")
-    assert env.mirage("join -v 1 /data/a.txt /data/b.txt") == env.native(
-        "join -v 1 a.txt b.txt"
-    )
-
-
-def test_join_e(env):
-    env.create_file("a.txt", b"1 a\n2 b\n")
-    env.create_file("b.txt", b"1 x\n3 y\n")
-    assert env.mirage(
-        "join -a 1 -e EMPTY /data/a.txt /data/b.txt"
-    ) == env.native("join -a 1 -e EMPTY a.txt b.txt")
-
-
-def test_join_t(env):
-    env.create_file("a.txt", b"1:a\n2:b\n")
-    env.create_file("b.txt", b"1:x\n2:y\n")
-    assert env.mirage("join -t : /data/a.txt /data/b.txt") == env.native(
-        "join -t : a.txt b.txt"
-    )
-
-
-def test_join_o(env):
-    env.create_file("a.txt", b"1 a c\n2 b d\n")
-    env.create_file("b.txt", b"1 x z\n2 y w\n")
-    assert env.mirage(
-        "join -o 0,1.2,2.3 /data/a.txt /data/b.txt"
-    ) == env.native("join -o 0,1.2,2.3 a.txt b.txt")
-
-
-def test_join_o_empty(env):
-    env.create_file("a.txt", b"1 a\n2 b\n")
-    env.create_file("b.txt", b"1 x\n3 z\n")
-    assert env.mirage(
-        "join -a 1 -e NA -o 0,1.2,2.2 /data/a.txt /data/b.txt"
-    ) == env.native("join -a 1 -e NA -o 0,1.2,2.2 a.txt b.txt")
-
-
-def test_join_12(env):
-    env.create_file("a.txt", b"a 1\nb 2\n")
-    env.create_file("b.txt", b"1 x\n2 y\n")
-    assert env.mirage("join -1 2 -2 1 /data/a.txt /data/b.txt") == env.native(
-        "join -1 2 -2 1 a.txt b.txt"
+@pytest.mark.parametrize(
+    "cmd, left, right",
+    [
+        pytest.param(
+            "join -a 1", b"1 a\n2 b\n3 c\n", b"2 x\n3 y\n4 z\n", id="a1"
+        ),
+        pytest.param(
+            "join -v 1", b"1 a\n2 b\n3 c\n", b"2 x\n3 y\n4 z\n", id="v1"
+        ),
+        pytest.param(
+            "join -a 1 -e EMPTY", b"1 a\n2 b\n", b"1 x\n3 y\n", id="e"
+        ),
+        pytest.param("join -t :", b"1:a\n2:b\n", b"1:x\n2:y\n", id="t"),
+        pytest.param(
+            "join -o 0,1.2,2.3", b"1 a c\n2 b d\n", b"1 x z\n2 y w\n", id="o"
+        ),
+        pytest.param(
+            "join -a 1 -e NA -o 0,1.2,2.2",
+            b"1 a\n2 b\n",
+            b"1 x\n3 z\n",
+            id="o_empty",
+        ),
+        pytest.param("join -1 2 -2 1", b"a 1\nb 2\n", b"1 x\n2 y\n", id="12"),
+    ],
+)
+def test_join(env, cmd, left, right):
+    env.create_file("a.txt", left)
+    env.create_file("b.txt", right)
+    assert env.mirage(f"{cmd} /data/a.txt /data/b.txt") == env.native(
+        f"{cmd} a.txt b.txt"
     )

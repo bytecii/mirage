@@ -24,7 +24,6 @@ from mirage.commands.builtin.general.expr import (
     int_of_digits,
     is_null,
 )
-from mirage.commands.builtin.utils.bre import translate_bre
 from mirage.shell.bytes import byte_view, from_byte_view
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
@@ -489,26 +488,6 @@ def test_expr_bad_regex_uses_glibc_regerror_wording():
         with pytest.raises(ExprError) as caught:
             _expr_eval(["abc", ":", pattern])
         assert str(caught.value) == message
-
-
-TRANSLATIONS = [
-    (r"a\(bc\)", "a(bc)", 1),
-    ("a(bc)", r"a\(bc\)", 0),
-    (r"a\|b", "a|b", 0),
-    ("a|b", r"a\|b", 0),
-    (r"a\+", "a+", 0),
-    ("a+", r"a\+", 0),
-    (r"a\{2,3\}", "a{2,3}", 0),
-    ("a{2}", r"a\{2\}", 0),
-    ("*a", r"\*a", 0),
-    ("[[:alpha:]]", "[A-Za-z]", 0),
-    (r"\w", "[0-9A-Za-z_]", 0),
-]
-
-
-@pytest.mark.parametrize("pattern,source,groups", TRANSLATIONS)
-def test_expr_bre_translation_inverts_the_escaping(pattern, source, groups):
-    assert translate_bre(pattern) == (source, groups)
 
 
 COMPARISONS = [

@@ -13,37 +13,61 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 
-def test_sed_substitute(env):
-    data = b"hello world\n"
-    assert env.mirage("sed s/hello/bye/", stdin=data) == env.native(
-        "sed s/hello/bye/", stdin=data
-    )
+import pytest
 
 
-def test_sed_global(env):
-    data = b"foo boo\n"
-    assert env.mirage("sed s/o/0/g", stdin=data) == env.native(
-        "sed s/o/0/g", stdin=data
-    )
-
-
-def test_sed_first_only(env):
-    data = b"foo boo\n"
-    assert env.mirage("sed s/o/0/", stdin=data) == env.native(
-        "sed s/o/0/", stdin=data
-    )
-
-
-def test_sed_delete_line(env):
-    data = b"a\nb\nc\n"
-    assert env.mirage("sed 2d", stdin=data) == env.native("sed 2d", stdin=data)
-
-
-def test_sed_delete_regex(env):
-    data = b"foo\nbar\nfoo2\n"
-    assert env.mirage("sed /foo/d", stdin=data) == env.native(
-        "sed /foo/d", stdin=data
-    )
+@pytest.mark.parametrize(
+    "cmd, data",
+    [
+        pytest.param("sed s/hello/bye/", b"hello world\n", id="substitute"),
+        pytest.param("sed s/o/0/g", b"foo boo\n", id="global"),
+        pytest.param("sed s/o/0/", b"foo boo\n", id="first_only"),
+        pytest.param("sed 2d", b"a\nb\nc\n", id="delete_line"),
+        pytest.param("sed /foo/d", b"foo\nbar\nfoo2\n", id="delete_regex"),
+        pytest.param("sed -n p", b"a\nb\nc\n", id="n_suppress"),
+        pytest.param("sed -n 2p", b"a\nb\nc\n", id="n_with_address"),
+        pytest.param("sed -n 2,4p", b"a\nb\nc\nd\ne\n", id="n_range"),
+        pytest.param(
+            "sed -n /hello/p",
+            b"hello\nworld\nhello again\n",
+            id="n_regex_address",
+        ),
+        pytest.param(
+            "sed -E 's/[0-9]+/NUM/g'", b"foo123bar\nhello\n", id="E_extended"
+        ),
+        pytest.param(
+            "sed -E 's/(hello) (world)/\\2 \\1/'",
+            b"hello world\n",
+            id="E_groups",
+        ),
+        pytest.param(
+            "sed -nE '/[0-9]+/p'", b"abc123\ndef\nghi456\n", id="nE_combined"
+        ),
+        pytest.param("sed 's/o/O/2'", b"oooo\n", id="numeric_count"),
+        pytest.param("sed 's/hi/HI/p'", b"hi\nbye\n", id="p_flag"),
+        pytest.param("sed -n 's/hi/HI/p'", b"hi\nbye\n", id="n_p_flag"),
+        pytest.param("sed 'y/el/ip/'", b"hello\n", id="y_transliterate"),
+        pytest.param("sed '2c\\\nX'", b"a\nb\nc\n", id="c_single_address"),
+        pytest.param("sed '2,3c\\\nX'", b"a\nb\nc\nd\n", id="c_range"),
+        pytest.param(
+            "sed 's/\\(foo\\)/[\\1]/'", b"foo\n", id="bre_group_backref"
+        ),
+        pytest.param("sed 's/a\\{2\\}/X/'", b"aaa\n", id="bre_interval"),
+        pytest.param("sed 's/a+/X/'", b"a+b\n", id="bre_bare_plus_literal"),
+        pytest.param("sed -E 's/(foo)/[\\1]/'", b"foo\n", id="ere_group_plus"),
+        pytest.param(
+            "sed -E 's/cat|dog/PET/'", b"dog\n", id="ere_alternation"
+        ),
+        pytest.param("sed -r 's/a+/X/'", b"aaab\n", id="r_alias"),
+        pytest.param("sed -e 's/a/b/' -e 's/b/c/'", b"a\n", id="multiple_e"),
+        pytest.param("sed '2!d'", b"a\nb\nc\n", id="negate_line"),
+        pytest.param("sed '/b/!d'", b"a\nb\nc\n", id="negate_regex"),
+        pytest.param("sed 's/o/O/'", b"foo", id="missing_final_newline"),
+        pytest.param("sed 's/a\\/b/c/'", b"a/b\n", id="escaped_delimiter"),
+    ],
+)
+def test_sed_stdin(env, cmd, data):
+    assert env.mirage(cmd, stdin=data) == env.native(cmd, stdin=data)
 
 
 def test_sed_on_file(env):
@@ -53,59 +77,10 @@ def test_sed_on_file(env):
     )
 
 
-def test_sed_n_suppress(env):
-    data = b"a\nb\nc\n"
-    assert env.mirage("sed -n p", stdin=data) == env.native(
-        "sed -n p", stdin=data
-    )
-
-
-def test_sed_n_with_address(env):
-    data = b"a\nb\nc\n"
-    assert env.mirage("sed -n 2p", stdin=data) == env.native(
-        "sed -n 2p", stdin=data
-    )
-
-
-def test_sed_n_range(env):
-    data = b"a\nb\nc\nd\ne\n"
-    assert env.mirage("sed -n 2,4p", stdin=data) == env.native(
-        "sed -n 2,4p", stdin=data
-    )
-
-
-def test_sed_n_regex_address(env):
-    data = b"hello\nworld\nhello again\n"
-    assert env.mirage("sed -n /hello/p", stdin=data) == env.native(
-        "sed -n /hello/p", stdin=data
-    )
-
-
 def test_sed_n_on_file(env):
     env.create_file("f.txt", b"a\nb\nc\nd\ne\n")
     assert env.mirage("sed -n 2,3p /data/f.txt") == env.native(
         "sed -n 2,3p f.txt"
-    )
-
-
-def test_sed_E_extended(env):
-    data = b"foo123bar\nhello\n"
-    assert env.mirage("sed -E 's/[0-9]+/NUM/g'", stdin=data) == env.native(
-        "sed -E 's/[0-9]+/NUM/g'", stdin=data
-    )
-
-
-def test_sed_E_groups(env):
-    data = b"hello world\n"
-    assert env.mirage(
-        r"sed -E 's/(hello) (world)/\2 \1/'", stdin=data
-    ) == env.native(r"sed -E 's/(hello) (world)/\2 \1/'", stdin=data)
-
-
-def test_sed_nE_combined(env):
-    data = b"abc123\ndef\nghi456\n"
-    assert env.mirage("sed -nE '/[0-9]+/p'", stdin=data) == env.native(
-        "sed -nE '/[0-9]+/p'", stdin=data
     )
 
 
@@ -120,97 +95,6 @@ def test_sed_e(env):
     data = b"hello world\n"
     result = env.mirage("sed -e s/hello/bye/", stdin=data)
     assert "bye" in result
-
-
-def test_sed_numeric_count(env):
-    data = b"oooo\n"
-    assert env.mirage("sed 's/o/O/2'", stdin=data) == env.native(
-        "sed 's/o/O/2'", stdin=data
-    )
-
-
-def test_sed_p_flag(env):
-    data = b"hi\nbye\n"
-    assert env.mirage("sed 's/hi/HI/p'", stdin=data) == env.native(
-        "sed 's/hi/HI/p'", stdin=data
-    )
-
-
-def test_sed_n_p_flag(env):
-    data = b"hi\nbye\n"
-    assert env.mirage("sed -n 's/hi/HI/p'", stdin=data) == env.native(
-        "sed -n 's/hi/HI/p'", stdin=data
-    )
-
-
-def test_sed_y_transliterate(env):
-    data = b"hello\n"
-    assert env.mirage("sed 'y/el/ip/'", stdin=data) == env.native(
-        "sed 'y/el/ip/'", stdin=data
-    )
-
-
-def test_sed_c_single_address(env):
-    data = b"a\nb\nc\n"
-    assert env.mirage("sed '2c\\\nX'", stdin=data) == env.native(
-        "sed '2c\\\nX'", stdin=data
-    )
-
-
-def test_sed_c_range(env):
-    data = b"a\nb\nc\nd\n"
-    assert env.mirage("sed '2,3c\\\nX'", stdin=data) == env.native(
-        "sed '2,3c\\\nX'", stdin=data
-    )
-
-
-def test_sed_bre_group_backref(env):
-    data = b"foo\n"
-    assert env.mirage(r"sed 's/\(foo\)/[\1]/'", stdin=data) == env.native(
-        r"sed 's/\(foo\)/[\1]/'", stdin=data
-    )
-
-
-def test_sed_bre_interval(env):
-    data = b"aaa\n"
-    assert env.mirage(r"sed 's/a\{2\}/X/'", stdin=data) == env.native(
-        r"sed 's/a\{2\}/X/'", stdin=data
-    )
-
-
-def test_sed_bre_bare_plus_literal(env):
-    data = b"a+b\n"
-    assert env.mirage("sed 's/a+/X/'", stdin=data) == env.native(
-        "sed 's/a+/X/'", stdin=data
-    )
-
-
-def test_sed_ere_group_plus(env):
-    data = b"foo\n"
-    assert env.mirage(r"sed -E 's/(foo)/[\1]/'", stdin=data) == env.native(
-        r"sed -E 's/(foo)/[\1]/'", stdin=data
-    )
-
-
-def test_sed_ere_alternation(env):
-    data = b"dog\n"
-    assert env.mirage("sed -E 's/cat|dog/PET/'", stdin=data) == env.native(
-        "sed -E 's/cat|dog/PET/'", stdin=data
-    )
-
-
-def test_sed_r_alias(env):
-    data = b"aaab\n"
-    assert env.mirage("sed -r 's/a+/X/'", stdin=data) == env.native(
-        "sed -r 's/a+/X/'", stdin=data
-    )
-
-
-def test_sed_multiple_e(env):
-    data = b"a\n"
-    assert env.mirage("sed -e 's/a/b/' -e 's/b/c/'", stdin=data) == env.native(
-        "sed -e 's/a/b/' -e 's/b/c/'", stdin=data
-    )
 
 
 def test_sed_e_with_file(env):
@@ -249,32 +133,4 @@ def test_sed_f_stdin(env):
     data = b"hello world\n"
     assert env.mirage("sed -f /data/prog4.sed", stdin=data) == env.native(
         "sed -f prog4.sed", stdin=data
-    )
-
-
-def test_sed_negate_line(env):
-    data = b"a\nb\nc\n"
-    assert env.mirage("sed '2!d'", stdin=data) == env.native(
-        "sed '2!d'", stdin=data
-    )
-
-
-def test_sed_negate_regex(env):
-    data = b"a\nb\nc\n"
-    assert env.mirage("sed '/b/!d'", stdin=data) == env.native(
-        "sed '/b/!d'", stdin=data
-    )
-
-
-def test_sed_missing_final_newline(env):
-    data = b"foo"
-    assert env.mirage("sed 's/o/O/'", stdin=data) == env.native(
-        "sed 's/o/O/'", stdin=data
-    )
-
-
-def test_sed_escaped_delimiter(env):
-    data = b"a/b\n"
-    assert env.mirage(r"sed 's/a\/b/c/'", stdin=data) == env.native(
-        r"sed 's/a\/b/c/'", stdin=data
     )

@@ -119,13 +119,6 @@ async function* listChildren(conn: FakeStore, pfx: string): AsyncIterable<ChildE
 }
 
 // eslint-disable-next-line @typescript-eslint/require-await
-async function* listTree(conn: FakeStore, pfx: string): AsyncIterable<TreeEntry> {
-  for (const key of conn.under(pfx)) {
-    yield { key, size: conn.objects.get(key)?.byteLength ?? 0 }
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/require-await
 async function* listSubtree(conn: FakeStore, stem: string): AsyncIterable<TreeEntry> {
   for (const key of conn.under('')) {
     if (stem === '' || key === stem || key.startsWith(`${stem}/`)) {
@@ -212,7 +205,6 @@ export function makeDriver(store: FakeStore): ObjectStoreDriver<FakeAccessor, Fa
     keyPrefixOf,
     connect,
     listChildren,
-    listTree,
     listSubtree,
     head,
     get,

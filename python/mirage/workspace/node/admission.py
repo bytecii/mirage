@@ -205,15 +205,6 @@ class Admitted:
                 Deny(reason, policy=PermissionsPolicy.__name__), virtual
             )
 
-    def refuses(self, virtual: str) -> bool:
-        """Whether a rule in force refuses this entry for the running
-        command, without raising.
-
-        Args:
-            virtual (str): absolute virtual path of the entry.
-        """
-        return self._refusal(virtual) is not None
-
     def _refusal(self, virtual: str) -> str | None:
         """The reason a rule in force refuses this entry, None when the
         line was admitted on it or nothing refuses it.

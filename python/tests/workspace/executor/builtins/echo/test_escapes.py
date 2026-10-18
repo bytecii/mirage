@@ -12,92 +12,39 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import pytest
+
 from mirage.shell.bytes import encode_text
 from mirage.workspace.executor.builtins.echo import interpret_escapes
 
 
-def test_newline():
-    assert interpret_escapes("a\\nb") == ("a\nb", False)
-
-
-def test_tab():
-    assert interpret_escapes("a\\tb") == ("a\tb", False)
-
-
-def test_carriage_return():
-    assert interpret_escapes("\\r") == ("\r", False)
-
-
-def test_bell():
-    assert interpret_escapes("\\a") == ("\a", False)
-
-
-def test_backspace():
-    assert interpret_escapes("\\b") == ("\b", False)
-
-
-def test_form_feed():
-    assert interpret_escapes("\\f") == ("\f", False)
-
-
-def test_vertical_tab():
-    assert interpret_escapes("\\v") == ("\v", False)
-
-
-def test_literal_backslash():
-    assert interpret_escapes("a\\\\b") == ("a\\b", False)
-
-
-def test_double_backslash_before_n():
-    assert interpret_escapes("\\\\n") == ("\\n", False)
-
-
-def test_double_backslash_before_b():
-    assert interpret_escapes("a\\\\b") == ("a\\b", False)
-
-
-def test_hex_escape():
-    assert interpret_escapes("\\x41") == ("A", False)
-
-
-def test_hex_single_digit():
-    assert interpret_escapes("\\x9") == ("\t", False)
-
-
-def test_hex_no_digits():
-    assert interpret_escapes("\\x") == ("\\x", False)
-
-
-def test_octal_escape():
-    assert interpret_escapes("\\0101") == ("A", False)
-
-
-def test_octal_null():
-    assert interpret_escapes("\\0") == ("\0", False)
-
-
-def test_stop_output():
-    assert interpret_escapes("hello\\cworld") == ("hello", True)
-
-
-def test_unknown_escape_passthrough():
-    assert interpret_escapes("\\z") == ("\\z", False)
-
-
-def test_no_escapes():
-    assert interpret_escapes("hello world") == ("hello world", False)
-
-
-def test_empty():
-    assert interpret_escapes("") == ("", False)
-
-
-def test_trailing_backslash():
-    assert interpret_escapes("end\\") == ("end\\", False)
-
-
-def test_mixed():
-    assert interpret_escapes("a\\tb\\nc\\\\d") == ("a\tb\nc\\d", False)
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        pytest.param("a\\nb", ("a\nb", False), id="newline"),
+        pytest.param("a\\tb", ("a\tb", False), id="tab"),
+        pytest.param("\\r", ("\r", False), id="carriage_return"),
+        pytest.param("\\a", ("\x07", False), id="bell"),
+        pytest.param("\\b", ("\x08", False), id="backspace"),
+        pytest.param("\\f", ("\x0c", False), id="form_feed"),
+        pytest.param("\\v", ("\x0b", False), id="vertical_tab"),
+        pytest.param("a\\\\b", ("a\\b", False), id="literal_backslash"),
+        pytest.param("\\\\n", ("\\n", False), id="double_backslash_before_n"),
+        pytest.param("\\x41", ("A", False), id="hex_escape"),
+        pytest.param("\\x9", ("\t", False), id="hex_single_digit"),
+        pytest.param("\\x", ("\\x", False), id="hex_no_digits"),
+        pytest.param("\\0101", ("A", False), id="octal_escape"),
+        pytest.param("\\0", ("\x00", False), id="octal_null"),
+        pytest.param("hello\\cworld", ("hello", True), id="stop_output"),
+        pytest.param("\\z", ("\\z", False), id="unknown_escape_passthrough"),
+        pytest.param("hello world", ("hello world", False), id="no_escapes"),
+        pytest.param("", ("", False), id="empty"),
+        pytest.param("end\\", ("end\\", False), id="trailing_backslash"),
+        pytest.param("a\\tb\\nc\\\\d", ("a\tb\nc\\d", False), id="mixed"),
+    ],
+)
+def test_interpret_escapes(text, expected):
+    assert interpret_escapes(text) == expected
 
 
 # Pinned against bash 5.2.37 in docker (debian:stable-slim,

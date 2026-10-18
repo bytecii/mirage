@@ -2,9 +2,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_key
-
 
 def document(document_id: str, name: str, slug: str, size: int = 12) -> dict:
     return {
@@ -24,12 +21,3 @@ def document(document_id: str, name: str, slug: str, size: int = 12) -> dict:
 @pytest.fixture
 def dify_accessor() -> SimpleNamespace:
     return SimpleNamespace(config=SimpleNamespace(slug_metadata_name="slug"))
-
-
-@pytest.fixture
-def knowledge_root() -> PathSpec:
-    return PathSpec(
-        vfs_path=mount_key("/knowledge", "/knowledge"),
-        virtual="/knowledge",
-        directory="/knowledge",
-    )

@@ -23,84 +23,29 @@ import { interpretEscapes } from './escapes.ts'
 // through) was asserted against the wrong command. tr's own rules are
 // pinned in commands/builtin/utils/escapes.test.ts.
 describe('interpretEscapes (port of tests/workspace/executor/test_escapes.py)', () => {
-  it('newline', () => {
-    expect(interpretEscapes('a\\nb')).toEqual(['a\nb', false])
-  })
-
-  it('tab', () => {
-    expect(interpretEscapes('a\\tb')).toEqual(['a\tb', false])
-  })
-
-  it('carriage return', () => {
-    expect(interpretEscapes('\\r')).toEqual(['\r', false])
-  })
-
-  it('bell', () => {
-    expect(interpretEscapes('\\a')).toEqual(['\x07', false])
-  })
-
-  it('backspace', () => {
-    expect(interpretEscapes('\\b')).toEqual(['\b', false])
-  })
-
-  it('form feed', () => {
-    expect(interpretEscapes('\\f')).toEqual(['\f', false])
-  })
-
-  it('vertical tab', () => {
-    expect(interpretEscapes('\\v')).toEqual(['\v', false])
-  })
-
-  it('backslash', () => {
-    expect(interpretEscapes('a\\\\b')).toEqual(['a\\b', false])
-  })
-
-  it('escaped backslash does not re-escape the next character', () => {
-    expect(interpretEscapes('\\\\n')).toEqual(['\\n', false])
-  })
-
-  it('hex escape', () => {
-    expect(interpretEscapes('\\x41')).toEqual(['A', false])
-  })
-
-  it('short hex escape', () => {
-    expect(interpretEscapes('\\x9')).toEqual(['\t', false])
-  })
-
-  it('bare \\x is literal', () => {
-    expect(interpretEscapes('\\x')).toEqual(['\\x', false])
-  })
-
-  it('octal escape', () => {
-    expect(interpretEscapes('\\0101')).toEqual(['A', false])
-  })
-
-  it('bare \\0 is NUL', () => {
-    expect(interpretEscapes('\\0')).toEqual(['\0', false])
-  })
-
-  it('\\c stops output', () => {
-    expect(interpretEscapes('hello\\cworld')).toEqual(['hello', true])
-  })
-
-  it('unknown escape passes through with its backslash', () => {
-    expect(interpretEscapes('\\z')).toEqual(['\\z', false])
-  })
-
-  it('plain text', () => {
-    expect(interpretEscapes('hello world')).toEqual(['hello world', false])
-  })
-
-  it('empty', () => {
-    expect(interpretEscapes('')).toEqual(['', false])
-  })
-
-  it('trailing backslash', () => {
-    expect(interpretEscapes('end\\')).toEqual(['end\\', false])
-  })
-
-  it('mixed', () => {
-    expect(interpretEscapes('a\\tb\\nc\\\\d')).toEqual(['a\tb\nc\\d', false])
+  it.each<[string, string, string, boolean]>([
+    ['newline', 'a\\nb', 'a\nb', false],
+    ['tab', 'a\\tb', 'a\tb', false],
+    ['carriage return', '\\r', '\r', false],
+    ['bell', '\\a', '\u0007', false],
+    ['backspace', '\\b', '\b', false],
+    ['form feed', '\\f', '\f', false],
+    ['vertical tab', '\\v', '\u000b', false],
+    ['backslash', 'a\\\\b', 'a\\b', false],
+    ['escaped backslash does not re-escape the next character', '\\\\n', '\\n', false],
+    ['hex escape', '\\x41', 'A', false],
+    ['short hex escape', '\\x9', '\t', false],
+    ['bare \\x is literal', '\\x', '\\x', false],
+    ['octal escape', '\\0101', 'A', false],
+    ['bare \\0 is NUL', '\\0', '\u0000', false],
+    ['\\c stops output', 'hello\\cworld', 'hello', true],
+    ['unknown escape passes through with its backslash', '\\z', '\\z', false],
+    ['plain text', 'hello world', 'hello world', false],
+    ['empty', '', '', false],
+    ['trailing backslash', 'end\\', 'end\\', false],
+    ['mixed', 'a\\tb\\nc\\\\d', 'a\tb\nc\\d', false],
+  ])('%s', (_name, text, expected, stopped) => {
+    expect(interpretEscapes(text)).toEqual([expected, stopped])
   })
 
   // Pinned against bash 5.2.37 in docker (debian:stable-slim,

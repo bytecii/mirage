@@ -916,8 +916,6 @@ export interface EntryGate {
    */
   readonly granted: readonly CommandRule[]
   check(virtual: string): void
-  /** True exactly where `check` would throw, for a caller that declines (the read cache). */
-  refuses(virtual: string): boolean
   /** Whether anything at or under this path could be refused for the
    * running command, so a native walk there gives way to the guarded one;
    * per operand, unlike `scoped`. */

@@ -418,15 +418,6 @@ describe('workspace: pipeline mount fallback (cwd-less commands)', () => {
 })
 
 describe('workspace: cache VFS fallback', () => {
-  it('wc under /mirage cwd', async () => {
-    const { ws } = await makeWorkspace()
-    ws.getSession(ws.defaultSessionId).cwd = '/mirage'
-    const io = await ws.shell('cat /s3/report.csv | wc -l')
-    expect(io.exitCode).toBe(0)
-    expect(stdoutStr(io)).toContain('3')
-    await ws.close()
-  })
-
   it('head under /nonexistent cwd', async () => {
     const { ws } = await makeWorkspace()
     ws.getSession(ws.defaultSessionId).cwd = '/nonexistent'

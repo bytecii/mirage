@@ -74,10 +74,6 @@ def _key(path: str, config: S3Config) -> str:
     return kp.apply(config.key_prefix or "", path)
 
 
-def _strip_key_prefix(key: str, config: S3Config) -> str:
-    return kp.strip(config.key_prefix or "", key)
-
-
 def _client_kwargs(config: S3Config) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"service_name": "s3"}
     if config.region:

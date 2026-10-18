@@ -312,11 +312,6 @@ class _Printer:
                 out += self.command(child, indent)
         return out
 
-    def _body(self, node: TSNodeLike | None, indent: str) -> str:
-        inner = indent + _INDENT
-        children = list(node.children) if node is not None else []
-        return "\n" + inner + self.statements(children, inner, True)
-
     def _if(self, node: TSNodeLike, indent: str) -> str:
         branches: list[tuple[list[TSNodeLike], list[TSNodeLike]]] = []
         otherwise: list[TSNodeLike] | None = None

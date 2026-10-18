@@ -81,12 +81,6 @@ async function* listChildren(conn: GridFSAccessor, pfx: string): AsyncIterable<C
   }
 }
 
-async function* listTree(conn: GridFSAccessor, pfx: string): AsyncIterable<TreeEntry> {
-  for await (const doc of iterLatest(conn, prefixQuery(pfx))) {
-    yield { key: doc.filename, size: doc.length, modified: toIsoZ(doc.uploadDate) }
-  }
-}
-
 async function* listSubtree(conn: GridFSAccessor, stem: string): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, subtreeQuery(stem))) {
     yield { key: doc.filename, size: doc.length, modified: toIsoZ(doc.uploadDate) }
@@ -256,7 +250,6 @@ export const DRIVER: ObjectStoreDriver<GridFSAccessor, GridFSAccessor> = {
   keyPrefixOf,
   connect,
   listChildren,
-  listTree,
   listSubtree,
   head,
   get,
