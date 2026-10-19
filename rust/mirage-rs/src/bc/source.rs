@@ -35,7 +35,10 @@ pub(super) struct Line {
 
 pub(super) enum FrontEvent {
     Program(Line),
-    EofInComment,
+    /// The last line, which no newline ended: bc runs none of it.
+    Unended(Line),
+    /// Input ended in a block comment, after the line before it.
+    EofInComment(Line),
     End,
 }
 
@@ -135,6 +138,21 @@ impl Source {
     fn append(&mut self, character: char) {
         self.chars.push(character);
         self.lines.push(self.at());
+    }
+
+    /// The line scanned so far, which no newline has ended, once every
+    /// byte fed has been read; the next input may still continue it.
+    pub(super) fn scanned(&self) -> Option<Line> {
+        let rest = self.chars.is_empty()
+            || !self.bytes.is_empty()
+            || !self.replay.is_empty()
+            || !self.quote_copy.is_empty();
+        (!rest).then(|| Line {
+            chars: self.chars.clone(),
+            lines: self.lines.clone(),
+            end_line: self.at(),
+            quotes: self.quotes.clone(),
+        })
     }
 
     fn take_line(&mut self) -> Line {
@@ -257,15 +275,15 @@ impl Source {
                     Mode::Slash => self.append('/'),
                     Mode::Block | Mode::BlockStar => {
                         self.ended = true;
-                        self.chars.clear();
-                        self.lines.clear();
-                        return FrontStep::Event(FrontEvent::EofInComment);
+                        let line = self.take_line();
+                        return FrontStep::Event(FrontEvent::EofInComment(line));
                     }
                     _ => {}
                 }
                 if !self.chars.is_empty() {
+                    self.ended = true;
                     let line = self.take_line();
-                    return FrontStep::Event(FrontEvent::Program(line));
+                    return FrontStep::Event(FrontEvent::Unended(line));
                 }
                 self.ended = true;
                 return FrontStep::Event(FrontEvent::End);
@@ -355,10 +373,12 @@ mod tests {
         loop {
             let mut budget = Budget::new(2);
             match source.advance(&mut budget) {
-                FrontStep::Event(FrontEvent::Program(line)) => lines.push(line),
+                FrontStep::Event(FrontEvent::Program(line) | FrontEvent::Unended(line)) => {
+                    lines.push(line);
+                }
                 FrontStep::Pending => {}
                 FrontStep::NeedsInput | FrontStep::Event(FrontEvent::End) => break,
-                FrontStep::Event(FrontEvent::EofInComment) => panic!("unexpected comment EOF"),
+                FrontStep::Event(FrontEvent::EofInComment(_)) => panic!("unexpected comment EOF"),
             }
         }
     }

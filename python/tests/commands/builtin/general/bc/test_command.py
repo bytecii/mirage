@@ -162,14 +162,15 @@ async def test_concurrent_readers_of_one_snapshot_each_read_all_of_it():
 
 
 @pytest.mark.asyncio
-async def test_finish_executes_the_last_line_without_a_newline():
+async def test_finish_runs_no_line_that_input_ends_without_a_newline():
+    # As GNU bc: the line never runs, and the open statement is an error.
     async def source() -> AsyncGenerator[bytes, None]:
         yield b"scale=3;"
         yield b"1/2"
 
     output, io = await invoke(source())
-    assert await materialize(output) == b".500\n"
-    assert await materialize(io.stderr) == b""
+    assert await materialize(output) == b""
+    assert await materialize(io.stderr) == b"(standard_in) 1: syntax error\n"
 
 
 @pytest.mark.asyncio
