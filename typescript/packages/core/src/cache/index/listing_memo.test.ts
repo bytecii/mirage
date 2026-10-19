@@ -118,7 +118,7 @@ describe('ListingMemo', () => {
 
   it('does not keep a row batch that overlaps a write', async () => {
     const fetch = vi.fn((paths: readonly string[]) => {
-      memo.rowWrote()
+      memo.rowWrote('/d/a')
       return rowBatch(paths)
     })
     await runInCommandScope(async () => {
@@ -127,6 +127,29 @@ describe('ListingMemo', () => {
       await memo.row('/d/b', fetch)
     })
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not fetch rows a batch did not find again', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Map<string, FileStat>()))
+    await runInCommandScope(async () => {
+      await memo.read('/d', new Folder().fetch)
+      for (const path of ['/d/a', '/d/b', '/d/a']) {
+        expect(await memo.row(path, fetch)).toBeNull()
+      }
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('refetches a written row alone', async () => {
+    const fetch = vi.fn(rowBatch)
+    await runInCommandScope(async () => {
+      await memo.read('/d', new Folder().fetch)
+      await memo.row('/d/a', fetch)
+      memo.rowWrote('/d/a')
+      expect(await memo.row('/d/b', fetch)).not.toBeNull()
+      expect(await memo.row('/d/a', fetch)).not.toBeNull()
+    })
+    expect(fetch.mock.calls.map(([batch]) => batch)).toEqual([['/d/a', '/d/b'], ['/d/a']])
   })
 
   it('reads a listing once per command', async () => {

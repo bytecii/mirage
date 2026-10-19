@@ -314,6 +314,23 @@ async def test_row_batches_see_row_writes_without_reloading_membership(
 
 
 @pytest.mark.asyncio
+async def test_a_row_write_leaves_its_siblings_batched(store, mgets):
+    await store.set_dir("/d", LISTED)
+    mgets.clear()
+    async with command_scope():
+        await store.list_dir("/d")
+        for name in ("a", "b"):
+            path = f"/d/{name}"
+            row = (await store.get(path)).entry
+            assert await store.replace_if_unchanged(
+                path,
+                row.model_dump_json(),
+                row.model_copy(update={"fingerprint": "new"}),
+            )
+    assert len(mgets) == 2
+
+
+@pytest.mark.asyncio
 async def test_a_new_command_reads_rows_changed_outside_the_process(
     store, mgets
 ):

@@ -304,7 +304,7 @@ async def test_a_row_batch_overlapping_a_write_is_not_kept(memo):
 
     async def fetch(batch):
         calls.append(list(batch))
-        memo.row_wrote()
+        memo.row_wrote("/d/a")
         return {p: FileStat(name=p, type=FileType.FILE) for p in batch}
 
     async with command_scope():
@@ -312,3 +312,35 @@ async def test_a_row_batch_overlapping_a_write_is_not_kept(memo):
         await memo.row("/d/a", fetch)
         await memo.row("/d/b", fetch)
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_rows_a_batch_did_not_find_are_not_fetched_again(memo):
+    calls = []
+
+    async def fetch(batch):
+        calls.append(list(batch))
+        return {}
+
+    async with command_scope():
+        await memo.read("/d", Folder())
+        for path in ("/d/a", "/d/b", "/d/a"):
+            assert await memo.row(path, fetch) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_row_write_refetches_that_row_alone(memo):
+    calls = []
+
+    async def fetch(batch):
+        calls.append(list(batch))
+        return {p: FileStat(name=p, type=FileType.FILE) for p in batch}
+
+    async with command_scope():
+        await memo.read("/d", Folder())
+        await memo.row("/d/a", fetch)
+        memo.row_wrote("/d/a")
+        assert await memo.row("/d/b", fetch) is not None
+        assert await memo.row("/d/a", fetch) is not None
+    assert calls == [["/d/a", "/d/b"], ["/d/a"]]

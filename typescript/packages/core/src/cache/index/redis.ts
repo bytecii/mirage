@@ -877,7 +877,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     try {
       await pipe.exec()
     } finally {
-      this.listings.rowWrote()
+      this.listings.rowWrote(vfsPath)
     }
   }
 
@@ -939,7 +939,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
         1
       )
     } finally {
-      this.listings.rowWrote()
+      this.listings.rowWrote(path)
     }
   }
 

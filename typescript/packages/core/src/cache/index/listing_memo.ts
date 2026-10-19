@@ -19,6 +19,8 @@ import { soleCommandStarted } from './scope.ts'
 
 const WRITES_BY_PREFIX = new Map<string, number>()
 const ROW_WRITES_BY_PREFIX = new Map<string, number>()
+// Each row written within the last window, with its write count and time.
+const ROWS_WRITTEN_BY_PREFIX = new Map<string, Map<string, { count: number; at: number }>>()
 const HOLDERS_BY_PREFIX = new Map<string, number>()
 
 function copied(listing: ListResult): ListResult {
@@ -33,8 +35,8 @@ interface Read {
   readonly readAt: number
   readonly expiresAt: number
   readonly listing: ListResult
-  readonly rowWrites?: number
-  readonly rows?: Map<string, FileStat>
+  rowWrites: number
+  readonly rows: Map<string, FileStat | null>
 }
 
 /**
@@ -44,12 +46,12 @@ interface Read {
  * listing write to the key prefix has finished since the read began, for
  * under LISTING_TRUST_WINDOW seconds, and never past the listing's own
  * expiry. Row reads batch at most ROW_READ_BATCH siblings and share this
- * lifetime; a row-only write drops rows without discarding directory
- * membership. Each fill drops the oldest reads no command can be served any
- * more, so a read stays held for about one window. The key prefix's write
- * count lives while an open memo holds the prefix. On the fallback
- * storage, while more than one command is live, there is no sole stamp and
- * every read goes to Redis.
+ * lifetime, a row the batch did not find is left to a lookup of its own,
+ * and a row-only write drops that row alone. Each fill drops the oldest
+ * reads no command can be served any more, so a read stays held for about
+ * one window. The key prefix's write count lives while an open memo holds
+ * the prefix. On the fallback storage, while more than one command is live,
+ * there is no sole stamp and every read goes to Redis.
  */
 export class ListingMemo {
   private readonly reads = new Map<string, Read>()
@@ -98,7 +100,14 @@ export class ListingMemo {
       this.reads.delete(held)
     }
     this.reads.delete(key)
-    this.reads.set(key, { writesBefore: writes, readAt, expiresAt, listing })
+    this.reads.set(key, {
+      writesBefore: writes,
+      readAt,
+      expiresAt,
+      listing,
+      rowWrites: -1,
+      rows: new Map(),
+    })
     return copied(listing)
   }
 
@@ -114,31 +123,48 @@ export class ListingMemo {
     const kept = this.reads.get(key)
     if (kept === undefined || !this.live(kept)) return null
     const writes = ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0
-    let rows = kept.rows
-    if (rows === undefined || kept.rowWrites !== writes) {
-      rows = new Map()
+    if (kept.rowWrites !== writes) {
+      for (const [done, write] of ROWS_WRITTEN_BY_PREFIX.get(this.keyPrefix) ?? []) {
+        if (write.count > kept.rowWrites) kept.rows.delete(done)
+      }
+      kept.rowWrites = writes
     }
-    if (!rows.has(path)) {
+    let row = kept.rows.get(path)
+    if (row === undefined) {
       const paths = kept.listing.entries ?? kept.listing.partialEntries ?? []
       const position = paths.indexOf(path)
       if (position < 0) return null
       const start = Math.floor(position / ROW_READ_BATCH) * ROW_READ_BATCH
-      rows = new Map([...rows, ...(await fetch(paths.slice(start, start + ROW_READ_BATCH)))])
+      const missing = paths.slice(start, start + ROW_READ_BATCH).filter((p) => !kept.rows.has(p))
+      const fetched = await fetch(missing)
       if (
         this.live(kept) &&
         (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) === writes &&
         soleCommandStarted() === stamp
       ) {
-        this.reads.set(key, { ...kept, rows, rowWrites: writes })
+        for (const p of missing) kept.rows.set(p, fetched.get(p) ?? null)
       }
+      row = fetched.get(path) ?? null
     }
-    const row = rows.get(path)
-    return row === undefined ? null : new FileStat(structuredClone(row))
+    return row === null ? null : new FileStat(structuredClone(row))
   }
 
-  /** Count a finished row write without discarding directory membership. */
-  rowWrote(): void {
-    ROW_WRITES_BY_PREFIX.set(this.keyPrefix, (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) + 1)
+  /** Count a finished write of one row, keeping its siblings' reads. */
+  rowWrote(path: string): void {
+    const count = (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) + 1
+    ROW_WRITES_BY_PREFIX.set(this.keyPrefix, count)
+    let written = ROWS_WRITTEN_BY_PREFIX.get(this.keyPrefix)
+    if (written === undefined) {
+      written = new Map()
+      ROWS_WRITTEN_BY_PREFIX.set(this.keyPrefix, written)
+    }
+    const at = performance.now()
+    written.delete(path)
+    written.set(path, { count, at })
+    for (const [held, write] of written) {
+      if (at - write.at < LISTING_TRUST_WINDOW * 1000) break
+      written.delete(held)
+    }
   }
 
   /** Runs `fn` and counts a listing write once it is over, whether it threw or not. */
@@ -153,7 +179,6 @@ export class ListingMemo {
   /** Counts a finished listing write to the key prefix. */
   wrote(): void {
     WRITES_BY_PREFIX.set(this.keyPrefix, this.written() + 1)
-    this.rowWrote()
   }
 
   /**
@@ -173,5 +198,6 @@ export class ListingMemo {
     HOLDERS_BY_PREFIX.delete(this.keyPrefix)
     WRITES_BY_PREFIX.delete(this.keyPrefix)
     ROW_WRITES_BY_PREFIX.delete(this.keyPrefix)
+    ROWS_WRITTEN_BY_PREFIX.delete(this.keyPrefix)
   }
 }

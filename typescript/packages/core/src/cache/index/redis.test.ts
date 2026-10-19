@@ -1495,6 +1495,27 @@ describe.skipIf(skip)('RedisIndexCacheStore listing reads in one command', () =>
     },
   )
 
+  it('keeps the siblings of a written row batched', async () => {
+    await store.setDir('/d', LISTED)
+    const sent = await mGets()
+    await runInCommandScope(async () => {
+      await store.listDir('/d')
+      for (const name of ['a', 'b']) {
+        const path = `/d/${name}`
+        const before = (await store.get(path)).entry
+        if (before == null) throw new Error(`missing ${path}`)
+        expect(
+          await store.replaceIfUnchanged(
+            path,
+            JSON.stringify(before),
+            before.with({ fingerprint: 'new' }),
+          ),
+        ).toBe(true)
+      }
+    })
+    expect(sent.mock.calls).toHaveLength(2)
+  })
+
   it('reads external row changes at the next command', async () => {
     await store.setDir('/d', LISTED)
     await runInCommandScope(async () => {

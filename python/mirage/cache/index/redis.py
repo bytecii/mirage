@@ -961,7 +961,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         try:
             await pipe.execute()
         finally:
-            self._listings.row_wrote()
+            self._listings.row_wrote(vfs_path)
 
     @_counts_listing_write
     async def add_entry(
@@ -1023,7 +1023,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             )
             return result == 1
         finally:
-            self._listings.row_wrote()
+            self._listings.row_wrote(vfs_path)
 
     async def list_dir(self, vfs_path: str) -> ListResult:
         """A folder's listing, read from Redis at most once per command.
