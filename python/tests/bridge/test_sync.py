@@ -89,6 +89,70 @@ closer.join(timeout=3)
 assert not caller.is_alive() and not closer.is_alive()
 """
 
+CANCEL_BEFORE_START_REPRO = """
+import asyncio
+import threading
+
+from mirage.bridge.sync import SyncBridge
+
+bridge = SyncBridge()
+entered, release = threading.Event(), threading.Event()
+made = []
+
+async def value():
+    made.append(True)
+    return 7
+
+bridge.run(value, "value")
+made.clear()
+owner = bridge._loop
+
+def block_owner():
+    entered.set()
+    assert release.wait(3)
+
+owner.call_soon_threadsafe(block_owner)
+assert entered.wait(3)
+
+async def main():
+    task = asyncio.create_task(bridge.arun(value))
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    try:
+        await asyncio.wait_for(task, 3)
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("cancellation was lost")
+    assert not made, "cancelled queued callback was invoked"
+
+try:
+    asyncio.run(main())
+finally:
+    release.set()
+    bridge.shutdown()
+"""
+
+
+def test_cross_loop_cancellation_before_start_in_bounded_process():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-Werror::RuntimeWarning",
+            "-c",
+            CANCEL_BEFORE_START_REPRO,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Task was destroyed" not in result.stderr
+    assert "never awaited" not in result.stderr
+
 
 def test_submission_racing_shutdown_in_bounded_process():
     result = subprocess.run(

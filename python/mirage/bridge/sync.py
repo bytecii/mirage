@@ -316,21 +316,47 @@ class SyncBridge:
     async def arun(self, factory: Callable[[], Awaitable[T]]) -> T:
         """Keep async adapter calls on their established owner too.
 
+        Cross-loop cancellation reaches the owner task without cancelling
+        its completion future, so cleanup still finishes before we return.
+
         Args:
             factory (Callable[[], Awaitable[T]]): deferred async tool call.
         """
+        task: asyncio.Task[Any] | None = None
+        cancel_requested = False
+
+        async def invoke() -> T:
+            nonlocal task
+            if cancel_requested:
+                raise asyncio.CancelledError
+            task = asyncio.current_task()
+            return await factory()
+
+        def cancel() -> None:
+            nonlocal cancel_requested
+            cancel_requested = True
+            if task is not None:
+                task.cancel()
+
         current = asyncio.get_running_loop()
         with self._lock:
             if self._closing:
                 raise RuntimeError("Workspace is closing")
             if self._loop is None:
                 self._loop = current
-            future = (
-                None if self._loop is current else self._submit_locked(factory)
-            )
+            loop = self._loop
+            future = None if loop is current else self._submit_locked(invoke)
         if future is None:
             return await factory()
-        return await asyncio.wrap_future(future)
+        completion = asyncio.wrap_future(future)
+        try:
+            return await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            with self._lock:
+                if not future.done() and not self._stop_requested:
+                    loop.call_soon_threadsafe(cancel)
+            await settle(completion)
+            raise
 
     def _stop_after_task(self, task: asyncio.Future[Any]) -> None:
         self._request_stop()

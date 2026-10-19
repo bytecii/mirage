@@ -32,8 +32,12 @@ from concurrent.futures import ThreadPoolExecutor
 from mirage import RAMVFS, MountMode, Workspace
 from mirage.agents.agno import MirageToolkit
 from mirage.agents.langchain import LangchainWorkspace
+from mirage.commands.cli.types import CLI, CLIHandler
+from mirage.commands.spec.types import CommandSpec
+from mirage.concurrency.limiter import run_blocking
 from mirage.context import reset_current_session, set_current_session
 from mirage.fuse.fs import MirageFS
+from mirage.io import IOResult
 
 kind, mode = sys.argv[1:]
 ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
@@ -157,6 +161,66 @@ elif mode in ("fuse", "fuse_first"):
     finally:
         asyncio.run(ws.close())
         fs._loop.call_soon_threadsafe(fs._loop.stop)
+elif mode in ("cancel_cleanup", "cancel_blocking"):
+    entered = threading.Event()
+    cleaning = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+
+    def blocking():
+        entered.set()
+        assert release.wait(3)
+        finished.set()
+
+    async def held(config, paths, texts, ctx):
+        if mode == "cancel_blocking":
+            await run_blocking(blocking)
+        else:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await run_blocking(release.wait, 3)
+                assert release.is_set()
+                finished.set()
+        return None, IOResult()
+
+    ws.register_cli("held", CLI(
+        spec=CommandSpec(name="held"), handlers={"": CLIHandler(fn=held)}
+    ))
+    sync("echo seed")
+
+    async def cancelled_tool():
+        call = adapter.aexecute if kind == "langchain" else adapter.ashell
+        task = asyncio.create_task(call("held"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            task.cancel()
+            if mode == "cancel_cleanup":
+                assert await asyncio.to_thread(cleaning.wait, 3)
+            await asyncio.sleep(.05)
+            assert not task.done(), "caller returned before owner cleanup finished"
+            task.cancel()
+            await asyncio.sleep(.05)
+            assert not task.done(), "repeated cancellation abandoned owner cleanup"
+            release.set()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("cancellation was lost")
+            assert finished.is_set()
+            assert not ws._session_mgr.line_lock_for("s").locked()
+            result = await asyncio.wait_for(call("echo next"), 3)
+            text = result.output if kind == "langchain" else result
+            assert text.strip() == "next", text
+        finally:
+            release.set()
+            await ws.close()
+
+    asyncio.run(cancelled_tool())
 elif mode == "sync":
     result = sync("echo sync")
     text = result.output if kind == "langchain" else result
@@ -191,6 +255,8 @@ else:
         "borrowed_context",
         "fuse",
         "fuse_first",
+        "cancel_cleanup",
+        "cancel_blocking",
     ],
 )
 def test_contended_sync_adapter_in_bounded_process(kind, mode):
