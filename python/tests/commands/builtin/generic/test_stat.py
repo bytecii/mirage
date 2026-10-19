@@ -16,21 +16,15 @@ from mirage.types import (
     PathSpec,
 )
 from mirage.utils.stat_view import DIR_SIZE
-from mirage.vfs.base import BaseVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.view.types import LinkView
 from mirage.workspace import Workspace
+from tests.fixtures.vfs_io import OverlayRAM as _OverlayRAMVFS
+from tests.fixtures.vfs_io import run_text as _run
 
 _MTIME = "2026-01-02T15:30:45Z"
 _MTIME_SHOWN = "2026-01-02 15:30:45.000000000 +0000"
 _MTIME_EPOCH = "1767367845"
-
-
-class _OverlayRAMVFS(RAMVFS):
-    """RAM VFS with native setattr stripped, standing in for an API
-    backend whose chmod/chown/touch live only in the namespace overlay."""
-
-    setattr = BaseVFS.setattr
 
 
 def _fs(**kw: object) -> FileStat:
@@ -75,11 +69,6 @@ async def _render_named(fmt: str, name: str) -> str:
     )
     assert io.exit_code == 0
     return (await materialize(out)).decode().rstrip("\n")
-
-
-async def _run(ws: Workspace, cmd: str) -> tuple[int, str, str]:
-    r = await ws.shell(cmd)
-    return r.exit_code, await r.stdout_str(), await r.stderr_str()
 
 
 @pytest.mark.asyncio

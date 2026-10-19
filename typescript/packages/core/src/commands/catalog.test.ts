@@ -19,7 +19,6 @@ import { GENERIC_COMMANDS } from './builtin/generic_bind/factory.ts'
 
 const SPEC = new CommandSpec()
 const FN = () => Promise.resolve([null, { exitCode: 0 } as never] as [null, never])
-const REPLACEMENT_FN = () => Promise.resolve([null, { exitCode: 1 } as never] as [null, never])
 
 function registered(name: string, filetype: string | null = null): Command {
   return new Command({ name, spec: SPEC, vfs: 's3', filetype, fn: FN })
@@ -62,22 +61,12 @@ describe('CommandCatalog', () => {
   })
 })
 
-describe('Command.withOverrides', () => {
+describe('Command', () => {
   it('keeps command definitions immutable', () => {
     const original = registered('cat')
 
     expect(Object.isFrozen(original)).toBe(true)
     expect(() => ((original as unknown as { name: string }).name = 'tail')).toThrow()
-  })
-
-  it('returns an independent definition', () => {
-    const original = registered('cat')
-
-    const changed = original.withOverrides({ fn: REPLACEMENT_FN })
-
-    expect(changed).not.toBe(original)
-    expect(changed.fn).toBe(REPLACEMENT_FN)
-    expect(original.fn).toBe(FN)
   })
 })
 

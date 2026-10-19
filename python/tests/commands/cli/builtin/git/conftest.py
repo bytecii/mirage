@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 from dulwich import porcelain
 from dulwich.index import ConflictedIndexEntry, Index, IndexEntry
-from dulwich.objects import Commit, Tree
+from dulwich.object_store import MemoryObjectStore
+from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 
 from mirage.commands.cli.builtin.git import GIT
@@ -358,3 +359,38 @@ def unborn_rw(unborn_path: Path):
     ) as ws:
         ws.register_cli("git", GIT)
         yield ws
+
+
+async def run(ws: Workspace, line: str) -> tuple[int, bytes, bytes]:
+    """Run one git line against the mounted repository.
+
+    Args:
+        ws (Workspace): workspace with the repository and CLI.
+        line (str): command line without the leading directory.
+    """
+    result = await ws.shell(f"git -C /repo {line}")
+    return result.exit_code, result.stdout or b"", result.stderr or b""
+
+
+def blobs(*contents: bytes) -> tuple[MemoryObjectStore, list[bytes]]:
+    """A store holding each blob, and their ids in the same order.
+
+    Args:
+        contents (bytes): blob contents to store.
+    """
+    store = MemoryObjectStore()
+    ids = []
+    for content in contents:
+        blob = Blob.from_string(content)
+        store.add_object(blob)
+        ids.append(blob.id)
+    return store, ids
+
+
+def head_ref(repo_path: Path) -> bytes:
+    """What ``.git/HEAD`` holds, read straight off disk.
+
+    Args:
+        repo_path (Path): the repository's working tree.
+    """
+    return (repo_path / ".git" / "HEAD").read_bytes().strip()

@@ -7,7 +7,6 @@ from mirage.commands.builtin.generic.archive.types import Walked
 from mirage.errors.posix import posix_phrase
 from mirage.errors.types import FsCondition
 from mirage.types import (
-    LINK_TARGET_KEY,
     ContentType,
     FileStat,
     FileType,
@@ -16,6 +15,7 @@ from mirage.types import (
 from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import CycleError
 from mirage.view.types import LinkView, MountView
+from tests.fixtures.vfs_io import link_view as _links
 
 
 def _spec(path: str, prefix: str = "") -> PathSpec:
@@ -62,35 +62,6 @@ class _Tree:
                 c for c in closed if c.startswith(base.rstrip("/") + "/")
             ),
         )
-
-
-def _links(entries: dict[str, str]) -> LinkView:
-    def stat_of(path):
-        target = entries[path]
-        return FileStat(
-            name=path,
-            type=FileType.SYMLINK,
-            size=len(target),
-            extra={LINK_TARGET_KEY: target},
-        )
-
-    async def target_stat(path):
-        return None
-
-    async def exists(path):
-        return path in entries
-
-    return LinkView(
-        stat_at=lambda p: stat_of(p) if p in entries else None,
-        subtree=lambda p: [
-            (k, stat_of(k))
-            for k in sorted(entries)
-            if k.startswith(p.rstrip("/") + "/")
-        ],
-        resolve=lambda p: entries.get(p, p),
-        exists=exists,
-        target_stat=target_stat,
-    )
 
 
 def _cycle(entries: dict[str, str]) -> LinkView:

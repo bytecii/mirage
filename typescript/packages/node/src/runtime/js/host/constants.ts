@@ -53,11 +53,6 @@ export const ROUTED_CALLS = [
 
 export type RoutedCall = (typeof ROUTED_CALLS)[number]
 
-// The call that opens a mounted path onto a descriptor of the patch's own
-// (descriptors.ts), in its spellings. node's read and write streams open
-// and read through `fs`, so they need no entry of their own.
-export const OPENED_CALLS = ['open'] as const
-
 // The calls that take a descriptor rather than a path: they answer for a
 // descriptor `open` handed out and leave every other one to node. fchmod,
 // fchown and futimes are among them so a mounted descriptor never reaches

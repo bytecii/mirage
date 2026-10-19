@@ -100,10 +100,6 @@ export interface CommandInit {
   limit?: Limit | null
 }
 
-export interface CommandOverrides {
-  fn?: CommandFn
-}
-
 /**
  * One command as a mount registers it: the grammar (with `--help` and
  * `--version` added), the backend it belongs to, the file extension it
@@ -130,20 +126,6 @@ export class Command {
     this.write = init.write ?? false
     this.limit = init.limit ?? null
     Object.freeze(this)
-  }
-
-  /** A copy with the handler replaced. */
-  withOverrides(overrides: CommandOverrides): Command {
-    return new Command({
-      name: this.name,
-      spec: this.spec,
-      vfs: this.vfs,
-      filetype: this.filetype,
-      fn: overrides.fn ?? this.fn,
-      aggregate: this.aggregate,
-      write: this.write,
-      limit: this.limit,
-    })
   }
 }
 

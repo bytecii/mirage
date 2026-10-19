@@ -137,14 +137,14 @@ copy on one mount:
 import { generic } from '@struktoai/mirage-browser'
 
 const cat = generic('cat')
-const loggedCat = cat.withOverrides({
+
+ws.mount('/bucket/')?.register({
+  ...cat,
   fn: async (accessor, paths, texts, opts) => {
     console.log('reading', paths.map((path) => path.virtual))
     return cat.fn(accessor, paths, texts, opts)
   },
 })
-
-ws.mount('/bucket/')?.register(loggedCat)
 ```
 
 Use the same `generic` export from `@struktoai/mirage-node` for a Node

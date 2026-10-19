@@ -30,6 +30,7 @@ from mirage.commands.cli.builtin.git.index_file import read_index
 from mirage.commands.cli.builtin.git.repo import open_repo
 from mirage.commands.cli.builtin.git.types import WorkTree
 from mirage.types import ContentType, FileStat, FileType
+from tests.commands.cli.builtin.git.conftest import blobs as blobs
 
 from .conftest import GITDIR, LOCATION, REPO
 
@@ -74,21 +75,6 @@ def stat(size: int | None = 4, mode: int | None = 0o644) -> FileStat:
         size=size,
         mode=mode,
     )
-
-
-def blobs(*contents: bytes) -> tuple[MemoryObjectStore, list[bytes]]:
-    """A store holding each blob, and their ids in the same order.
-
-    Args:
-        contents (bytes): blob contents to store.
-    """
-    store = MemoryObjectStore()
-    ids = []
-    for content in contents:
-        blob = Blob.from_string(content)
-        store.add_object(blob)
-        ids.append(blob.id)
-    return store, ids
 
 
 EMPTY_STORE = MemoryObjectStore()

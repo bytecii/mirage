@@ -23,6 +23,7 @@ from tests.commands.cli.builtin.git.conftest import (
     mounted,
     pack_refs,
 )
+from tests.commands.cli.builtin.git.conftest import run as _run
 
 REMOTE_DIR = ("refs", "remotes", "origin")
 
@@ -129,17 +130,6 @@ async def test_a_symbolic_remote_ref_renders_its_target(repo_path):
         b"  remotes/origin/HEAD -> origin/main\n"
         b"  remotes/origin/main\n"
     )
-
-
-async def _run(ws, line: str) -> tuple[int, bytes, bytes]:
-    """Run one git line against the mounted repository.
-
-    Args:
-        ws (Workspace): workspace with the repository and CLI.
-        line (str): the command line, without the leading directory.
-    """
-    result = await ws.shell(f"git -C /repo {line}")
-    return result.exit_code, result.stdout or b"", result.stderr or b""
 
 
 @pytest.mark.asyncio

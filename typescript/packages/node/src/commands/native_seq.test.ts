@@ -16,33 +16,17 @@ import { describe, expect, it } from 'vitest'
 import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts'
 
 describe.each(NATIVE_BACKENDS)('native seq (%s backend)', (kind) => {
-  it('seq 1 arg matches native', async () => {
+  it.each([
+    { name: 'seq 1 arg matches native', command: 'seq 4' },
+    { name: 'seq 2 args matches native', command: 'seq 3 5' },
+    { name: 'seq 3 args matches native', command: 'seq 1 2 7' },
+    { name: 'seq -f format matches native', command: "seq -f '%.2f' 1 3" },
+    { name: 'seq -w zero-pad matches native', command: 'seq -w 1 10' },
+  ])('$name', async ({ command }) => {
     const env = makeEnv(kind)
     try {
-      const m = await env.mirage('seq 4')
-      const n = await env.native('seq 4')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('seq 2 args matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage('seq 3 5')
-      const n = await env.native('seq 3 5')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('seq 3 args matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage('seq 1 2 7')
-      const n = await env.native('seq 1 2 7')
+      const m = await env.mirage(command)
+      const n = await env.native(command)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -54,28 +38,6 @@ describe.each(NATIVE_BACKENDS)('native seq (%s backend)', (kind) => {
     try {
       const result = await env.mirage('seq -s , 1 3')
       expect(result.trim()).toBe('1,2,3')
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('seq -f format matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage("seq -f '%.2f' 1 3")
-      const n = await env.native("seq -f '%.2f' 1 3")
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('seq -w zero-pad matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage('seq -w 1 10')
-      const n = await env.native('seq -w 1 10')
-      expect(m).toBe(n)
     } finally {
       await env.cleanup()
     }

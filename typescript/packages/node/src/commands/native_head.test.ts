@@ -32,24 +32,31 @@ describe.each(NATIVE_BACKENDS)('native head (%s backend)', (kind) => {
     }
   })
 
-  it('head -n 5 matches native', async () => {
+  it.each([
+    {
+      name: 'head -n 5 matches native',
+      input: 'a\nb\nc\nd\ne\nf\n',
+      command: 'head -n 5 /data/f.txt',
+      nativeCommand: 'head -n 5 f.txt',
+    },
+    {
+      name: 'head -c 5 matches native',
+      input: 'hello world\n',
+      command: 'head -c 5 /data/f.txt',
+      nativeCommand: 'head -c 5 f.txt',
+    },
+    {
+      name: 'head on file with fewer lines matches native',
+      input: 'a\nb\n',
+      command: 'head /data/f.txt',
+      nativeCommand: 'head f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\nf\n'))
-      const m = await env.mirage('head -n 5 /data/f.txt')
-      const n = await env.native('head -n 5 f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('head -c 5 matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello world\n'))
-      const m = await env.mirage('head -c 5 /data/f.txt')
-      const n = await env.native('head -c 5 f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -62,18 +69,6 @@ describe.each(NATIVE_BACKENDS)('native head (%s backend)', (kind) => {
       const data = ENC.encode('a\nb\nc\nd\ne\nf\n')
       const m = await env.mirage('head -n 3', data)
       const n = await env.native('head -n 3', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('head on file with fewer lines matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\n'))
-      const m = await env.mirage('head /data/f.txt')
-      const n = await env.native('head f.txt')
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

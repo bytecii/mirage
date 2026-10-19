@@ -21,17 +21,7 @@ from dulwich.repo import Repo
 from mirage.commands.cli.builtin.git.tag import parse_flags
 from mirage.commands.spec.flag_view import FlagView
 from tests.commands.cli.builtin.git.conftest import mounted_rw, pack_refs
-
-
-async def run(ws, line: str) -> tuple[int, bytes, bytes]:
-    """Run one git line against the mounted repository.
-
-    Args:
-        ws (Workspace): workspace with the repository and CLI.
-        line (str): the command line, without the leading directory.
-    """
-    result = await ws.shell(f"git -C /repo {line}")
-    return result.exit_code, result.stdout or b"", result.stderr or b""
+from tests.commands.cli.builtin.git.conftest import run as run
 
 
 def tag_object(repo_path: Path, name: str):

@@ -15,14 +15,14 @@ from mirage.commands.builtin.generic.tar.types import CreateResult, Member
 from mirage.io.stream import close_quietly, ensure_stream
 from mirage.io.types import materialize
 from mirage.types import (
-    LINK_TARGET_KEY,
     ContentType,
     FileStat,
     FileType,
     PathSpec,
 )
 from mirage.utils.key_prefix import mount_key
-from mirage.view.types import LinkView, MountView
+from tests.fixtures.vfs_io import link_view as _links
+from tests.fixtures.vfs_io import mount_view as _mounts
 
 
 def _spec(path: str, prefix: str = "") -> PathSpec:
@@ -103,56 +103,6 @@ class _Tree:
 
     async def is_dir(self, path):
         return (path.virtual.rstrip("/") or "/") in self.dirs
-
-
-def _links(entries: dict[str, str]) -> LinkView:
-    def stat_of(path):
-        target = entries[path]
-        return FileStat(
-            name=path,
-            type=FileType.SYMLINK,
-            size=len(target),
-            extra={LINK_TARGET_KEY: target},
-        )
-
-    async def target_stat(path):
-        return None
-
-    async def exists(path):
-        return path in entries
-
-    return LinkView(
-        stat_at=lambda p: stat_of(p) if p in entries else None,
-        subtree=lambda p: [
-            (k, stat_of(k))
-            for k in sorted(entries)
-            if k.startswith(p.rstrip("/") + "/")
-        ],
-        resolve=lambda p: entries.get(p, p),
-        exists=exists,
-        target_stat=target_stat,
-    )
-
-
-def _mounts(
-    descendants: tuple[str, ...] = (), roots: tuple[str, ...] = ()
-) -> MountView:
-    def root_of(path):
-        for root in sorted(roots, key=len, reverse=True):
-            if path == root or path.startswith(root.rstrip("/") + "/"):
-                return root
-        return "/"
-
-    return MountView(
-        descendants=lambda p: [
-            d for d in descendants if d.startswith(p.rstrip("/") + "/")
-        ],
-        visible_descendants=lambda p: [
-            d for d in descendants if d.startswith(p.rstrip("/") + "/")
-        ],
-        is_root=lambda p: p.rstrip("/") in {r.rstrip("/") for r in roots},
-        root_of=root_of,
-    )
 
 
 async def _create(tree: _Tree, paths, **flags):

@@ -11,6 +11,7 @@ from mirage.commands.config import Context
 from mirage.errors.fs import efbig
 from mirage.io.types import materialize
 from mirage.types import FileStat, FileType, PathSpec
+from tests.commands.builtin.conftest import TrackedSource as _Tracked
 
 
 async def _drain(gen):
@@ -112,25 +113,6 @@ async def test_cat_generic_reports_a_refused_read_and_goes_on():
     assert await materialize(out) == b"a1\nb1\nb2\n"
     assert io.stderr == b"cat: /a.txt: File too large\n"
     assert io.exit_code == 1
-
-
-class _Tracked:
-    """A source that remembers being closed; collection never closes it."""
-
-    def __init__(self, *chunks: bytes) -> None:
-        self.chunks = list(chunks)
-        self.closed = False
-
-    def __aiter__(self) -> "_Tracked":
-        return self
-
-    async def __anext__(self) -> bytes:
-        if not self.chunks:
-            raise StopAsyncIteration
-        return self.chunks.pop(0)
-
-    async def aclose(self) -> None:
-        self.closed = True
 
 
 @pytest.mark.asyncio

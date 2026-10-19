@@ -18,36 +18,31 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native jq (%s backend)', (kind) => {
-  it('jq -r .name matches native', async () => {
+  it.each([
+    {
+      name: 'jq -r .name matches native',
+      input: '{"name": "hello"}\n',
+      command: 'jq -r .name',
+      nativeCommand: 'jq -r .name',
+    },
+    {
+      name: 'jq -c . matches native',
+      input: '{"a": 1, "b": 2}\n',
+      command: 'jq -c .',
+      nativeCommand: 'jq -c .',
+    },
+    {
+      name: 'jq -s . matches native',
+      input: '1\n2\n3\n',
+      command: 'jq -s .',
+      nativeCommand: 'jq -s .',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      const data = ENC.encode('{"name": "hello"}\n')
-      const m = await env.mirage('jq -r .name', data)
-      const n = await env.native('jq -r .name', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('jq -c . matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('{"a": 1, "b": 2}\n')
-      const m = await env.mirage('jq -c .', data)
-      const n = await env.native('jq -c .', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('jq -s . matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('1\n2\n3\n')
-      const m = await env.mirage('jq -s .', data)
-      const n = await env.native('jq -s .', data)
+      const data = ENC.encode(input)
+      const m = await env.mirage(command, data)
+      const n = await env.native(nativeCommand, data)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

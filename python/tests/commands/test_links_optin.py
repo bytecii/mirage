@@ -12,12 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import importlib
 import inspect
-import pkgutil
 
-import mirage.commands.builtin as builtin
-from mirage.commands.config import Command
+from tests.fixtures.mount_commands import registered_commands as _registered
 
 # The families whose generics read the command's links (ls/stat/find/
 # file). Since Context carries the files into every handler, link
@@ -39,34 +36,6 @@ GENERIC_CALLS = {
 }
 
 
-def _registered() -> tuple[list[Command], list[str]]:
-    """Every registered builtin command, plus modules that would not import.
-
-    The failures are returned rather than skipped for the reason
-    ``scripts/gen_specs.py`` states: a module that will not import
-    registers nothing, so a command missing its delegation would pass
-    this check by being absent rather than by being correct.
-    """
-    found: list[Command] = []
-    failed: list[str] = []
-    seen: set[int] = set()
-    for info in pkgutil.walk_packages(
-        builtin.__path__, builtin.__name__ + "."
-    ):
-        try:
-            module = importlib.import_module(info.name)
-        except ImportError as exc:
-            failed.append(f"{info.name}: {exc}")
-            continue
-        for value in vars(module).values():
-            cmds = getattr(value, "_registered_commands", None)
-            if cmds is None or id(value) in seen:
-                continue
-            seen.add(id(value))
-            found.extend(cmds)
-    return found, failed
-
-
 def test_every_link_aware_shadow_delegates_to_the_generic():
     """A bespoke command in a link-aware family must route through it.
 
@@ -78,6 +47,7 @@ def test_every_link_aware_shadow_delegates_to_the_generic():
     """
     commands, failed = _registered()
     assert not failed, f"builtin modules would not import: {failed}"
+    assert commands, "no registered builtin commands were found"
     offenders = []
     for cmd in commands:
         if cmd.name not in LINK_AWARE:

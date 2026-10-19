@@ -21,6 +21,7 @@ from mirage.io.stream import yield_bytes
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.commands.builtin.conftest import run_raw as run_raw
 
 
 def _norm(path):
@@ -106,12 +107,6 @@ def mem_ws(files: dict[str, bytes] | None = None) -> Workspace:
         {"/data": (mem, MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
-
-
-def run_raw(ws, cmd, cwd="/", stdin=None):
-    ws._cwd = cwd
-    io = asyncio.run(ws.shell(cmd, stdin=stdin))
-    return io.stdout, io
 
 
 async def drain_async(stream):

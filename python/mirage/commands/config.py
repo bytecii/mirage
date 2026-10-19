@@ -14,7 +14,7 @@
 
 import functools
 from collections.abc import Awaitable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, TypeAlias, overload
 
 from mirage.accessor.base import Accessor
@@ -130,15 +130,6 @@ class Command:
     aggregate: AggregateFn | None = None
     write: bool = False
     limit: Limit | None = None
-
-    def with_overrides(self, *, fn: CommandFn) -> "Command":
-        """A copy with the handler replaced, to register a customized
-        builtin on one mount.
-
-        Args:
-            fn (CommandFn): The replacement handler.
-        """
-        return replace(self, fn=fn)
 
 
 def _answer_standard_options(

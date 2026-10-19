@@ -12,36 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
 
-from mirage.types import MountMode
-from mirage.vfs.ram import RAMVFS
-from mirage.workspace import Workspace
-
-
-def _ws():
-    mem = RAMVFS()
-    ws = Workspace(
-        {"/data": (mem, MountMode.WRITE)},
-        mode=MountMode.WRITE,
-    )
-    return ws, mem
-
-
-def _run_raw(ws, cmd, cwd="/", stdin=None):
-    ws._cwd = cwd
-    io = asyncio.run(ws.shell(cmd, stdin=stdin))
-    return io.stdout, io
-
-
-def _bytes(stdout):
-    if isinstance(stdout, bytes):
-        return stdout
-    return b"".join(asyncio.run(_collect(stdout)))
-
-
-async def _collect(ait):
-    return [chunk async for chunk in ait]
+from tests.commands.builtin.conftest import output_bytes as _bytes
+from tests.commands.builtin.conftest import ram_workspace as _ws
+from tests.commands.builtin.conftest import run_raw as _run_raw
+from tests.commands.builtin.conftest import stderr_text as _stderr_text
 
 
 def test_bc_add():
@@ -54,13 +29,6 @@ def test_bc_multiply():
     ws, _ = _ws()
     stdout, _ = _run_raw(ws, "bc", stdin=b"6*7\n")
     assert _bytes(stdout).strip() == b"42"
-
-
-def _stderr_text(io):
-    err = io.stderr
-    if err is None:
-        return ""
-    return err.decode() if isinstance(err, bytes) else str(err)
 
 
 def _out(cmd, stdin):

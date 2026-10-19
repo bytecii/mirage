@@ -12,40 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
 
-from mirage.types import MountMode, PathSpec
-from mirage.vfs.ram import RAMVFS
-from mirage.workspace import Workspace
-from tests.fixtures.driver_ops import ops
-
-
-def _ws(**files):
-    mem = RAMVFS()
-    for path, data in files.items():
-        asyncio.run(ops(mem).write(PathSpec.from_str_path(path), data=data))
-    return Workspace(
-        {"/data": (mem, MountMode.WRITE)},
-        mode=MountMode.WRITE,
-    )
-
-
-def _run_raw(ws, cmd, cwd="/", stdin=None):
-    ws._cwd = cwd
-    io = asyncio.run(ws.shell(cmd, stdin=stdin))
-    return io.stdout, io
-
-
-def _bytes(stdout):
-    if stdout is None:
-        return b""
-    if isinstance(stdout, bytes):
-        return stdout
-    return b"".join(asyncio.run(_collect(stdout)))
-
-
-async def _collect(ait):
-    return [chunk async for chunk in ait]
+from tests.commands.builtin.conftest import file_workspace as _ws
+from tests.commands.builtin.conftest import optional_output_bytes as _bytes
+from tests.commands.builtin.conftest import run_raw as _run_raw
+from tests.commands.builtin.conftest import stderr_text as _stderr_text
 
 
 def test_split_by_lines():
@@ -55,13 +26,6 @@ def test_split_by_lines():
     stdout_b, _ = _run_raw(ws, "cat /data/chunk_ab")
     assert _bytes(stdout_a) == b"a\nb\n"
     assert _bytes(stdout_b) == b"c\nd\n"
-
-
-def _stderr_text(io):
-    err = io.stderr
-    if err is None:
-        return ""
-    return err.decode() if isinstance(err, bytes) else str(err)
 
 
 def test_split_junk_bytes_rejects_without_writing():

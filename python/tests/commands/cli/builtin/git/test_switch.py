@@ -20,26 +20,8 @@ from dulwich.repo import Repo
 
 from mirage.commands.cli.builtin.git.switch import expected_kind
 from tests.commands.cli.builtin.git.conftest import conflict_index
-
-
-async def run(ws, line: str) -> tuple[int, bytes, bytes]:
-    """Run one git line against the mounted repository.
-
-    Args:
-        ws (Workspace): workspace with the repository and CLI.
-        line (str): the command line, without the leading directory.
-    """
-    result = await ws.shell(f"git -C /repo {line}")
-    return result.exit_code, result.stdout or b"", result.stderr or b""
-
-
-def head_ref(repo_path: Path) -> bytes:
-    """What ``.git/HEAD`` holds, read straight off disk.
-
-    Args:
-        repo_path (Path): the repository's working tree.
-    """
-    return (repo_path / ".git" / "HEAD").read_bytes().strip()
+from tests.commands.cli.builtin.git.conftest import head_ref as head_ref
+from tests.commands.cli.builtin.git.conftest import run as run
 
 
 def test_a_tag_is_named_as_one():

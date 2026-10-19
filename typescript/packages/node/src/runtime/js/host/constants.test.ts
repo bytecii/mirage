@@ -14,13 +14,7 @@
 
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
-import {
-  DESCRIPTOR_CALLS,
-  LISTENED_CALLS,
-  OPENED_CALLS,
-  REFUSED_CALLS,
-  ROUTED_CALLS,
-} from './constants.ts'
+import { DESCRIPTOR_CALLS, LISTENED_CALLS, REFUSED_CALLS, ROUTED_CALLS } from './constants.ts'
 
 const fs = createRequire(import.meta.url)('node:fs') as Record<string, unknown> & {
   promises: Record<string, unknown>
@@ -47,7 +41,7 @@ describe('the call tables', () => {
   it('classify every fs function once, in all its spellings', () => {
     const tables = [
       new Set<string>(ROUTED_CALLS),
-      new Set<string>(OPENED_CALLS),
+      new Set(['open']),
       new Set<string>(DESCRIPTOR_CALLS),
       new Set(Object.keys(REFUSED_CALLS)),
       PASSTHROUGH_CALLS,

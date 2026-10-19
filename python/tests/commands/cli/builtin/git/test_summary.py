@@ -14,7 +14,7 @@
 
 import pytest
 from dulwich.object_store import BaseObjectStore, MemoryObjectStore
-from dulwich.objects import Blob, Commit
+from dulwich.objects import Commit
 
 from mirage.commands.cli.builtin.git.format import short
 from mirage.commands.cli.builtin.git.summary import (
@@ -24,26 +24,12 @@ from mirage.commands.cli.builtin.git.summary import (
     stat_line,
     stat_table,
 )
+from tests.commands.cli.builtin.git.conftest import blobs as store_with
 
 MODE = 0o100644
 EXECUTABLE = 0o100755
 
 Tree = dict[bytes, tuple[int, bytes]]
-
-
-def store_with(*contents: bytes) -> tuple[MemoryObjectStore, list[bytes]]:
-    """A store holding each blob, and their ids in the same order.
-
-    Args:
-        contents (bytes): blob contents to store.
-    """
-    store = MemoryObjectStore()
-    ids = []
-    for content in contents:
-        blob = Blob.from_string(content)
-        store.add_object(blob)
-        ids.append(blob.id)
-    return store, ids
 
 
 def total_changes(

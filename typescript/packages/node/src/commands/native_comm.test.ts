@@ -18,39 +18,34 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native comm (%s backend)', (kind) => {
-  it('comm default matches native', async () => {
+  it.each([
+    {
+      name: 'comm default matches native',
+      command: 'comm /data/a.txt /data/b.txt',
+      nativeCommand: 'comm a.txt b.txt',
+    },
+    {
+      name: 'comm -1 matches native',
+      command: 'comm -1 /data/a.txt /data/b.txt',
+      nativeCommand: 'comm -1 a.txt b.txt',
+    },
+    {
+      name: 'comm -23 matches native',
+      command: 'comm -23 /data/a.txt /data/b.txt',
+      nativeCommand: 'comm -23 a.txt b.txt',
+    },
+    {
+      name: 'comm -3 matches native',
+      command: 'comm -3 /data/a.txt /data/b.txt',
+      nativeCommand: 'comm -3 a.txt b.txt',
+    },
+  ])('$name', async ({ command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
       env.createFile('a.txt', ENC.encode('a\nb\nc\n'))
       env.createFile('b.txt', ENC.encode('b\nc\nd\n'))
-      const m = await env.mirage('comm /data/a.txt /data/b.txt')
-      const n = await env.native('comm a.txt b.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('comm -1 matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('a.txt', ENC.encode('a\nb\nc\n'))
-      env.createFile('b.txt', ENC.encode('b\nc\nd\n'))
-      const m = await env.mirage('comm -1 /data/a.txt /data/b.txt')
-      const n = await env.native('comm -1 a.txt b.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('comm -23 matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('a.txt', ENC.encode('a\nb\nc\n'))
-      env.createFile('b.txt', ENC.encode('b\nc\nd\n'))
-      const m = await env.mirage('comm -23 /data/a.txt /data/b.txt')
-      const n = await env.native('comm -23 a.txt b.txt')
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -65,19 +60,6 @@ describe.each(NATIVE_BACKENDS)('native comm (%s backend)', (kind) => {
       const m1 = await env.mirage('comm --nocheck-order /data/a.txt /data/b.txt')
       const m2 = await env.mirage('comm /data/a.txt /data/b.txt')
       expect(m1).toBe(m2)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('comm -3 matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('a.txt', ENC.encode('a\nb\nc\n'))
-      env.createFile('b.txt', ENC.encode('b\nc\nd\n'))
-      const m = await env.mirage('comm -3 /data/a.txt /data/b.txt')
-      const n = await env.native('comm -3 a.txt b.txt')
-      expect(m).toBe(n)
     } finally {
       await env.cleanup()
     }

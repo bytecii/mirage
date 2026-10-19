@@ -24,17 +24,7 @@ from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from tests.commands.cli.builtin.git.conftest import MOUNT, conflict_index
-
-
-async def run(ws, line: str) -> tuple[int, bytes, bytes]:
-    """Run one git line against the mounted repository.
-
-    Args:
-        ws (Workspace): workspace with the repository and CLI.
-        line (str): the command line, without the leading directory.
-    """
-    result = await ws.shell(f"git -C /repo {line}")
-    return result.exit_code, result.stdout or b"", result.stderr or b""
+from tests.commands.cli.builtin.git.conftest import run as run
 
 
 def test_dry_run_implies_verbose():

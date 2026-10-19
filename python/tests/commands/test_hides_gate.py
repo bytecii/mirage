@@ -15,11 +15,9 @@
 import dataclasses
 import importlib
 import inspect
-import pkgutil
 
-import mirage.commands.builtin as builtin
 from mirage.commands.builtin.generic_bind.files import CommandFiles
-from mirage.commands.config import Command
+from tests.fixtures.mount_commands import registered_commands as _registered
 
 # A native fast path answers from the raw backend tree, so every place
 # one is wired must fork to the guarded walk when a hide, a path rule or
@@ -29,32 +27,6 @@ from mirage.commands.config import Command
 # a native core is wired, so the next backend that ships one cannot
 # silently list what a session hides.
 GATE = "paths_scoped"
-
-
-def _registered() -> tuple[list[Command], list[str]]:
-    """Every registered builtin command, plus modules that would not
-    import, mirrored from test_links_optin for the same reason: a
-    module that will not import registers nothing, so a wrapper missing
-    its gate would pass by being absent rather than by being correct.
-    """
-    found: list[Command] = []
-    failed: list[str] = []
-    seen: set[int] = set()
-    for info in pkgutil.walk_packages(
-        builtin.__path__, builtin.__name__ + "."
-    ):
-        try:
-            module = importlib.import_module(info.name)
-        except ImportError as exc:
-            failed.append(f"{info.name}: {exc}")
-            continue
-        for value in vars(module).values():
-            cmds = getattr(value, "_registered_commands", None)
-            if cmds is None or id(value) in seen:
-                continue
-            seen.add(id(value))
-            found.extend(cmds)
-    return found, failed
 
 
 def test_the_chokepoints_read_the_gate():
@@ -81,6 +53,7 @@ def test_no_backend_registers_its_own_grep_or_rg():
     the session cannot see."""
     commands, failed = _registered()
     assert not failed, f"builtin modules would not import: {failed}"
+    assert commands, "no registered builtin commands were found"
     offenders = [
         f"{cmd.vfs}/{cmd.name} ({inspect.getsourcefile(inspect.unwrap(cmd.fn))})"
         for cmd in commands

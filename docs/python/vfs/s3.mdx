@@ -130,6 +130,8 @@ Copy the definition with the behavior you want to change, then register that
 copy on one mount:
 
 ```python
+from dataclasses import replace
+
 from mirage import generic
 
 cat = generic("cat")
@@ -140,7 +142,7 @@ async def logged_cat(accessor, paths, texts, opts):
     return await cat.fn(accessor, paths, texts, opts)
 
 
-ws.mount("/s3/").register(cat.with_overrides(fn=logged_cat))
+ws.mount("/s3/").register(replace(cat, fn=logged_cat))
 ```
 
 The builtin definition and other mounts stay unchanged. Registration is a host

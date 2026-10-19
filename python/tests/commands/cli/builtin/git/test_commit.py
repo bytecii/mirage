@@ -24,6 +24,7 @@ from mirage.types import HiddenVars, Visibility
 from mirage.view.types import SessionView
 from mirage.workspace.session import SessionState
 from mirage.workspace.session.state import seed_var, session_view
+from tests.commands.cli.builtin.git.conftest import run as run
 
 SUMMARY = re.compile(rb"^\[main [0-9a-f]{7,}\] (.+)$", re.M)
 
@@ -38,17 +39,6 @@ def env_view(env: dict[str, str]) -> SessionView:
     for name, value in env.items():
         seed_var(session, name, value)
     return session_view(session)
-
-
-async def run(ws, line: str) -> tuple[int, bytes, bytes]:
-    """Run one git line against the mounted repository.
-
-    Args:
-        ws (Workspace): workspace with the repository and CLI.
-        line (str): the command line, without the leading directory.
-    """
-    result = await ws.shell(f"git -C /repo {line}")
-    return result.exit_code, result.stdout or b"", result.stderr or b""
 
 
 def head_commit(repo_path: Path):

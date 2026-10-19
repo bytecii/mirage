@@ -19,9 +19,16 @@ from typing import Any
 from mirage.accessor.base import Accessor
 from mirage.context import Caller
 from mirage.io import IOResult
-from mirage.types import PathSpec
+from mirage.types import (
+    LINK_TARGET_KEY,
+    FileStat,
+    FileType,
+    MountMode,
+    PathSpec,
+)
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.ram import RAMVFS
+from mirage.view.types import LinkView, MountView
 from mirage.workspace import Workspace
 from mirage.workspace.mount import MountEntry
 
@@ -224,3 +231,110 @@ class BatchedRAM(RAMVFS):
             path.virtual: self._store.files["/" + path.vfs_path.strip("/")]
             for path in paths
         }
+
+
+async def _missing_target_stat(path: str) -> None:
+    return None
+
+
+def link_view(entries: dict[str, str]) -> LinkView:
+    """A link view over a fixed set of targets.
+
+    Args:
+        entries (dict[str, str]): virtual link paths and their targets.
+    """
+
+    def stat_of(path):
+        target = entries[path]
+        return FileStat(
+            name=path,
+            type=FileType.SYMLINK,
+            size=len(target),
+            extra={LINK_TARGET_KEY: target},
+        )
+
+    async def exists(path):
+        return path in entries
+
+    return LinkView(
+        stat_at=lambda p: stat_of(p) if p in entries else None,
+        subtree=lambda p: [
+            (k, stat_of(k))
+            for k in sorted(entries)
+            if k.startswith(p.rstrip("/") + "/")
+        ],
+        resolve=lambda p: entries.get(p, p),
+        exists=exists,
+        target_stat=_missing_target_stat,
+    )
+
+
+def mount_view(
+    descendants: tuple[str, ...] = (), roots: tuple[str, ...] = ()
+) -> MountView:
+    """A mount view over fixed roots and descendants.
+
+    Args:
+        descendants (tuple[str, ...]): nested mount prefixes.
+        roots (tuple[str, ...]): visible mount roots.
+    """
+
+    def root_of(path):
+        for root in sorted(roots, key=len, reverse=True):
+            if path == root or path.startswith(root.rstrip("/") + "/"):
+                return root
+        return "/"
+
+    return MountView(
+        descendants=lambda p: [
+            d for d in descendants if d.startswith(p.rstrip("/") + "/")
+        ],
+        visible_descendants=lambda p: [
+            d for d in descendants if d.startswith(p.rstrip("/") + "/")
+        ],
+        is_root=lambda p: p.rstrip("/") in {r.rstrip("/") for r in roots},
+        root_of=root_of,
+    )
+
+
+class OverlayRAM(RAMVFS):
+    """RAM VFS with native setattr stripped, standing in for an API
+    backend whose chmod/chown/touch live only in the namespace overlay."""
+
+    setattr = BaseVFS.setattr
+
+
+def metadata_workspace(mode: MountMode = MountMode.WRITE) -> Workspace:
+    """A RAM workspace with /data/f.txt for metadata command tests.
+
+    Args:
+        mode (MountMode): access mode of the data mount.
+    """
+    vfs = RAMVFS()
+    vfs._store.files["/f.txt"] = b"hello"
+    return Workspace({"/data/": (vfs, mode)}, mode=MountMode.WRITE)
+
+
+async def run_text(ws: Workspace, cmd: str) -> tuple[int, str, str]:
+    """Run a shell line and collect its status, stdout, and stderr.
+
+    Args:
+        ws (Workspace): workspace under test.
+        cmd (str): shell line to run.
+    """
+    r = await ws.shell(cmd)
+    return r.exit_code, await r.stdout_str(), await r.stderr_str()
+
+
+def overlay_workspace(
+    files: dict[str, bytes],
+) -> tuple[Workspace, OverlayRAM]:
+    """A RAM workspace whose metadata lives in the namespace overlay.
+
+    Args:
+        files (dict[str, bytes]): initial files keyed by mount-relative path.
+    """
+    vfs = OverlayRAM()
+    vfs._store.files.update(files)
+    ws = Workspace({"/data/": (vfs, MountMode.WRITE)}, mode=MountMode.WRITE)
+    return ws, vfs
