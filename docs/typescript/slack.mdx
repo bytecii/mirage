@@ -195,7 +195,9 @@ bot's username, an unfurled link) is not searched.
   <Accordion title="`rate_limited` from Slack">
     `SlackVFS` uses an `IndexCacheStore` (default TTL 600s) to deduplicate channel / user / date listings, but high-volume reads of `.jsonl` files can still hit Slack's per-method rate limits. Cache hits avoid the API entirely; raise the index `ttl` (`index: { ttl }`) together with the mount's `ttl` if your workspace changes slowly.
 
-    Slack applies different `conversations.history` limits by app distribution. Internal customer-built and Marketplace apps retain Tier 3 (50+ requests per minute, with up to 1,000 objects per request). Affected new installations of commercially distributed apps outside the Marketplace are limited to one request per minute and 15 objects; existing installations are exempt from those newer posted limits. Check the current [`conversations.history` method limits](https://docs.slack.dev/reference/methods/conversations.history/) for the app you installed.
+    History limits depend on app distribution. Check Slack's current
+    [`conversations.history` method limits](https://docs.slack.dev/reference/methods/conversations.history/)
+    for your installation.
   </Accordion>
 </AccordionGroup>
 

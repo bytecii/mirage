@@ -151,14 +151,9 @@ streaming reads) and `tail -f` (live change-stream follows).
 
 `cat`, `grep`, `head`, and `tail -f` consume documents lazily through a
 batched PyMongo async cursor (or change stream); the consumer cancels to stop
-fetching. Direct terminal output is a separate limit: `cat`, `grep`, `rg`,
-`head`, and `tail` stop at 2,000 lines by default and write a truncation notice
-to stderr. The limit does not cap an intermediate pipeline stage or a redirect,
-so `cat ... | wc -l` processes the complete collection and `cat ... > file`
-writes the complete stream. Narrow the selection or change
-[`command_limits`](/python/quickstart#output-limits) when direct output needs a
-different bound. Inspect the result's stderr and exit status before treating
-direct output as complete.
+fetching. Direct output is capped at 2,000 lines by default, with a truncation
+notice on stderr. Pipes and redirects bypass this output cap. See
+[command output limits](/home/core/output-limits) to change the bound.
 
 | Command                      | Behavior                                                          |
 | ---------------------------- | ----------------------------------------------------------------- |

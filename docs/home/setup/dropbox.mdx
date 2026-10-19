@@ -160,12 +160,6 @@ access token whenever the cached one is within 5 minutes of expiry.
 | `sharing.read`           | List shared links and shared folders |
 | `account_info.read`      | Account email, country, user info    |
 
-Use `files.metadata.read` + `files.content.read` with a `READ` mount. A
-`WRITE` mount supports uploads, overwrites, directory creation, deletion,
-rename and copy; enable `files.content.write` before issuing those commands.
-The OAuth scopes authorize Dropbox, while the Mirage mount mode decides which
-operations a workspace may run.
-
 ## Troubleshooting
 
 | Issue                                                | Fix                                                                                            |
