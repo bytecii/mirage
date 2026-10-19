@@ -13,7 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { expect, it, vi } from 'vitest'
-import { Cmd } from '../types.ts'
+import { IOResult } from '../../../../../io/types.ts'
+import { PathSpec } from '../../../../../types.ts'
+import { Cmd, type RunSingle } from '../types.ts'
 import { runRelay } from './relay.ts'
 
 it('rejects the wrong relay strategy before dispatch', async () => {
@@ -24,4 +26,13 @@ it('rejects the wrong relay strategy before dispatch', async () => {
   )
   expect(dispatch).not.toHaveBeenCalled()
   expect(runSingle).not.toHaveBeenCalled()
+})
+
+it.each(['awk', 'bc'])("resolves one %s run on its first file's mount alone", async (cmd) => {
+  // Resolving on every operand would check /b/two against /a/'s backend.
+  const runSingle = vi.fn<RunSingle>().mockResolvedValue([null, new IOResult()])
+  const scopes = [PathSpec.fromStrPath('/a/one'), PathSpec.fromStrPath('/b/two')]
+  await runRelay(cmd, scopes, [], {}, vi.fn(), runSingle)
+  expect(runSingle).toHaveBeenCalledTimes(1)
+  expect(runSingle.mock.calls[0]?.[4]?.resolveHint).toBe(scopes[0])
 })

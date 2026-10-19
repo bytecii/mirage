@@ -590,7 +590,8 @@ function globHead(spec: PathSpec, access?: SessionAccess): string {
  * the glob's fixed head holds a child mount, the word is expanded here
  * instead, before routing, so the matches route per mount exactly as the
  * same paths typed by hand already do. Every other glob is left
- * untouched, so pushdown is unaffected.
+ * untouched, so pushdown is unaffected, and so is a word the shell already
+ * resolved: a glob that matched nothing stays as typed.
  */
 export async function expandBoundaryGlobs(
   parts: readonly (string | PathSpec)[],
@@ -603,6 +604,7 @@ export async function expandBoundaryGlobs(
   const spans = (p: string | PathSpec): boolean =>
     p instanceof PathSpec &&
     p.pattern !== null &&
+    !p.resolved &&
     childMountNames(vis, prefixes, globHead(p, access)).length > 0
   if (!parts.some(spans)) return [...parts]
   const out: (string | PathSpec)[] = []

@@ -17,7 +17,8 @@ import { describe, expect, it } from 'vitest'
 import { NOOPAccessor } from '../../../../accessor/base.ts'
 import { closeQuietly, ensureStream } from '../../../../io/stream.ts'
 import { materialize, type ByteSource } from '../../../../io/types.ts'
-import { PathSpec } from '../../../../types.ts'
+import { answeringFiles } from '../../../../test-utils.ts'
+import { FileStat, FileType, PathSpec } from '../../../../types.ts'
 import type { Context } from '../../../config.ts'
 import { bc } from './command.ts'
 
@@ -43,6 +44,35 @@ function cursor(output: AsyncIterable<Uint8Array>) {
 }
 
 describe('bc stream lifecycle', () => {
+  it('leaves the files after a quit unread', async () => {
+    // GNU bc opens a file once the ones before it have run.
+    const touched: [string, string][] = []
+    const vfs = answeringFiles({
+      stat: (path) => {
+        touched.push(['stat', path.virtual])
+        return new FileStat({ name: 'q.bc', type: FileType.FILE })
+      },
+      read: (path) => {
+        touched.push(['read', path.virtual])
+        return encoder.encode('7\nquit\n')
+      },
+    })
+    const result = await bc(
+      new NOOPAccessor(),
+      [PathSpec.fromStrPath('/q.bc'), PathSpec.fromStrPath('/later.bc')],
+      [],
+      { stdin: encoder.encode('8\n'), flags: {}, cwd: PathSpec.fromStrPath('/'), vfs },
+    )
+    if (result === null) throw new Error('bc did not return a result')
+    const [output, io] = result
+    expect(decoder.decode(await materialize(output))).toBe('7\n')
+    expect(touched).toEqual([
+      ['stat', '/q.bc'],
+      ['read', '/q.bc'],
+    ])
+    expect(io.exitCode).toBe(0)
+  })
+
   for (const size of [1, 7, 16384]) {
     it(`preserves UTF-8 and state with ${String(size)}-byte chunks`, async () => {
       const program = encoder.encode('x=5/* comment */;print "中",x,"\\n"\nx+=2\nx\n')

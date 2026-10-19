@@ -17,15 +17,18 @@ from contextlib import aclosing
 from functools import partial
 
 from mirage.accessor.base import Accessor
+from mirage.commands.builtin.generic_bind.files import command_files
 from mirage.commands.config import Context, command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.errors.constants import FS_ERRORS
 from mirage.io.cooperative import chunks
 from mirage.io.stream import OutputStream, close_quietly
 from mirage.io.types import ByteSource, IOResult
 from mirage.io.yield_budget import YieldBudget
 from mirage.rs.stream import OpenStream, open_stream
-from mirage.types import JsonValue, PathSpec
+from mirage.shell.bytes import encode_text
+from mirage.types import FileType, JsonValue, PathSpec
 
 
 class Diagnostics(AsyncIterator[bytes]):
@@ -83,6 +86,47 @@ async def drained(
         output = stream.drain()
 
 
+async def read_file(path: PathSpec, ctx: Context) -> tuple[bytes, str | None]:
+    """One operand bc runs ahead of standard input, or what it says when it
+    cannot read it.
+
+    Args:
+        path (PathSpec): the file operand.
+        ctx (Context): the invocation, whose files hold it.
+
+    Returns:
+        tuple[bytes, str | None]: the file's bytes, and the diagnostic that
+        stops bc if it could not read them.
+    """
+    unreadable = f"{path.raw_path} 1: read() in flex scanner failed\n"
+    try:
+        if ctx.vfs is None:
+            raise FileNotFoundError(path.raw_path)
+        # bc opens a directory and fails reading it; asked first, since a
+        # store may answer a directory's read as missing, or with bytes.
+        if (await ctx.vfs.stat(path)).type == FileType.DIRECTORY:
+            return b"", unreadable
+        return await ctx.vfs.read(path), None
+    except IsADirectoryError:
+        return b"", unreadable
+    except FS_ERRORS:
+        return b"", f"File {path.raw_path} is unavailable.\n"
+
+
+async def expanded(paths: list[PathSpec], ctx: Context) -> list[PathSpec]:
+    """bc's file operands with their globs expanded, as the shell would
+    have; a word that matches nothing stays as typed, and bc cannot open
+    it.
+
+    Args:
+        paths (list[PathSpec]): the file operands.
+        ctx (Context): the invocation, whose files hold them.
+    """
+    if ctx.vfs is None or all(path.resolved for path in paths):
+        return paths
+    return await command_files(ctx, paths).resolve_glob(paths)
+
+
 @command("bc", vfs=None, spec=SPECS["bc"])
 async def bc(
     accessor: Accessor,
@@ -100,10 +144,20 @@ async def bc(
     errors: list[bytes] = []
 
     async def output() -> AsyncGenerator[bytes, None]:
+        # GNU bc runs the files in order, then standard input, as one
+        # program. It opens a file once the ones before it have run, so quit
+        # or halt leaves the rest unread, and a file it cannot read ends the
+        # run there, exit 1.
+        operands = await expanded(paths, ctx)
+        # A name is bytes, which travel one character each.
+        config["files"] = [
+            encode_text(path.raw_path).decode("latin-1") for path in operands
+        ]
         stream = open_stream("bc", config)
         budget = YieldBudget()
-        try:
-            async with aclosing(chunks(source)) as bounded:
+
+        async def fed(piece: ByteSource) -> AsyncGenerator[bytes, None]:
+            async with aclosing(chunks(piece)) as bounded:
                 async for chunk in bounded:
                     await budget.run()
                     async with aclosing(
@@ -112,7 +166,37 @@ async def bc(
                         async for part in produced:
                             yield part
                     if stream.done():
-                        break
+                        return
+
+        refusal: str | None = None
+        try:
+            for index, path in enumerate(operands):
+                if stream.done():
+                    break
+                data, refusal = await read_file(path, ctx)
+                if refusal is not None:
+                    break
+                async with aclosing(fed(data)) as produced:
+                    async for part in produced:
+                        yield part
+                async with aclosing(
+                    drained(
+                        stream, stream.end_input(index), io, budget, errors
+                    )
+                ) as produced:
+                    async for part in produced:
+                        yield part
+            if refusal is not None:
+                # bc stops at the file it cannot open: a statement or
+                # comment the files before it left open never runs.
+                errors.append(encode_text(refusal))
+                io.stderr = Diagnostics(errors, len(errors))
+                io.exit_code = 1
+                return
+            if not stream.done():
+                async with aclosing(fed(source)) as produced:
+                    async for part in produced:
+                        yield part
             async with aclosing(
                 drained(stream, stream.finish(), io, budget, errors)
             ) as produced:

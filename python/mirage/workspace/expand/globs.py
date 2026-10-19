@@ -742,7 +742,8 @@ async def expand_boundary_globs(
     the glob's fixed head holds a child mount, the word is expanded here
     instead, before routing, so the matches route per mount exactly as
     the same paths typed by hand already do. Every other glob is left
-    untouched, so pushdown is unaffected.
+    untouched, so pushdown is unaffected, and so is a word the shell
+    already resolved: a glob that matched nothing stays as typed.
 
     Args:
         parts (list[str | PathSpec]): the command's words after the name.
@@ -754,6 +755,7 @@ async def expand_boundary_globs(
     if not any(
         isinstance(p, PathSpec)
         and p.pattern
+        and not p.resolved
         and child_mount_names(vis, prefixes, _glob_head(p))
         for p in parts
     ):
@@ -763,6 +765,7 @@ async def expand_boundary_globs(
         if (
             isinstance(item, PathSpec)
             and item.pattern
+            and not item.resolved
             and child_mount_names(vis, prefixes, _glob_head(item))
         ):
             out.extend(await resolve_globs([item], registry, links=links))

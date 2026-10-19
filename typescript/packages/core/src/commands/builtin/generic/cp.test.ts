@@ -46,8 +46,14 @@ import { specOf } from '../../spec/builtins.ts'
 import { SPECS, parseCommand } from '../../spec/index.ts'
 import { parseToKwargs } from '../../spec/parser.ts'
 import { MountMode } from '../../../types.ts'
+import type { RAMAccessor } from '../../../accessor/ram.ts'
+import { BaseVFS } from '../../../vfs/base.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
-import { getTestParser } from '../../../../tests/workspace/fixtures/workspace_fixture.ts'
+import {
+  getTestParser,
+  stderrStr,
+  stdoutStr,
+} from '../../../../tests/workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
 
 const DEC = new TextDecoder()
@@ -982,6 +988,56 @@ it('cp -rL omits hidden links', async () => {
     expect(DEC.decode(copied.stdout)).toBe('a\npublic\nvisible\n')
     expect(ws.namespace.isLink('/other/copy/secret')).toBe(false)
     expect(ws.namespace.isLink('/other/copy/sec/link')).toBe(false)
+  } finally {
+    await ws.close()
+  }
+})
+
+/** A mount that copies on the backend and has no write: RAM's calls minus write. */
+class CopyOnly extends BaseVFS<RAMAccessor> {
+  readonly ram: RAMVFS
+
+  static {
+    for (const name of 'read readdir stat mkdir copy unlink rmdir'.split(' ')) {
+      Object.defineProperty(this.prototype, name, {
+        value(this: CopyOnly, ...args: unknown[]) {
+          const forward = (this.ram as unknown as Record<string, (...a: unknown[]) => unknown>)[
+            name
+          ]
+          return forward?.apply(this.ram, args)
+        },
+      })
+    }
+  }
+
+  constructor(ram: RAMVFS) {
+    super({ name: 'copyonly', accessor: ram.accessor })
+    this.ram = ram
+  }
+}
+
+it('copies through a mount without write while a hide sits in the target directory', async () => {
+  const ram = new RAMVFS()
+  const seed = new Workspace(
+    { '/t/': ram },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  await seed.shell('mkdir -p /t/dir && echo s > /t/dir/secret && echo x > /t/x')
+  await seed.close()
+  const ws = new Workspace(
+    { '/t/': new CopyOnly(ram) },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  try {
+    ws.createSession('hidden', { profile: { paths: { hide: ['/t/dir/secret'] } } })
+    // The dispatcher judges the copy itself, so cp need not refuse it ahead.
+    const into = await ws.shell('cp /t/x /t/dir/ && cat /t/dir/x', { sessionId: 'hidden' })
+    expect([into.exitCode, stdoutStr(into), stderrStr(into)]).toEqual([0, 'x\n', ''])
+    const onto = await ws.shell('cp /t/x /t/dir/secret', { sessionId: 'hidden' })
+    expect([onto.exitCode, stderrStr(onto)]).toEqual([
+      1,
+      "cp: cannot create regular file '/t/dir/secret': Permission denied\n",
+    ])
   } finally {
     await ws.close()
   }

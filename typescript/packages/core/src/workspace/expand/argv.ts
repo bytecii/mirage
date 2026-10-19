@@ -22,6 +22,7 @@ import { PathSpec, wordText } from '../../types.ts'
 import { hasGlob, literalWord, markGlobs, unmarkGlobs } from '../../utils/glob_walk.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import { INTERPRETER_NAMES } from '../lookup/constants.ts'
+import { commandTree } from '../executor/command/routing.ts'
 import { envSnapshot } from '../session/state.ts'
 import {
   Consumer,
@@ -153,7 +154,10 @@ export async function expandArgv(
   // `data/in.csv` and a `/tmp/q.txt` beside a script on /workspace names
   // no second mount.
   const inProcess = consumer === Consumer.SESSION && INTERPRETER_NAMES.has(name)
-  const program = native || inProcess
+  // And so does a command tree a mount serves, as the same tree installed
+  // as a CLI does: no backend takes its patterns.
+  const tree = consumer === Consumer.MOUNT && commandTree(registry, name, session.cwd) !== null
+  const program = native || inProcess || tree
   let spec: CommandSpec | null = null
   let wordKinds: (ValueType | null)[] | null = null
   let wordBases: (string | null)[] | null = null
@@ -199,6 +203,15 @@ export async function expandArgv(
         hasGlob(word, globOpts.access) ? 'path' : (own[i] ?? null),
       ),
     ]
+    // The shell searches the working directory: an option that bases the
+    // program's operands (`-C dir`) bases what matched, which programWords
+    // reads under it, never where the glob looks.
+    if (wordBases !== null) {
+      const words = lineWords.slice(1)
+      wordBases = wordBases.map((base, i) =>
+        hasGlob(words[i] ?? '', globOpts.access) ? null : base,
+      )
+    }
   }
 
   const classified = classifyParts(
@@ -221,6 +234,7 @@ export async function expandArgv(
   let words =
     !refused &&
     (policy === WordPolicy.SHELL ||
+      tree ||
       globNeedsShell(globOpts) ||
       scopesPaths(session.commands, name) ||
       classified.some((w) => w instanceof PathSpec && w.pattern !== null && w.dotted !== null))
@@ -232,7 +246,7 @@ export async function expandArgv(
           item instanceof PathSpec && item.pattern !== null ? item : literalWord(item),
         )
   if (program && spec !== null) {
-    words = programWords(words, spec, name, consumed, registry, session.cwd)
+    words = programWords(words, spec, name, consumed, registry, session.cwd, envSnapshot(session))
   }
   // The text view renders words as typed (rawPath): bash hands
   // programs their words unchanged, so `echo sub/file.txt` prints the
@@ -268,13 +282,14 @@ function programWords(
   consumed: number,
   registry: MountRegistry,
   cwd: string,
+  env: Readonly<Record<string, string>>,
 ): (string | PathSpec)[] {
   const literal = words.map((w) => markGlobs(wordText(w)))
   const kinds: (ValueType | null)[] = [
     ...new Array<ValueType | null>(consumed - 1).fill('str'),
-    ...specWordKinds(spec, literal.slice(consumed), name),
+    ...specWordKinds(spec, literal.slice(consumed), name, env),
   ]
-  const bases = specWordBases(spec, literal.slice(consumed), cwd, name)
+  const bases = specWordBases(spec, literal.slice(consumed), cwd, name, env)
   const reread = classifyParts(
     literal,
     registry,
@@ -289,10 +304,33 @@ function programWords(
     if (!(word instanceof PathSpec && word.pattern !== null)) {
       out.push(literalWord(reread[i] ?? ''))
     } else if (kind === null || kind === 'path') {
-      out.push(word)
+      out.push(based(word, reread[i] ?? ''))
     } else {
       out.push(literalWord(wordText(word)))
     }
   }
   return out
+}
+
+/**
+ * A glob word that matched nothing, under the program's own base.
+ *
+ * The shell searched the working directory and left the word as typed, so
+ * the program reads it where it reads a match: under `-C dir` when the spec
+ * bases its operands. It stays a pattern, which a push-down reads as no
+ * entity name.
+ */
+function based(word: PathSpec, fresh: string | PathSpec): PathSpec {
+  const spec = literalWord(fresh)
+  if (!(spec instanceof PathSpec) || spec.virtual === word.virtual) return word
+  return new PathSpec({
+    virtual: spec.virtual,
+    directory: spec.directory,
+    vfsPath: spec.vfsPath,
+    rawPath: spec.rawPath,
+    dotted: spec.dotted,
+    walkError: spec.walkError,
+    pattern: word.pattern,
+    resolved: word.resolved,
+  })
 }

@@ -24,6 +24,12 @@ import { rekey } from './key_prefix.ts'
 import { rstripSlash } from './slash.ts'
 import { compareCodePoints } from './sort.ts'
 
+/**
+ * Opt in by assigning a debug sink, as Python's module logger is off until
+ * configured: a glob that lists nothing is routine, and stdout may carry data.
+ */
+export const logger: { debug?: (message: string) => void } = {}
+
 export const GLOB_CHARS = ['*', '?', '[']
 
 /**
@@ -333,9 +339,11 @@ export function spellMatch(
   return [...head.map(unmarkGlobs), ...tail].join('/')
 }
 
-function isMissingDir(err: unknown): boolean {
+// bash skips a directory it cannot open, so a pattern under one matches
+// nothing there and the word stays as typed.
+function isUnlistableDir(err: unknown): boolean {
   const code = (err as { code?: string }).code
-  return code === 'ENOENT' || code === 'ENOTDIR'
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES'
 }
 
 // Shared resolve_glob loop: resolved specs pass through, pattern specs
@@ -551,7 +559,8 @@ export async function expandPattern<A, I>(
         try {
           entries = await readdir(accessor, spec, index)
         } catch (err) {
-          if (!isMissingDir(err)) throw err
+          if (!isUnlistableDir(err)) throw err
+          logger.debug?.(`glob: ${parent} lists nothing: ${String(err)}`)
           entries = []
         }
         // A cold listing marks a folder with a trailing slash (box, gdrive,

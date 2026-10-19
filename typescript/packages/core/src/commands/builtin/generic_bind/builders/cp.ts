@@ -98,10 +98,9 @@ export const BUILDER: GenericCommand = {
             readdir: files.readdir,
           }
         : {
-            copy:
-              copies || !files.answers('copy')
-                ? files.copy
-                : (_src: PathSpec, target: PathSpec) => refused('copy')(target),
+            // One file's copy goes to the dispatcher whatever the view
+            // restricts: it judges both ends of the copy itself.
+            copy: files.copy,
             find: findFn,
             ...(!scoped && files.answers('dir_copy') ? { dirCopy: files.dirCopy } : {}),
             ...(mkdir === undefined ? {} : { mkdir: (p: PathSpec) => mkdir(p) }),

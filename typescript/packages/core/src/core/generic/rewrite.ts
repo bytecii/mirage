@@ -15,7 +15,7 @@
 import { readVersioned, runWithOwnVersion } from '../../cache/context.ts'
 import { OwnRead } from '../../cache/types.ts'
 import { eexist, einval, eisdir, enotsup, isEnotdir, isMissingPath } from '../../errors/fs.ts'
-import { FileType, type FileStat, type PathSpec } from '../../types.ts'
+import { FileType, type FileStat, type PathSpec, type StatFn } from '../../types.ts'
 import { spliceWindow } from '../../utils/ranges.ts'
 import { chunks } from '../../io/cooperative.ts'
 import { ByteSpool } from '../../io/spool.ts'
@@ -23,7 +23,6 @@ import type { ByteSource } from '../../io/types.ts'
 
 export type ReadFn = (path: PathSpec) => Promise<Uint8Array>
 export type WriteFn<Written = unknown> = (path: PathSpec, data: Uint8Array) => Promise<Written>
-export type StatFn = (path: PathSpec) => Promise<FileStat>
 
 /**
  * Append by reading the file and writing it back whole.

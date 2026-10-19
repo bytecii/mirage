@@ -515,6 +515,25 @@ def typed_spec(virtual: str, raw: str) -> PathSpec:
     return dataclasses.replace(glob_spec(virtual, ""), raw_path=raw)
 
 
+@pytest.mark.asyncio
+async def test_a_directory_that_refuses_its_listing_leaves_the_word():
+    # bash skips a directory it cannot open: the word stays as typed.
+    async def refusing(path):
+        if path.virtual.rstrip("/") == "/alpha":
+            raise PermissionError(path.virtual)
+        return await fake_readdir(path)
+
+    words = [
+        typed_spec("/alpha/*", "/alpha/*"),
+        typed_spec("/al*/*", "/al*/*"),
+    ]
+    out = await resolve_glob_with(refusing, words)
+    assert [(m.virtual, m.raw_path, m.pattern) for m in out] == [
+        ("/alpha/*", "/alpha/*", None),
+        ("/al*/*", "/al*/*", None),
+    ]
+
+
 # The command tier's own resolver honours a trailing slash the way the
 # shell tier does (#1065): directories only, and one slash kept.
 

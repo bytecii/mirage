@@ -128,6 +128,7 @@ const ROWS: Record<string, string> = {
   ),
   awk: "awk '{print $1}' /t/a.txt",
   basename: 'basename /t/dir/c.txt',
+  bc: 'bc /t/nums.txt',
   cat: 'cat /t/a.txt /t/link.txt',
   cmp: 'cmp /t/a.txt /t/a.txt',
   column: 'column -t -s, /t/left.csv',
@@ -160,7 +161,7 @@ const ROWS: Record<string, string> = {
   readlink: 'readlink /t/link.txt',
   realpath: 'realpath /t/link.txt',
   rg: 'rg -n beta /t',
-  rm: 'rm /t/b.txt /t/dir/c.txt',
+  rm: 'rm -r /t/b.txt /t/dir',
   rmdir: 'rmdir /t/empty',
   sed: 'sed -i s/beta/BETA/ /t/a.txt',
   shuf: 'shuf -o /t/shuffled.txt /t/a.txt',
@@ -187,7 +188,7 @@ const ROWS: Record<string, string> = {
 const ABOVE = new Set(['basename', 'dirname', 'readlink', 'realpath', 'stat'])
 const SKIP: Record<string, string> = {
   'reaches the network': 'curl wget',
-  'reads no file': 'bc date expr getconf hostname id seq uname',
+  'reads no file': 'date expr getconf hostname id seq uname',
   'the same command as js': 'node',
   'the same command as python3': 'python',
 }
@@ -312,30 +313,43 @@ describe('a replacement hands the rest to the default', () => {
   })
 })
 
-async function outcome(vfs: BaseVFS, line: string): Promise<[number, string, string]> {
+// Lines whose output names a time or a random name, compared without it.
+const STEADY: Record<string, string> = {
+  ls: 'ls -aR /t',
+  mktemp: 'mktemp -p /t > /dev/null && ls /t | wc -l && rm /t/tmp.*',
+  shuf:
+    'shuf -o /t/shuffled.txt /t/a.txt' +
+    ' && sort -o /t/shuffled.txt /t/shuffled.txt && cat /t/shuffled.txt',
+  stat: "stat -c '%n %s %F' /t/a.txt /t/dir",
+}
+// What a line leaves behind: every entry by name and size, and every file's
+// bytes but an archive's, which carry times.
+const STATE =
+  "find /t -printf '%p %y %s\\n' | sort" +
+  " && find /t -type f ! -name '*.gz' ! -name '*.tar' ! -name '*.zip'" +
+  ' | sort | xargs md5sum'
+
+async function outcome(
+  vfs: BaseVFS,
+  line: string,
+): Promise<[[number, string, string], [number, string, string]]> {
   const ws = new Workspace(
     { '/t/': vfs },
     { mode: MountMode.WRITE, shellParser: await getTestParser() },
   )
   try {
     expect((await ws.shell(SEED)).exitCode).toBe(0)
-    return await run(ws, line)
+    return [await run(ws, line), await run(ws, STATE)]
   } finally {
     await ws.close()
   }
 }
 
 describe('a plug-in VFS answers as RAM does', () => {
-  const conforms = async (line: string): Promise<void> => {
+  it.each(Object.keys(ROWS))('%s', async (name) => {
+    const line = STEADY[name] ?? ROWS[name] ?? ''
     expect(await outcome(new Toy(), line)).toEqual(await outcome(new RAMVFS(), line))
-  }
-  it.each([
-    'tar -cf /t/x.tar -C /t dir a.txt && tar -tf /t/x.tar && mkdir /t/out' +
-      ' && tar -xf /t/x.tar -C /t/out && find /t/out',
-    'touch /t/a.txt /t/fresh.txt && ls /t && wc -c /t/fresh.txt',
-  ])('%s', conforms)
-  // rm -r needs rmR: builders/rm.ts falls back to unlink and rmdir only when the dispatcher declines.
-  it.fails('rm -r /t/dir && ls /t', () => conforms('rm -r /t/dir && ls /t'))
+  })
 })
 
 const SEEN: [string, Context][] = []

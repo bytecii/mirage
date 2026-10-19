@@ -1579,6 +1579,26 @@ async def test_a_mounts_tree_named_like_ls_keeps_its_words():
 
 
 @pytest.mark.asyncio
+async def test_a_trees_unmatched_glob_is_not_expanded_again_below_its_base():
+    # The shell found no q*.md in /n and left the word as typed; -C bases
+    # it, and the child mount below /n/b must not expand it a second time.
+    ws = Workspace(
+        {"/n/": RAMVFS(), "/n/b/sub/": RAMVFS()}, mode=MountMode.WRITE
+    )
+    try:
+        ws.mount("/n/").register_commands([NOTES])
+        await ws.shell("mkdir -p /n/b && echo Q > /n/b/q1.md")
+        io = await ws.shell("cd /n && notes show -C /n/b q*.md")
+        assert (io.exit_code, io.stdout, io.stderr) == (
+            1,
+            b"",
+            b"notes show: /n/b/q*.md: No such file or directory\n",
+        )
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_a_mounts_tree_runs_like_an_installed_cli_on_its_mount():
     vfs = RAMVFS()
     vfs.caches_reads = True
@@ -1604,9 +1624,23 @@ async def test_a_mounts_tree_runs_like_an_installed_cli_on_its_mount():
         await ws.shell("mkdir a b && echo A > a/f && echo B > b/f")
         two = await ws.shell("notes show -C /n/a f -C /n/b f")
         assert two.stdout == b"f: A\nf: B\n"
+        # A glob resolves before the walk, as an installed CLI's does.
+        globbed = await ws.shell("notes show /n/*/f")
+        assert globbed.stdout == b"/n/a/f: A\n/n/b/f: B\n"
+        # So does one in a text slot; a quoted one stays as typed.
+        await ws.shell("touch x.tag y.tag && notes add b/f *.tag '*.tag'")
+        assert vfs.accessor.store.files["/b/f"] == b"tags: x.tag y.tag *.tag\n"
         # An option's value spelled like the operand stays the option's.
         await ws.shell("echo AA > a/a")
         assert (await ws.shell("notes show -C a a")).stdout == b"a: AA\n"
+        # The glob searches the working directory; -C bases what matched.
+        await ws.shell("echo B-a > b/a.md && echo B-z > b/z.md")
+        based = await ws.shell("notes show -C /n/b [az].md")
+        assert based.stdout == b"a.md: B-a\n"
+        # Matching nothing there, the word stays as typed, read under -C.
+        await ws.shell("echo Q > 'b/q*.md'")
+        unmatched = await ws.shell("notes show -C /n/b q*.md")
+        assert unmatched.stdout == b"q*.md: Q\n"
         # The leaf keys /n/'s accessor, so another mount's file is refused.
         foreign = await ws.shell("notes add /o/a.md work")
         assert (foreign.exit_code, foreign.stderr) == (

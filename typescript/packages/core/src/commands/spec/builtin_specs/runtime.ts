@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 import { CommandSpec, Argument } from '../types.ts'
-import { REMAINDER_OPERAND, TEXTS_OPERAND, TEXT_OPERAND } from '../constants.ts'
+import { PATHS_OPERAND, REMAINDER_OPERAND, TEXTS_OPERAND, TEXT_OPERAND } from '../constants.ts'
 
 // CPython's own option table, minus four switches that describe a
 // process mirage does not have: -i (drop to an interactive prompt), -d
@@ -174,7 +174,7 @@ export const SPECS: Record<string, CommandSpec> = {
     arguments: [
       new Argument('-l', { action: 'store_true', help: 'Load the standard math library.' }),
       new Argument('-q', { action: 'store_true', help: 'Suppress the welcome banner.' }),
-      TEXTS_OPERAND,
+      PATHS_OPERAND,
     ],
   }),
   date: new CommandSpec({

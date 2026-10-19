@@ -502,9 +502,16 @@ async def expand_pattern(
                     vfs_path=rekey(path.virtual, path.vfs_path, parent),
                     pattern=seg if has_glob(seg, access) else None,
                 )
+                # bash skips a directory it cannot open, so a pattern under
+                # one matches nothing there and the word stays as typed.
                 try:
                     entries = await readdir(spec)
-                except (FileNotFoundError, NotADirectoryError):
+                except (
+                    FileNotFoundError,
+                    NotADirectoryError,
+                    PermissionError,
+                ) as exc:
+                    logger.debug("glob: %s lists nothing: %s", parent, exc)
                     entries = []
                 # A cold listing marks a folder with a trailing slash (box,
                 # gdrive, dropbox); the marker is not part of the name.

@@ -117,6 +117,7 @@ ROWS: dict[str, str] = {
     },
     "awk": "awk '{print $1}' /t/a.txt",
     "basename": "basename /t/dir/c.txt",
+    "bc": "bc /t/nums.txt",
     "cat": "cat /t/a.txt /t/link.txt",
     "cmp": "cmp /t/a.txt /t/a.txt",
     "column": "column -t -s, /t/left.csv",
@@ -149,7 +150,7 @@ ROWS: dict[str, str] = {
     "readlink": "readlink /t/link.txt",
     "realpath": "realpath /t/link.txt",
     "rg": "rg -n beta /t",
-    "rm": "rm /t/b.txt /t/dir/c.txt",
+    "rm": "rm -r /t/b.txt /t/dir",
     "rmdir": "rmdir /t/empty",
     "sed": "sed -i s/beta/BETA/ /t/a.txt",
     "shuf": "shuf -o /t/shuffled.txt /t/a.txt",
@@ -176,7 +177,7 @@ ROWS: dict[str, str] = {
 ABOVE = {"basename", "dirname", "readlink", "realpath", "stat"}
 SKIP = {
     "reaches the network": "curl wget",
-    "reads no file": "bc date expr getconf hostname id seq uname",
+    "reads no file": "date expr getconf hostname id seq uname",
     "the same command as python3": "python",
     "a runtime the Python host does not ship": "js node",
 }
@@ -281,33 +282,38 @@ async def test_a_replacement_hands_the_builtin_what_it_does_not_answer():
     assert mine == (0, "toy> beta\n", "")
 
 
-RM_R_GAP = pytest.mark.xfail(
-    strict=True,
-    reason="rm -r needs rm_r: builders/rm.py falls back to unlink and"
-    " rmdir only when the dispatcher declines",
+# Lines whose output names a time or a random name, compared without it.
+STEADY = {
+    "ls": "ls -aR /t",
+    "mktemp": "mktemp -p /t > /dev/null && ls /t | wc -l && rm /t/tmp.*",
+    "shuf": "shuf -o /t/shuffled.txt /t/a.txt"
+    " && sort -o /t/shuffled.txt /t/shuffled.txt && cat /t/shuffled.txt",
+    "stat": "stat -c '%n %s %F' /t/a.txt /t/dir",
+}
+# What a line leaves behind: every entry by name and size, and every file's
+# bytes but an archive's, which carry times.
+STATE = (
+    "find /t -printf '%p %y %s\\n' | sort"
+    " && find /t -type f ! -name '*.gz' ! -name '*.tar' ! -name '*.zip'"
+    " | sort | xargs md5sum"
 )
 
 
-async def _outcome(vfs: BaseVFS, line: str) -> tuple[int, str, str]:
+async def _outcome(
+    vfs: BaseVFS, line: str
+) -> tuple[tuple[int, str, str], tuple[int, str, str]]:
     ws = Workspace({"/t/": vfs}, mode=MountMode.WRITE)
     try:
         assert (await ws.shell(SEED)).exit_code == 0
-        return await _run(ws, line)
+        return await _run(ws, line), await _run(ws, STATE)
     finally:
         await ws.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "line",
-    [
-        "tar -cf /t/x.tar -C /t dir a.txt && tar -tf /t/x.tar && mkdir /t/out"
-        " && tar -xf /t/x.tar -C /t/out && find /t/out",
-        "touch /t/a.txt /t/fresh.txt && ls /t && wc -c /t/fresh.txt",
-        pytest.param("rm -r /t/dir && ls /t", marks=RM_R_GAP),
-    ],
-)
-async def test_a_plug_in_vfs_answers_as_ram_does(line: str):
+@pytest.mark.parametrize("name", ROWS)
+async def test_a_plug_in_vfs_answers_as_ram_does(name: str):
+    line = STEADY.get(name, ROWS[name])
     assert await _outcome(Toy(), line) == await _outcome(RAMVFS(), line)
 
 

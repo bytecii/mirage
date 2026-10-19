@@ -32,23 +32,28 @@ const TREE: Record<string, string[]> = {
 const FILES = new Set(['/m/a.txt', '/m/d/x.txt', '/m/locked/f.txt'])
 
 // A mount that removes nothing unless `removed` is given, whose stat is the
-// dispatcher's: it answers what the session may see.
+// dispatcher's: it answers what the session may see. Its row names the
+// removals it answers, as Python's Answers does.
 function files(removed?: string[]): Files {
   const remove = (p: PathSpec): null => {
     removed?.push(p.virtual)
     return null
   }
-  return answeringFiles({
-    readdir: (p) => TREE[p.virtual] ?? [],
-    stat: (p) => {
-      if (p.virtual.startsWith('/m/locked/')) throw eacces(p.virtual)
-      if (TREE[p.virtual] !== undefined)
-        return new FileStat({ name: p.virtual, type: FileType.DIRECTORY })
-      if (FILES.has(p.virtual)) return new FileStat({ name: p.virtual, type: FileType.FILE })
-      throw enoent(p.virtual)
+  return answeringFiles(
+    {
+      readdir: (p) => TREE[p.virtual] ?? [],
+      stat: (p) => {
+        if (p.virtual.startsWith('/m/locked/')) throw eacces(p.virtual)
+        if (TREE[p.virtual] !== undefined)
+          return new FileStat({ name: p.virtual, type: FileType.DIRECTORY })
+        if (FILES.has(p.virtual)) return new FileStat({ name: p.virtual, type: FileType.FILE })
+        throw enoent(p.virtual)
+      },
+      ...(removed === undefined ? {} : { unlink: remove, rm_r: remove }),
     },
-    ...(removed === undefined ? {} : { unlink: remove, rm_r: remove }),
-  })
+    {},
+    { prefix: '/', kind: 'fake', calls: new Set(removed === undefined ? [] : ['unlink', 'rm_r']) },
+  )
 }
 
 async function rm(
