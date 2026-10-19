@@ -190,7 +190,7 @@ async def _finish_find(
 
     Every runner below this point (one mount, a fan-out over nested
     mounts, one native run per cross-mount operand) only selects rows
-    and hands them back as ``io.matched_runs``; the actions run here
+    and hands them back as ``io.records``; the actions run here
     over all of them together, so a batched ``-exec {} +`` is one
     invocation across every start point, as GNU's is, and a per-match
     action runs in start-point order.
@@ -214,7 +214,7 @@ async def _finish_find(
     session = context.session
     stdout, action_err, action_exit = await _apply_find_actions(
         stdout,
-        io.matched_runs,
+        io.records,
         texts,
         registry,
         session.cwd,

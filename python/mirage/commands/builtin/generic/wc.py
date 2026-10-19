@@ -20,7 +20,7 @@ from mirage.commands.spec.usage import word_refusal_error
 from mirage.commands.spec.word_choice import WordMatch, match_word
 from mirage.errors.constants import FS_ERRORS
 from mirage.errors.render import fs_error_line
-from mirage.io.types import ByteSource, CountedRun, IOResult
+from mirage.io.types import ByteSource, IOResult, PathRecord
 from mirage.rs import run_stream
 from mirage.shell.bytes import encode_text
 from mirage.types import JsonValue, PathSpec, PolymorphicReadFn
@@ -307,7 +307,7 @@ async def format_multi(
     total: str = "auto",
     line_count: Callable[[PathSpec], Awaitable[int | None]] | None = None,
     size_of: Callable[[PathSpec], Awaitable[int | None]] | None = None,
-) -> tuple[bytes, bytes, list[CountedRun]]:
+) -> tuple[bytes, bytes, list[PathRecord]]:
     """Format wc output for multiple already-resolved paths.
 
     Globs are expanded by the caller (``resolve_glob``) before this runs, so
@@ -335,7 +335,7 @@ async def format_multi(
             an answer of None, reads the file.
 
     Returns:
-        tuple[bytes, bytes, list[CountedRun]]: Encoded wc output (``b""``
+        tuple[bytes, bytes, list[PathRecord]]: Encoded wc output (``b""``
         when nothing prints), concatenated stderr lines for failed
         operands (``b""`` if none), and each printed row's counts.
     """
@@ -348,6 +348,7 @@ async def format_multi(
         total=total,
     )
     rows: list[tuple[WCCounts, str | None]] = []
+    named: list[tuple[PathSpec, int]] = []
     sizes: list[int | None] = []
     totals = WCCounts()
     err = b""
@@ -366,7 +367,7 @@ async def format_multi(
         else None
     )
     pushed = False
-    for path in paths:
+    for run, path in enumerate(paths):
         try:
             found = (
                 await counted(path)
@@ -393,12 +394,14 @@ async def format_multi(
             # a row of zeros beside the error and pads as for a stream.
             err += encode_text(fs_error_line("wc", path, exc))
             rows.append((WCCounts(), path.raw_path))
+            named.append((path, run))
             sizes.append(None)
             continue
         except FS_ERRORS as exc:
             err += encode_text(fs_error_line("wc", path, exc))
             continue
         rows.append((counts, path.raw_path))
+        named.append((path, run))
         sizes.append(None if is_stdin(path) else counts.bytes_)
         totals.merge(counts)
     width = (
@@ -406,9 +409,11 @@ async def format_multi(
         if pushed
         else number_width(sizes, len(paths), shown_counts(flags))
     )
-    runs = [
-        CountedRun(
-            tuple(
+    records = [
+        PathRecord(
+            path,
+            run,
+            values=tuple(
                 _selected_values(
                     counts,
                     lines=lines,
@@ -418,12 +423,11 @@ async def format_multi(
                     max_line_length=max_line_length,
                 )
             ),
-            label,
         )
-        for counts, label in rows
+        for (counts, _), (path, run) in zip(rows, named)
     ]
     body = format_count_rows(rows, totals, len(paths), flags, width)
-    return body, err, runs
+    return body, err, records
 
 
 async def wc_generic(
@@ -465,7 +469,7 @@ async def wc_generic(
         return None, IOResult(exit_code=1, stderr=encode_text(str(exc) + "\n"))
     stream = stdin_stream(stream, ctx.stdin)
     if paths:
-        body, err, runs = await format_multi(
+        body, err, records = await format_multi(
             paths,
             read=stream,
             lines=parsed.lines,
@@ -478,7 +482,7 @@ async def wc_generic(
             size_of=size_of,
         )
         io = operands_io(err)
-        io.counted_runs = runs
+        io.records = records
         return body, io
     source = resolve_source(ctx.stdin)
     counts = await wc(source, flags=parsed)

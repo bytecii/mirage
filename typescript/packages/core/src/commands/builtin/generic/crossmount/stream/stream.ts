@@ -86,9 +86,7 @@ export async function runStream(
       merged = await merged.merge(io)
     }
     if (final !== null) merged = await merged.merge(final)
-    result.matchedRuns = merged.matchedRuns
-    result.sizedRuns = merged.sizedRuns
-    result.countedRuns = merged.countedRuns
+    result.records = merged.records
     result.refusal = result.refusal ?? merged.refusal
     const stderr = concat([await materialize(merged.stderr), await materialize(result.stderr)])
     result.stderr = stderr.byteLength > 0 ? stderr : null

@@ -45,7 +45,7 @@ function rowsFromItsOwnFind(rows = true) {
       )
       return [
         ENC.encode(found.map((row) => `${row.rawPath}\n`).join('')),
-        new IOResult({ matchedRuns: rows ? [found] : null }),
+        new IOResult({ records: rows ? found.map((path) => ({ path, run: 0 })) : null }),
       ]
     },
   })

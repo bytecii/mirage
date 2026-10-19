@@ -18,9 +18,9 @@ import { PathSpec, type Visibility } from '../../../types.ts'
 import type { Context } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { usageHint } from '../../spec/usage.ts'
-import { IOResult, type SizedRun } from '../../../io/types.ts'
+import { IOResult, type PathRecord } from '../../../io/types.ts'
 import { pathsScoped } from '../../../view/namespace_view.ts'
-import { pathVisible } from '../../../utils/hidden.ts'
+import { pathVisible, visibleRecords } from '../../../utils/hidden.ts'
 import { ZERO_LENGTH_NAME } from '../../../errors/render.ts'
 import { fsStrerror, isDotWalkError, isMissingPath } from '../../../errors/fs.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
@@ -96,7 +96,7 @@ export interface DuOutput {
    * Each readable operand's measurement; null when one was only summed (`-s`,
    * or a backend that can only produce a size).
    */
-  runs: SizedRun[] | null
+  records: PathRecord[] | null
 }
 
 const TRUNCATED_NOTE = 'du: walk stopped early: the reported sizes are incomplete'
@@ -437,7 +437,7 @@ export function rollup(
 }
 
 /**
- * Drop leaves that fall under a descendant mount's root.
+ * Drop what falls under a descendant mount's root.
  *
  * The parent backend's keys under a nested mount are shadowed: no read can
  * reach them, so no size may count them. GNU agrees (coreutils 9.7,
@@ -447,22 +447,30 @@ export function rollup(
  * content, arrives here as the descendant's separately appended block
  * instead, so the parent's own report is GNU's `du -x`.
  */
-function dropShadowed(entries: [string, number][], roots: string[]): [string, number][] {
-  return entries.filter(([leaf]) => {
-    const node = norm(leaf)
+function dropShadowed(records: readonly PathRecord[], roots: readonly string[]): PathRecord[] {
+  return records.filter(({ path }) => {
+    const node = norm(path.virtual)
     return !roots.some((root) => node === root || node.startsWith(root + '/'))
   })
 }
 
+/** Each file a measurement counted, as (virtual path, bytes). */
+export function leavesOf(records: readonly PathRecord[]): [string, number][] {
+  return records.flatMap((r): [string, number][] =>
+    r.size === undefined ? [] : [[r.path.virtual, r.size]],
+  )
+}
+
 async function duOne(
   path: PathSpec,
+  run: number,
   computeSize: ComputeSize,
   computeEntries: ComputeEntries,
   flags: DuFlags,
   mounts: MountView | null,
   directories?: () => readonly string[],
   vfs?: Files,
-): Promise<[string[], number, SizedRun | null]> {
+): Promise<[string[], number, PathRecord[] | null]> {
   const label = path.rawPath
   const vis = visibilityOf(vfs) ?? undefined
   const roots = mounts?.descendants(path.virtual) ?? []
@@ -480,55 +488,53 @@ async function duOne(
   let total = rawTotal
   const rootKey = norm(path.virtual)
   const under = rootKey.replace(/\/$/, '') + '/'
-  const dirs = (directories?.() ?? []).filter(
-    (d) =>
-      norm(d).startsWith(under) &&
-      pathVisible(vis, d) &&
-      !roots.some((r) => norm(d) === r || norm(d).startsWith(r + '/')),
+  const met = dropShadowed(
+    visibleRecords(
+      vis,
+      (directories?.() ?? [])
+        .filter((d) => norm(d).startsWith(under))
+        .map((d): PathRecord => ({ path: PathSpec.fromStrPath(d), run })),
+    ),
+    roots,
   )
   const walked = (directories?.() ?? []).some((d) => norm(d) === rootKey)
-  if (raw.length === 0 && dirs.length === 0 && !walked) {
+  if (raw.length === 0 && met.length === 0 && !walked) {
     // A backend that can only produce a size degrades to one total; it
     // cannot enumerate, so shadowed keys cannot be excluded either. A
     // walk that opened the operand already said all it can: an empty
     // directory, or one a rule refused, which a second walk would
     // report twice.
     const fallback = await computeSize(path)
-    return [
-      [line(fallback, flags.h, label)],
-      fallback,
-      fallback === 0 ? { leaves: [], directories: [] } : null,
-    ]
+    return [[line(fallback, flags.h, label)], fallback, fallback === 0 ? [{ path, run }] : null]
   }
 
-  let entries = toVirtual(raw, path)
-  const visible = entries.filter(([leaf]) => pathVisible(vis, leaf))
-  if (visible.length !== entries.length) {
-    // Same honesty rule as shadowed leaves: the total is the sum of
-    // what the session may see, never the backend's own number.
-    entries = visible
+  const counted = toVirtual(raw, path).map(([leaf, size]): PathRecord => ({
+    path: PathSpec.fromStrPath(leaf),
+    run,
+    size,
+  }))
+  // Same honesty rule for hidden and shadowed leaves: the total is the sum
+  // of what survived, never the backend's own number.
+  const kept = dropShadowed(visibleRecords(vis, counted), roots)
+  const entries = leavesOf(kept)
+  if (kept.length !== counted.length || roots.length > 0) {
     total = entries.reduce((acc, [, size]) => acc + size, 0)
   }
-  if (roots.length > 0) {
-    // The backend's own total counted the shadowed leaves, so the
-    // honest number is the sum of what survived.
-    entries = dropShadowed(entries, roots)
-    total = entries.reduce((acc, [, size]) => acc + size, 0)
-  }
-  const run: SizedRun = { leaves: entries, directories: dirs }
+  const dirs = met.map((r) => r.path.virtual)
+  const records: PathRecord[] = [{ path, run }, ...kept, ...met]
   // A file operand walks to itself. GNU prints it once, with or without -a,
   // never as a leaf line plus a roll-up line. GNU scopes -S to directories, so
   // a file operand keeps its own size in both its row and the grand total.
   const first = entries[0]
   if (entries.length === 1 && first !== undefined && norm(first[0]) === rootKey) {
-    return [[line(first[1], flags.h, label)], total, run]
+    return [[line(first[1], flags.h, label)], total, records]
   }
   // -S changes what the operand's own row counts, not what the operand
   // contributes to -c: GNU's grand total stays recursive (coreutils 9.7,
   // `du -bSc dir` prints `3 dir` then `6 total`).
   const own = flags.S ? separateTotal(entries, path.virtual) : total
   if (flags.s) {
-    return [[line(own, flags.h, label)], total, run]
+    return [[line(own, flags.h, label)], total, records]
   }
 
   const rows = rollup(entries, path.virtual, {
@@ -544,7 +550,7 @@ async function duOne(
   )
   const lines = rows.map(([, size], i) => line(size, flags.h, shown[i] ?? ''))
   lines.push(line(own, flags.h, label))
-  return [lines, total, run]
+  return [lines, total, records]
 }
 
 /**
@@ -583,11 +589,12 @@ export async function du(
 ): Promise<DuOutput> {
   const lines: string[] = []
   let grand = 0
-  let runs: SizedRun[] | null = []
-  for (const root of paths) {
+  let records: PathRecord[] | null = []
+  for (const [run, root] of paths.entries()) {
     if (repeated?.(root) === true) continue
-    const [block, total, run] = await duOne(
+    const [block, total, measured] = await duOne(
       root,
+      run,
       computeSize,
       computeEntries,
       flags,
@@ -597,8 +604,8 @@ export async function du(
     )
     lines.push(...block)
     grand += total
-    if (run === null) runs = null
-    else runs?.push(run)
+    if (measured === null) records = null
+    else records?.push(...measured)
   }
   // GNU still prints the grand total when every operand failed ("0 total"), so
   // this stays outside the loop guard.
@@ -628,7 +635,7 @@ export async function du(
   }
   const stderr =
     notes.length > 0 ? new TextEncoder().encode(`${notes.join('\n')}\n`) : new Uint8Array(0)
-  return { stdout: formatRecords(lines), stderr, exitCode, runs }
+  return { stdout: formatRecords(lines), stderr, exitCode, records }
 }
 
 /**
@@ -684,7 +691,7 @@ export async function duGeneric(
   )
   return [
     out.stdout,
-    new IOResult({ stderr: out.stderr, exitCode: out.exitCode, sizedRuns: out.runs }),
+    new IOResult({ stderr: out.stderr, exitCode: out.exitCode, records: out.records }),
   ]
 }
 

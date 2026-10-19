@@ -16,13 +16,13 @@ import { OPERAND_CONCURRENCY } from '../../constants.ts'
 import { DISPATCH_BUILDERS } from './constants.ts'
 import { mountStarts, reached } from './scopes.ts'
 import type { CrossResult, RunSingle } from './types.ts'
-import { du, parseFlags } from '../du.ts'
+import { du, leavesOf, parseFlags } from '../du.ts'
 import { runDispatch } from '../../generic_bind/dispatch.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import type { FlagValue } from '../../../spec/types.ts'
 import { boundedMap } from '../../../../concurrency/limiter.ts'
-import { IOResult, materialize, type ByteSource, type SizedRun } from '../../../../io/types.ts'
+import { IOResult, materialize, type ByteSource, type PathRecord } from '../../../../io/types.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { FollowOperands } from '../../../../view/types.ts'
 import { PathSpec } from '../../../../types.ts'
@@ -38,7 +38,7 @@ export const RENDERING: ReadonlySet<string> = new Set(['s', 'max_depth'])
  * Render du over operands spanning mounts from each mount's own du.
  *
  * Every start point is measured by the du its mount registered, a few at a
- * time, and the measurements (`IOResult.sizedRuns`) render as one tree: a
+ * time, and the measurements (`IOResult.records`) render as one tree: a
  * directory's row counts the mounts inside it, and `-c` totals the line. No
  * mount's output text is read back. A mount whose du fails adds its
  * diagnostic and status, and the mounts below it count only where the walk
@@ -92,7 +92,7 @@ export async function runDu(
   )
   // A run that failed measured nothing and says why; one that succeeded
   // without a measurement is a du this line cannot compose.
-  if (ios.some((io) => io.sizedRuns === null && io.exitCode === 0)) {
+  if (ios.some((io) => io.records === null && io.exitCode === 0)) {
     const builder = DISPATCH_BUILDERS.get('du')
     if (builder === undefined) throw new Error('No dispatch builder for du')
     return runDispatch(builder, paths, texts, bag, dispatch, cwd, vfs, stdin, signal, [], follow)
@@ -107,28 +107,35 @@ export async function runDu(
     const io = ios[i]
     return kept[i] === true && io !== undefined ? [{ step, io }] : []
   })
-  const leaves: (readonly [string, number])[][] = paths.map(() => [])
-  const below: string[][] = paths.map(() => [])
+  const found: PathRecord[][] = paths.map(() => [])
   const present = paths.map(() => false)
   let merged = new IOResult()
   for (const { step, io } of done) {
     const [index, start] = step
     const owner = mounts?.rootOf(start.virtual)
-    const owned = (virtual: string): boolean =>
-      mounts === undefined || mounts.rootOf(virtual) === owner
-    const found = (io.sizedRuns ?? []).flatMap((run) => run.leaves.filter(([leaf]) => owned(leaf)))
+    const owned = (io.records ?? []).filter(
+      (r) => mounts === undefined || mounts.rootOf(r.path.virtual) === owner,
+    )
     if (start === paths[index]) {
-      present[index] = (io.sizedRuns ?? []).length > 0
-    } else if (found.every(([leaf]) => stripSlash(leaf) !== stripSlash(start.virtual))) {
+      present[index] = (io.records ?? []).length > 0
+    } else if (leavesOf(owned).every(([leaf]) => stripSlash(leaf) !== stripSlash(start.virtual))) {
       // A mount root holding nothing still gets its row, unless the mount
       // is one file (/.bash_history).
-      below[index]?.push(start.virtual)
+      found[index]?.push({ path: start, run: index })
     }
-    leaves[index]?.push(...found)
-    for (const run of io.sizedRuns ?? []) below[index]?.push(...run.directories.filter(owned))
+    // A run's record of its own start is left out: the line renders the
+    // operand's row from the operand, and a mount root's as above.
+    found[index]?.push(
+      ...owned
+        .filter(
+          (r) => r.size !== undefined || stripSlash(r.path.virtual) !== stripSlash(start.virtual),
+        )
+        .map((r) => ({ ...r, run: index })),
+    )
     merged = await merged.merge(io)
   }
-  const measured = new Map<PathSpec, [(readonly [string, number])[], string[]]>()
+  const measured = new Map<PathSpec, PathRecord[]>()
+  const records: PathRecord[] = []
   paths.forEach((path, index) => {
     if (!present[index]) return
     const target = new PathSpec({
@@ -141,14 +148,12 @@ export async function runDu(
       dotted: path.dotted,
       walkError: path.walkError,
     })
-    measured.set(target, [leaves[index] ?? [], below[index] ?? []])
+    measured.set(target, found[index] ?? [])
+    records.push({ path: target, run: index }, ...(found[index] ?? []))
   })
   const entries = (path: PathSpec): Promise<[[string, number][], number]> => {
-    const found = (measured.get(path)?.[0] ?? []).map(([leaf, size]): [string, number] => [
-      leaf,
-      size,
-    ])
-    return Promise.resolve([found, found.reduce((acc, [, size]) => acc + size, 0)])
+    const counted = leavesOf(measured.get(path) ?? [])
+    return Promise.resolve([counted, counted.reduce((acc, [, size]) => acc + size, 0)])
   }
   const out = await du(
     [...measured.keys()],
@@ -159,14 +164,14 @@ export async function runDu(
     undefined,
     null,
     undefined,
-    () => [...measured.values()].flatMap(([, dirs]) => dirs),
+    () =>
+      [...measured.values()].flatMap((rows) =>
+        rows.flatMap((r) => (r.size === undefined ? [r.path.virtual] : [])),
+      ),
     vfs,
   )
   merged.stderr = new Uint8Array([...out.stderr, ...(await materialize(merged.stderr))])
   merged.exitCode = Math.max(out.exitCode, ...done.map(({ io }) => io.exitCode))
-  merged.sizedRuns = [...measured.values()].map(([found, dirs]): SizedRun => ({
-    leaves: found,
-    directories: dirs,
-  }))
+  merged.records = records
   return [out.stdout, merged]
 }

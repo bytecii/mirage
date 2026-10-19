@@ -177,16 +177,18 @@ async def merge_operand_ios(
     for run in results:
         io = await io.merge(run.io)
     io.exit_code = exit_code
-    # A merge keeps the last run's rows; the operands' rows are wanted
-    # together and in order, since find's actions run once over all of
-    # them at the command boundary (`-exec {} +` is one batch across
-    # start points, as in GNU). One run without them means the whole
-    # selection is unstructured.
-    runs = [run.io.matched_runs for run in results]
-    known = [run_rows for run_rows in runs if run_rows is not None]
-    io.matched_runs = (
-        [r for run_rows in known for r in run_rows]
-        if len(known) == len(runs)
+    # A merge keeps the last run's records; the operands' records are
+    # wanted together and in order, since find's actions run once over
+    # all of them at the command boundary (`-exec {} +` is one batch
+    # across start points, as in GNU), each under its own operand. One
+    # run without them means the whole selection is unstructured.
+    io.records = (
+        [
+            dataclasses.replace(record, run=position)
+            for position, run in enumerate(results)
+            for record in run.io.records or []
+        ]
+        if all(run.io.records is not None for run in results)
         else None
     )
     return io

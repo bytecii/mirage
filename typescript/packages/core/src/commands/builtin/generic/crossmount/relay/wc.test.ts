@@ -62,7 +62,7 @@ class Mounts {
       new IOResult({
         exitCode: err === null ? 0 : 1,
         stderr: err === null ? null : ENC.encode(err),
-        countedRuns: [{ values, label: paths[0]?.rawPath ?? null }],
+        records: paths.slice(0, 1).map((path) => ({ path, run: 0, values })),
       }),
     ])
   }
@@ -153,7 +153,7 @@ const uncounted: CommandFn = (_accessor, paths) => [
 
 const rowCount: CommandFn = (_accessor, paths) => [
   new Uint8Array(0),
-  new IOResult({ countedRuns: [{ values: [42], label: paths[0]?.rawPath ?? null }] }),
+  new IOResult({ records: paths.slice(0, 1).map((path) => ({ path, run: 0, values: [42] })) }),
 ]
 
 it('recounts a wc without counts alone', async () => {

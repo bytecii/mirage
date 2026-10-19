@@ -25,6 +25,7 @@ from mirage.commands.config import command
 from mirage.commands.spec import SPECS
 from mirage.errors.fs import eacces
 from mirage.io import IOResult
+from mirage.io.types import PathRecord
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
@@ -42,7 +43,9 @@ def _rows_from_its_own_find(rows: bool = True):
             for p in paths
         ]
         body = "".join(f"{row.raw_path}\n" for row in found).encode()
-        return body, IOResult(matched_runs=[found] if rows else None)
+        return body, IOResult(
+            records=[PathRecord(path) for path in found] if rows else None
+        )
 
     return find
 

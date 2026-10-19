@@ -14,7 +14,7 @@
 
 import { isStdin, stdinStream } from '../utils/stream.ts'
 import { guardInput } from '../utils/limit.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
+import { IOResult, type ByteSource, type PathRecord } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
@@ -233,6 +233,7 @@ export async function wcGeneric(
   }
   if (paths.length > 0) {
     const rows: WcRow[] = []
+    const records: PathRecord[] = []
     const sizes: (number | null)[] = []
     const total: WcCounts = { lines: 0, words: 0, bytes: 0, chars: 0, maxLineLength: 0 }
     let err = ''
@@ -249,7 +250,7 @@ export async function wcGeneric(
         ? sizeOf
         : null
     let pushed = false
-    for (const p of paths) {
+    for (const [run, p] of paths.entries()) {
       let counts: WcCounts
       try {
         const found = counted === null || isStdin(p) ? null : await counted(p)
@@ -270,11 +271,13 @@ export async function wcGeneric(
         if (isEisdir(e)) {
           const zero = { lines: 0, words: 0, bytes: 0, chars: 0, maxLineLength: 0 }
           rows.push({ values: selectedValues(zero, parsed), label: p.rawPath })
+          records.push({ path: p, run, values: selectedValues(zero, parsed) })
           sizes.push(null)
         }
         continue
       }
       rows.push({ values: selectedValues(counts, parsed), label: p.rawPath })
+      records.push({ path: p, run, values: selectedValues(counts, parsed) })
       sizes.push(isStdin(p) ? null : counts.bytes)
       addCounts(total, counts)
     }
@@ -282,7 +285,7 @@ export async function wcGeneric(
     const io = new IOResult({
       exitCode: err === '' ? 0 : 1,
       stderr: err === '' ? null : encodeText(err),
-      countedRuns: rows,
+      records,
     })
     return [
       formatCountRows(rows, selectedValues(total, parsed), paths.length, parsed.total, width),

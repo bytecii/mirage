@@ -33,7 +33,7 @@ from mirage.errors.constants import MISS_ERRORS
 from mirage.errors.fs import fs_strerror, walk_refusal
 from mirage.errors.posix import posix_phrase
 from mirage.errors.types import FsCondition
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, IOResult, PathRecord
 from mirage.types import FileStat, FileType, FindType, PathSpec, Visibility
 from mirage.utils.hidden import path_visible
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
@@ -528,12 +528,12 @@ async def find_walk_generic(
     )
     if unbounded is not None and args.maxdepth is None:
         readdir, stat = unbounded
-    matched_runs: list[list[PathSpec]] = []
-    io = IOResult(matched_runs=matched_runs)
+    records: list[PathRecord] = []
+    io = IOResult(records=records)
 
     async def stream() -> AsyncIterator[bytes]:
         missing: list[str] = []
-        for search in searches:
+        for run, search in enumerate(searches):
             start = await resolve_start(
                 search,
                 args,
@@ -552,7 +552,6 @@ async def find_walk_generic(
                 yield (row + "\n").encode()
             if start.missing:
                 missing.append(missing_start_line(search, start.detail))
-                matched_runs.append([])
                 continue
             if not start.walk:
                 rows = start.results
@@ -607,7 +606,9 @@ async def find_walk_generic(
             for row in rows:
                 if row not in first:
                     yield (row + "\n").encode()
-            matched_runs.append([_matched_path(row, search) for row in rows])
+            records.extend(
+                PathRecord(_matched_path(row, search), run) for row in rows
+            )
         if missing:
             io.stderr = ("\n".join(missing) + "\n").encode()
             io.exit_code = 1

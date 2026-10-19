@@ -20,7 +20,7 @@ import { type FindOptions, modifiedTs } from '../../../core/generic/find.ts'
 import { fsStrerror, isEnoent, isEnotdir, isMissError, walkRefusal } from '../../../errors/fs.ts'
 import { dotRefusal, linkFollow, statOrEnoent, vfsStatPath } from '../utils/paths.ts'
 import { failureText } from '../../../errors/classify.ts'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, type PathRecord } from '../../../io/types.ts'
 import { FindParseError } from '../../errors.ts'
 import { parseDepth, parseFindExpression, parseMtime, parseSize } from '../find_parse.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
@@ -349,16 +349,14 @@ export function findGeneric(
           ...(emptyFlag ? { empty: true } : {}),
         }
   const cacheManager = activeCacheManager()
-  const matchedRuns: PathSpec[][] = []
-  const io = new IOResult({ matchedRuns })
+  const records: PathRecord[] = []
+  const io = new IOResult({ records })
   async function* stream(): AsyncGenerator<Uint8Array> {
     const missing: string[] = []
-    // One run per start point, in operand order, empty for one that matched
-    // nothing or is missing: the action layer acts on each traversal on its
-    // own and reads a row's start point off its run (-printf's %P and %d).
-    for (const root of targets) {
-      const run: PathSpec[] = []
-      matchedRuns.push(run)
+    // Each row names the start point it was found under, in operand order:
+    // the action layer acts on each traversal on its own and reads a row's
+    // start point off it (-printf's %P and %d).
+    for (const [run, root] of targets.entries()) {
       // `-path` matches the row as printed; stamp the mount prefix and the
       // operand's spelling onto path nodes before the backend walks
       // mount-relative keys (#396). Bound per start point: options is
@@ -452,7 +450,7 @@ export function findGeneric(
             const display = root.virtual === '/' ? '/' : rstripSlash(root.virtual)
             const added = respellRaw([display], root.virtual, root.rawPath)
             yield ENC.encode(added.join('\n') + '\n')
-            for (const r of added) run.push(matchedPath(r, root))
+            for (const r of added) records.push({ path: matchedPath(r, root), run })
           }
           continue
         }
@@ -560,7 +558,7 @@ export function findGeneric(
       const visibleRows = unpruned.filter((row) => pathVisible(visibilityOf(ctx.vfs), row))
       const added = respellRaw(visibleRows, root.virtual, root.rawPath)
       for (const row of added) if (!first.includes(row)) yield ENC.encode(row + '\n')
-      for (const r of added) run.push(matchedPath(r, root))
+      for (const r of added) records.push({ path: matchedPath(r, root), run })
     }
     if (missing.length > 0) {
       io.stderr = ENC.encode(missing.join('\n') + '\n')

@@ -105,16 +105,13 @@ describe('du', () => {
     const out = await du(paths, flags(), size, entries, [], undefined, null, undefined, () => [
       '/m/dir/e',
     ])
-    expect(out.runs).toEqual([
-      {
-        leaves: [
-          ['/m/dir/a.txt', 2],
-          ['/m/dir/s/b', 3],
-        ],
-        directories: ['/m/dir/e'],
-      },
+    expect(out.records?.map((r) => [r.path.virtual, r.run, r.size ?? null])).toEqual([
+      ['/m/dir', 0, null],
+      ['/m/dir/a.txt', 0, 2],
+      ['/m/dir/s/b', 0, 3],
+      ['/m/dir/e', 0, null],
     ])
-    expect((await du(paths, flags({ s: true }), size, entries)).runs).toBeNull()
+    expect((await du(paths, flags({ s: true }), size, entries)).records).toBeNull()
   })
 
   it('rolls up under a root mount', () => {

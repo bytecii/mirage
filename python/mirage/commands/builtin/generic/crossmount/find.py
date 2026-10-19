@@ -39,7 +39,7 @@ from mirage.commands.spec.types import FlagValue
 from mirage.concurrency.limiter import bounded_map
 from mirage.io import IOResult
 from mirage.io.stream import materialize
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, PathRecord
 from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 from mirage.utils.path import respell_one
@@ -164,7 +164,7 @@ async def run_find(
     are matched once each through the dispatcher. Each run answers for
     the rows its mount owns (the parent's shadowed keys stay out), and
     the rows merge in the walk's path order, so the actions still run
-    once over every mount's ``matched_runs``; a mount whose find fails
+    once over every mount's ``records``; a mount whose find fails
     adds its diagnostic and status, as GNU's walk past an unreadable
     directory does, and the mounts below it count only where the walk
     could still reach them (``reached``). An expression that looks across a boundary
@@ -242,7 +242,7 @@ async def run_find(
     ios = await bounded_map(plan, search, OPERAND_CONCURRENCY)
     # A run that failed found no rows and says why; one that succeeded
     # without structured rows is a find this line cannot compose.
-    if any(io.matched_runs is None and io.exit_code == 0 for io in ios):
+    if any(io.records is None and io.exit_code == 0 for io in ios):
         return await run_dispatch(
             DISPATCH_BUILDERS["find"],
             paths,
@@ -270,24 +270,26 @@ async def run_find(
     for (index, start, alone, _, _), io in done:
         owner = mounts.root_of(start.virtual)
         runs[index].extend(
-            row
-            for run in io.matched_runs or []
-            for row in run
+            record.path
+            for record in io.records or []
             if (
-                row.virtual == start.virtual
+                record.path.virtual == start.virtual
                 if alone
-                else mounts.root_of(row.virtual) == owner
-                and row.virtual not in between[index]
+                else mounts.root_of(record.path.virtual) == owner
+                and record.path.virtual not in between[index]
             )
         )
         merged = await merged.merge(io)
     for rows in runs:
         rows.sort(key=lambda row: row.virtual)
     merged.exit_code = max((io.exit_code for _, io in done), default=0)
-    merged.matched_runs = runs
-    body = b"".join(
-        ((row.raw_path or row.virtual) + "\n").encode()
-        for rows in runs
+    merged.records = [
+        PathRecord(row, index)
+        for index, rows in enumerate(runs)
         for row in rows
+    ]
+    body = b"".join(
+        ((record.path.raw_path or record.path.virtual) + "\n").encode()
+        for record in merged.records
     )
     return body, merged
