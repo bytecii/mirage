@@ -27,7 +27,6 @@ import {
   runWithCaller,
   strongestModeUnder,
 } from '../../context/session_context.ts'
-import { captureExecutionContext } from '../../execution/context.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { coerceReadPolicy } from './read_policy.ts'
 import { coerceWritePolicy, writeConditions } from './write_policy.ts'
@@ -1452,7 +1451,6 @@ export class MountEntry {
     const revisions = this.revisions.size > 0 ? this.revisions : null
     const pulls = new ContextScope([
       ...captureSessionContext(),
-      captureExecutionContext(),
       (fn) => runWithMountContext(async () => await fn(), this.mountId),
       (fn) => runWithWriteContext(this.prefix, this.writeContext(), async () => await fn()),
       (fn) => runWithRevisions(revisions, async () => await fn()),
@@ -2151,7 +2149,7 @@ function wrapMountStreams(
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   if (stream === null || stream instanceof Uint8Array) return [stream, io]
-  const scope = new ContextScope([...captureSessionContext(), captureExecutionContext()])
+  const scope = new ContextScope(captureSessionContext())
   return [activity.hold(scope.stream(stream)), io]
 }
 

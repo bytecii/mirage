@@ -28,7 +28,7 @@ import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { MountBackend } from '@struktoai/mirage-core/types'
 import type { SessionState } from '@struktoai/mirage-core/workspace/session/session'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
-import { loadOptionalPeer } from '../optional_peer.ts'
+import { loadOptionalPeer } from '@struktoai/mirage-core/utils/optional_peer'
 import { checkMountpoint, FSKIT_MOUNT_ROOT, prepareBackend } from './backend.ts'
 import { MirageFS } from './fs.ts'
 

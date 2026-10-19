@@ -19,13 +19,14 @@ import { concat as concatBytes } from '../../../../utils/bytes.ts'
 import { isStdin } from '../../utils/stream.ts'
 import type { TransferLinks } from '../cp.ts'
 import type { LinkView } from '../../../../view/types.ts'
-import { mountKey } from '../../../../utils/key_prefix.ts'
+import { virtualKey } from '../../utils/paths.ts'
 import { ROOT_CWD } from '../../../constants.ts'
 import { OPERAND_CONCURRENCY } from '../../constants.ts'
 import { eisdir, isFsError } from '../../../../errors/fs.ts'
 import { fsErrorLine } from '../../../../errors/render.ts'
 import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
-import { type FileStat, FileType, PathSpec, type Visibility } from '../../../../types.ts'
+import type { PathSpec } from '../../../../types.ts'
+import { type FileStat, FileType, type Visibility } from '../../../../types.ts'
 import type { Context } from '../../../config.ts'
 import type { DispatchFn, OperandRun, RunSingle } from './types.ts'
 import type { FlagValue } from '../../../spec/types.ts'
@@ -118,19 +119,7 @@ export async function mergeOperandIos(results: OperandRun[], exitCode: number): 
 // by transfer/compare where the generic does path arithmetic; read commands
 // pass scopes through unchanged.
 export function flatten(scopes: PathSpec[]): PathSpec[] {
-  return scopes.map(
-    (s) =>
-      new PathSpec({
-        virtual: s.virtual,
-        directory: s.directory,
-        pattern: s.pattern,
-        resolved: s.resolved,
-        vfsPath: mountKey(s.virtual, ''),
-        rawPath: s.rawPath,
-        dotted: s.dotted,
-        walkError: s.walkError,
-      }),
-  )
+  return scopes.map(virtualKey)
 }
 
 // Minimal Context for delegating a read/compare to a generic: only flags and

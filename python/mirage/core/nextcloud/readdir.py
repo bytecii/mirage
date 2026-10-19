@@ -9,7 +9,7 @@ from mirage.core.nextcloud.constants import SCOPE_ERROR
 from mirage.core.nextcloud.stat import stat_of
 from mirage.errors.fs import enoent, enotdir, listing_error
 from mirage.types import FileStat, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import mount_prefix_of, raw_path_of
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +58,7 @@ async def readdir(
         path (PathSpec): the folder.
     """
     prefix = mount_prefix_of(path.virtual, path.vfs_path)
-    target = path.directory if path.pattern else path.virtual
-    if prefix and target.startswith(prefix):
-        rest = target[len(prefix) :]
-        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-            target = rest or "/"
+    target = raw_path_of(path.dir if path.pattern else path)
     virtual_key = (prefix + target if prefix else target).rstrip("/") or "/"
     list_path = target.strip("/")
     list_path = list_path + "/" if list_path else "/"

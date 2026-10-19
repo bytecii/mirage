@@ -118,23 +118,4 @@ describe('PostgresStore', () => {
     await store.query('SELECT 2')
     expect(PoolCtor).toHaveBeenCalledTimes(2)
   })
-
-  it('databaseName() returns current_database()', async () => {
-    const store = new PostgresStore(resolvePostgresConfig({ dsn: 'postgres://localhost/acme' }))
-    pools.length = 0
-    PoolCtor.mockClear()
-    PoolCtor.mockImplementationOnce(function (options: Record<string, unknown>) {
-      const pool: MockPool = {
-        options,
-        query: vi.fn(() => Promise.resolve({ rows: [{ db: 'acme' }], rowCount: 1 })),
-        end: vi.fn(() => Promise.resolve()),
-        on: vi.fn(),
-      }
-      pools.push(pool)
-      return pool
-    })
-    const name = await store.databaseName()
-    expect(name).toBe('acme')
-    expect(pools[0]?.query).toHaveBeenCalledWith('SELECT current_database() AS db', undefined)
-  })
 })

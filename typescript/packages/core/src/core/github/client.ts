@@ -16,7 +16,7 @@ import { Octokit } from '@octokit/core'
 import { RequestError } from '@octokit/request-error'
 import { retry } from '@octokit/plugin-retry'
 import { throttling } from '@octokit/plugin-throttling'
-import { bodyChunks } from '../api/client.ts'
+import { bodyChunks, loweredHeaders } from '../api/client.ts'
 import { GRAPHQL_PATH, RAW_MEDIA_TYPE, SEARCH_PAGE_SIZE } from './constants.ts'
 
 export const GITHUB_API_BASE = 'https://api.github.com'
@@ -224,19 +224,12 @@ export class HttpGitHubTransport implements GitHubTransport {
           err.status,
           body,
           failed.url || err.request.url,
-          headersOf(failed.headers),
+          loweredHeaders(failed.headers),
         )
       }
       throw err
     }
   }
-}
-
-/** A response's headers, lowercased, as a transport reports them. */
-function headersOf(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [key, value] of headers) out[key.toLowerCase()] = value
-  return out
 }
 
 /**

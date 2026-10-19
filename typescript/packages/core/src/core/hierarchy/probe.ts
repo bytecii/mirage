@@ -14,7 +14,8 @@
 
 import type { Accessor } from '../../accessor/base.ts'
 import type { FileStat } from '../../types.ts'
-import { DirListing, PathSpec } from '../../types.ts'
+import { DirListing, FileType, PathSpec } from '../../types.ts'
+import { eisdir, enoent } from '../../errors/fs.ts'
 import { mountKey, mountPrefixOf, mountedPath } from '../../utils/key_prefix.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
@@ -41,6 +42,18 @@ export function parentSpec(path: PathSpec): PathSpec {
 /** The listed directory's own children, whichever shape listed them. */
 export function rowsOf(listed: readonly FileStat[] | DirListing): readonly FileStat[] {
   return listed instanceof DirListing ? listed.entries : listed
+}
+
+/**
+ * What is at the file `path`, as its parent's listing named it. Throws ENOENT
+ * when nothing is there and EISDIR when a folder is. Mirrors Python's
+ * `file_entry`.
+ */
+export function fileEntry(path: PathSpec, entry: FileStat | null | undefined): FileStat {
+  if (stripSlash(path.mountPath) === '') throw eisdir(path.virtual)
+  if (entry === null || entry === undefined) throw enoent(path.virtual)
+  if (entry.type === FileType.DIRECTORY) throw eisdir(path.virtual)
+  return entry
 }
 
 /**

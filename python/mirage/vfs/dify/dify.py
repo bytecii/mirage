@@ -4,7 +4,7 @@ from typing import Any
 from mirage.accessor.dify import DifyAccessor
 from mirage.core.dify.read import read as _read
 from mirage.core.dify.read import read_stream as _read_stream
-from mirage.core.dify.search import search_many, search_resource
+from mirage.core.dify.search import search_many
 from mirage.core.dify.stat import stat as _stat
 from mirage.core.dify.tree import DIFY_TREE
 from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
@@ -56,7 +56,7 @@ class DifyVFS(BaseVFS):
     async def search(
         self, path: PathSpec, query: SearchQuery
     ) -> list[tuple[str, str]] | None:
-        return await search_resource(self.accessor, path, query)
+        return await search_many(self.accessor, [path], query)
 
     async def search_many(
         self, paths: list[PathSpec], query: SearchQuery

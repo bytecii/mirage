@@ -107,14 +107,6 @@ export async function searchMany(
   return searchSegments(accessor, query.query, targets, topK, prefix)
 }
 
-export function searchResource(
-  accessor: ChromaAccessor,
-  path: PathSpec,
-  query: SearchQuery,
-): Promise<[string, string][]> {
-  return searchMany(accessor, [path], query)
-}
-
 /**
  * The pages with a chunk holding `text`.
  *

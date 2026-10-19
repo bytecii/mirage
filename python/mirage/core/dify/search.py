@@ -224,11 +224,3 @@ async def search_many(
         method=method,
         threshold=threshold,
     )
-
-
-async def search_resource(
-    accessor: DifyAccessor,
-    path: PathSpec,
-    query: SearchQuery,
-) -> list[tuple[str, str]]:
-    return await search_many(accessor, [path], query)

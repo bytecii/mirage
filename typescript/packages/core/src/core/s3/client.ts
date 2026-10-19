@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '../../utils/bytes.ts'
 import type { S3Client } from '@aws-sdk/client-s3'
 import { loadOptionalPeer } from '../../utils/optional_peer.ts'
 import * as kp from '../../utils/key_prefix.ts'
@@ -130,18 +131,10 @@ export async function streamToBuffer(stream: unknown): Promise<Uint8Array> {
   }
   if (typeof s[Symbol.asyncIterator] === 'function') {
     const chunks: Uint8Array[] = []
-    let total = 0
     for await (const chunk of s as AsyncIterable<Uint8Array>) {
       chunks.push(chunk)
-      total += chunk.byteLength
     }
-    const out = new Uint8Array(total)
-    let offset = 0
-    for (const c of chunks) {
-      out.set(c, offset)
-      offset += c.byteLength
-    }
-    return out
+    return concat(chunks)
   }
   throw new Error('S3 response Body is not a readable stream')
 }

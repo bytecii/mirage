@@ -12,10 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent, enotempty } from '@struktoai/mirage-core/errors/fs'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isFailure, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isFailure, isNoSuchFile, joinRoot } from './utils.ts'
 
 // The probe behind the version-3 arm below: whether the directory
 // still lists children. A probe that fails is a negative probe, never
@@ -45,7 +46,7 @@ async function holdsEntries(accessor: SSHAccessor, remote: string): Promise<bool
 // on ssh (it keys on the errno), and the raw SFTP failure leaks.
 export async function rmdir(accessor: SSHAccessor, p: PathSpec): Promise<void> {
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   try {
     await new Promise<void>((resolveFn, rejectFn) => {

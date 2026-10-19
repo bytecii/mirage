@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '../../../../utils/bytes.ts'
 import type { GitHubAccount } from '../../../../accessor/github.ts'
 import { IOResult } from '../../../../io/types.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
@@ -378,14 +379,7 @@ function bodyText(page: unknown): string | Uint8Array {
 }
 
 function bytesOf(parts: readonly (string | Uint8Array)[]): Uint8Array {
-  const chunks = parts.map((part) => (typeof part === 'string' ? ENC.encode(part) : part))
-  const out = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0))
-  let at = 0
-  for (const chunk of chunks) {
-    out.set(chunk, at)
-    at += chunk.length
-  }
-  return out
+  return concat(parts.map((part) => (typeof part === 'string' ? ENC.encode(part) : part)))
 }
 
 // `parts` with `between` inserted between each two.

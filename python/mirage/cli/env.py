@@ -12,20 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.server.auth.config import (
-    ENV_AUTH_MODE,
-    ENV_AUTH_TOKEN,
-    ENV_JWT_ALG,
-    ENV_JWT_AUDIENCE,
-    ENV_JWT_AUTHORIZED_PARTIES,
-    ENV_JWT_CLOCK_SKEW,
-    ENV_JWT_ISSUER,
-    ENV_JWT_JWKS_URL,
-    ENV_JWT_PUBKEY,
-    ENV_JWT_PUBKEY_FILE,
-    ENV_LOGIN_CLIENT_ID,
-)
-from mirage.server.env import ENV_IDLE_GRACE_SECONDS
+from mirage.server.auth.config import ENV_AUTH_MODE, ENV_AUTH_TOKEN
+from mirage.server.env import ENV_DAEMON_PORT, ENV_IDLE_GRACE_SECONDS
 
 ENV_DAEMON_URL = "MIRAGE_DAEMON_URL"
 ENV_TOKEN = "MIRAGE_TOKEN"
@@ -33,16 +21,8 @@ ENV_TOKEN = "MIRAGE_TOKEN"
 __all__ = [
     "ENV_AUTH_MODE",
     "ENV_AUTH_TOKEN",
+    "ENV_DAEMON_PORT",
     "ENV_DAEMON_URL",
     "ENV_IDLE_GRACE_SECONDS",
-    "ENV_JWT_ALG",
-    "ENV_JWT_AUDIENCE",
-    "ENV_JWT_AUTHORIZED_PARTIES",
-    "ENV_JWT_CLOCK_SKEW",
-    "ENV_JWT_ISSUER",
-    "ENV_JWT_JWKS_URL",
-    "ENV_JWT_PUBKEY",
-    "ENV_JWT_PUBKEY_FILE",
-    "ENV_LOGIN_CLIENT_ID",
     "ENV_TOKEN",
 ]

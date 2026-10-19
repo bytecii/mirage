@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ensureParents } from '@struktoai/mirage-core/workspace/tools/tool_operations'
 import type { Files } from '@struktoai/mirage-core/workspace/files'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import type { ExecuteResult, Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
@@ -48,19 +49,6 @@ export interface MirageOperationsBundle {
   grep: GrepOperations
   find: FindOperations
   ls: LsOperations
-}
-
-async function ensureParent(vfs: Files, dir: string): Promise<void> {
-  const norm = rstripSlash(dir) || '/'
-  if (norm === '/' || (await vfs.exists(norm))) return
-  const parent = norm.substring(0, norm.lastIndexOf('/')) || '/'
-  await ensureParent(vfs, parent)
-  try {
-    await vfs.mkdir(norm)
-  } catch (err) {
-    if (await vfs.isDir(norm)) return
-    throw err
-  }
 }
 
 interface WalkOptions {
@@ -108,7 +96,7 @@ export function mirageOperations(
   const write: WriteOperations = {
     writeFile: (absolutePath: string, content: string) => versions.write(absolutePath, content),
     mkdir: async (dir: string) => {
-      await ensureParent(vfs, dir)
+      await ensureParents(vfs, dir)
       if (!(await vfs.exists(dir))) {
         await vfs.mkdir(dir)
       }

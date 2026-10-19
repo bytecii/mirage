@@ -14,13 +14,10 @@
 
 import { NotionAPIError, type NotionTransport } from './client.ts'
 import { MAX_PAGE_SIZE } from './constants.ts'
+import { asObject } from './render.ts'
 import { cursorItems, cursorPages } from '../api/paginate.ts'
 
 type Json = Record<string, unknown>
-
-function asObject(value: unknown): Json {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Json) : {}
-}
 
 /** Refuse a list response Notion marked incomplete. */
 function completePage(page: Json): Json {

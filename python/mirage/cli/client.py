@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 import httpx
 
 from mirage.cli.credentials import LoginError, fresh_token, read_login
-from mirage.cli.env import ENV_AUTH_MODE, ENV_AUTH_TOKEN
+from mirage.cli.env import ENV_AUTH_MODE, ENV_AUTH_TOKEN, ENV_DAEMON_PORT
 from mirage.cli.settings import (
     DaemonSettings,
     is_local_url,
@@ -35,7 +35,6 @@ from mirage.server.daemon_config import (
     read_daemon_table,
     validate_daemon_table,
 )
-from mirage.server.env import ENV_DAEMON_PORT
 from mirage.server.paths import mirage_home
 
 

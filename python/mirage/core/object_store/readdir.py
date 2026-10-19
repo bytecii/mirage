@@ -27,7 +27,7 @@ from mirage.errors.fs import listing_error
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils import key_prefix as kp
 from mirage.utils.filetype import content_type_for_path
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +52,10 @@ def make_readdir(driver: ObjectStoreDriver[A, C]) -> ReaddirFn[A]:
     """
 
     async def readdir(accessor: A, path_spec: PathSpec) -> list[FileStat]:
-        prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
         # When called from resolve_glob with a pattern (e.g. *.txt),
         # use path.directory for the listing. Direct callers (ls, ops)
         # pass pattern=None so path.virtual is used.
-        path = path_spec.directory if path_spec.pattern else path_spec.virtual
-        if prefix and path.startswith(prefix):
-            rest = path[len(prefix) :]
-            if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-                path = rest or "/"
+        path = raw_path_of(path_spec.dir if path_spec.pattern else path_spec)
         kpfx = driver.key_prefix_of(accessor)
         pfx = kp.apply_dir(kpfx, path)
         names: list[str] = []

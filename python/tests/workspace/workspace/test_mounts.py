@@ -205,7 +205,6 @@ def test_install_mounts_keeps_a_mounts_own_index_without_a_config():
         ),
         None,
         MountMode.WRITE,
-        ReadSpec(),
     )
     assert isinstance(
         registry.mount_for("/a/").index_store, RedisIndexCacheStore
@@ -219,7 +218,6 @@ def test_install_mounts_applies_a_workspace_index_to_every_vfs():
         normalize_mounts({"/a": RAMVFS()}, MountMode.WRITE, ReadSpec()),
         IndexConfig(ttl=5),
         MountMode.WRITE,
-        ReadSpec(),
     )
     assert registry.mount_for("/a/").index_store.ttl == 5
 

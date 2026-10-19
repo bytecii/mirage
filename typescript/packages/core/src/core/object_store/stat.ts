@@ -17,7 +17,7 @@ import { FileStat, FileType } from '../../types.ts'
 import { enoent } from '../../errors/fs.ts'
 import { contentTypeForPath } from '../../utils/filetype.ts'
 import * as kp from '../../utils/key_prefix.ts'
-import { mountPrefixOf } from '../../utils/key_prefix.ts'
+import { rawPathOf } from '../../utils/key_prefix.ts'
 import { gnuBasename } from '../../utils/path.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import type { ObjectStoreDriver, StatFn } from './driver.ts'
@@ -25,10 +25,7 @@ import type { ObjectStoreDriver, StatFn } from './driver.ts'
 /** Build the stat ladder over one driver: the object, then the prefix. */
 export function makeStat<A extends Accessor, C>(driver: ObjectStoreDriver<A, C>): StatFn<A> {
   return async function stat(accessor, path) {
-    const original = path.virtual
-    const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-    const rawPath =
-      prefix !== '' && original.startsWith(prefix) ? original.slice(prefix.length) || '/' : original
+    const rawPath = rawPathOf(path)
 
     // A trailing slash signals the caller treats the path as a directory.
     // These stores allow an object at key "csv" AND deeper keys under

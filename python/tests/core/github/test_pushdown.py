@@ -19,13 +19,10 @@ import pytest
 from mirage.core.github.pushdown import (
     count_scope_files,
     scope_blobs,
-    scope_relative_key,
     search_safe,
     unsearchable_keys,
 )
 from mirage.core.github.tree_entry import TreeEntry
-from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_key
 
 
 @pytest.fixture
@@ -46,22 +43,6 @@ def entries():
         "src/models": _d(),
         "src/models/user.py": _f(),
     }
-
-
-def test_scope_relative_key_strips_mount_prefix():
-    path = PathSpec(
-        vfs_path=mount_key("/gh/src", "/gh"),
-        virtual="/gh/src",
-        directory="/gh/src",
-    )
-    assert scope_relative_key(path) == "/src"
-
-
-def test_scope_relative_key_root_becomes_slash():
-    path = PathSpec(
-        vfs_path=mount_key("/gh", "/gh"), virtual="/gh", directory="/gh"
-    )
-    assert scope_relative_key(path) == "/"
 
 
 def test_count_scope_files_root_counts_all(entries):

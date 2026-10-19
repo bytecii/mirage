@@ -302,8 +302,7 @@ export function isMissError(exc: unknown): boolean {
 // backend bugs — must propagate instead of reading back as "missing".
 export function isMissingPath(err: unknown): boolean {
   if (err === null || typeof err !== 'object') return false
-  const stamped = err as { code?: unknown; noMount?: unknown }
-  return stamped.code === 'ENOENT' || stamped.noMount === true
+  return (err as { code?: unknown }).code === 'ENOENT' || isNoMount(err)
 }
 
 // A mount was asked for an op its backend does not register (e.g. unlink on
@@ -423,5 +422,5 @@ export function isErofs(err: unknown): boolean {
 // errors, backend bugs — must propagate instead of vanishing from a
 // listing or being laundered into a 'cannot access' line.
 export function isWalkError(err: unknown): boolean {
-  return isFsError(err) || (err as { noMount?: unknown }).noMount === true
+  return isFsError(err) || isNoMount(err)
 }

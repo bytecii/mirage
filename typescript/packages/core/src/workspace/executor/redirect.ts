@@ -26,7 +26,8 @@ import {
   runWithRedirectPaths,
 } from '../../context/session_context.ts'
 import { fsStrerror, isFsError, isMissingPath } from '../../errors/fs.ts'
-import { ownerPrefix, stripSlash } from '../../utils/slash.ts'
+import { ownerPrefix } from '../../utils/slash.ts'
+import { toScope } from './builtins/scope.ts'
 import { endsAtDot } from '../../utils/path.ts'
 import { SharedInput, share } from '../../io/async_line_iterator.ts'
 import type { ByteSource } from '../../io/types.ts'
@@ -1115,10 +1116,4 @@ function ensureScope(target: unknown): PathSpec {
   if (target instanceof PathSpec) return target
   if (typeof target === 'string') return toScope(target)
   return toScope(String(target))
-}
-
-function toScope(path: string): PathSpec {
-  const lastSlash = path.lastIndexOf('/')
-  const directory = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : '/'
-  return new PathSpec({ vfsPath: stripSlash(path), virtual: path, directory, resolved: true })
 }

@@ -16,8 +16,9 @@ import re
 
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.core.hf_hub.lookup import refusals_denied
-from mirage.core.hf_hub.read import resolve_entry, row_token
+from mirage.core.hf_hub.read import row_token
 from mirage.core.hf_hub.tree import fetch_path
+from mirage.core.hierarchy.probe import file_entry
 from mirage.observe.context import record, start_op
 from mirage.types import FileStat, PathSpec
 
@@ -51,7 +52,7 @@ async def checksum(
     """
     if algorithm != "sha256":
         return None
-    listed = resolve_entry(path, entry)
+    listed = file_entry(path, entry)
     if not listed.extra.get("lfs_oid"):
         return None
     rel = path.mount_path.strip("/")

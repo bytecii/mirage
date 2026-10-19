@@ -103,14 +103,6 @@ async def search_many(
     )
 
 
-async def search_resource(
-    accessor: ChromaAccessor,
-    path: PathSpec,
-    query: SearchQuery,
-) -> list[tuple[str, str]]:
-    return await search_many(accessor, [path], query)
-
-
 async def files_containing(
     accessor: ChromaAccessor,
     text: str,

@@ -23,7 +23,8 @@ import { fsErrorLine } from '../../../../errors/render.ts'
 import { fsStrerror, walkRefusal } from '../../../../errors/fs.ts'
 import type { Namespace } from '../../../mount/namespace/namespace.ts'
 import type { SessionState } from '../../../session/session.ts'
-import { fail, operandText, parseLine, result } from '../shared.ts'
+import { fail, parseLine, result } from '../shared.ts'
+import { scopePath } from '../scope.ts'
 import { operandAbs } from './ln.ts'
 import type { Result } from '../types.ts'
 import { encodeText } from '../../../../shell/bytes.ts'
@@ -55,7 +56,7 @@ export function operandWords(args: readonly (string | PathSpec)[]): (string | Pa
   const words: (string | PathSpec)[] = []
   let options = true
   for (const arg of args) {
-    const text = operandText(arg)
+    const text = scopePath(arg)
     if (options && text === '--') options = false
     else if (!(options && text.startsWith('-') && text !== '-')) words.push(arg)
   }

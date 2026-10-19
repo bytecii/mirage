@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 
+from mirage.commands.builtin.utils.constants import MONTHS
 from mirage.core.email.client import quote_string
 from mirage.types import JsonValue
 
@@ -45,20 +46,6 @@ FLAGS = {
     "draft": "DRAFT",
     "deleted": "DELETED",
 }
-IMAP_MONTHS = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-)
 
 
 class QueryError(ValueError):
@@ -158,7 +145,7 @@ def _imap_date(text: str) -> date:
 
 
 def _format_date(value: date) -> str:
-    return f"{value.day:02d}-{IMAP_MONTHS[value.month - 1]}-{value.year}"
+    return f"{value.day:02d}-{MONTHS[value.month - 1]}-{value.year}"
 
 
 class _Parser:

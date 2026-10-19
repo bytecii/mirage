@@ -21,7 +21,6 @@ import type { JsonValue } from '../../types.ts'
 import { concat } from '../../utils/bytes.ts'
 
 const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { ignoreBOM: true })
 
 function config(
   opts: JqOptions,
@@ -41,15 +40,6 @@ function config(
     separator,
     check_only: checkOnly,
   }
-}
-
-/** Lay out a compact evaluator dump without converting numeric literals. */
-export async function dumpText(text: string, opts: JqOptions): Promise<string> {
-  const plain = { ...opts, rawOutput: false, seq: false }
-  const parts: Uint8Array[] = []
-  for await (const part of runCodec('jq_format', config(plain, false, false), ENC.encode(text)))
-    parts.push(part)
-  return DEC.decode(concat(parts))
 }
 
 /** Render one evaluator dump with its separator in bounded Rust steps. */

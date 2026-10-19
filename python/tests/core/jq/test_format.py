@@ -19,7 +19,6 @@ from mirage.core.jq import (
     JqHalt,
     JqOptions,
     JqRun,
-    dump_text,
     error_report,
     format_one,
     halt_report,
@@ -126,15 +125,15 @@ async def test_a_string_output_is_printed_the_way_jq_prints_it(opts, expected):
 @pytest.mark.asyncio
 async def test_a_deep_value_is_laid_out_without_recursion():
     deep = "[" * 300 + "1.000" + "]" * 300
-    pretty = await dump_text(deep, PRETTY)
+    pretty = (await format_one(deep, PRETTY)).decode()
     assert pretty.startswith("[\n  [\n    [")
     assert "\n" + " " * 600 + "1.000\n" in pretty
     assert (
-        await dump_text(
+        await format_one(
             '{"b":' * 300 + '{"a":1}' + "}" * 300,
             JqOptions(compact=True, sort_keys=True),
         )
-    ).count('"b"') == 300
+    ).count(b'"b"') == 300
 
 
 @pytest.mark.asyncio
@@ -144,8 +143,8 @@ async def test_sort_keys_orders_by_code_point_and_reads_escaped_keys(compact):
     text = '{"é":1,"z":2,"a\\"":3,"😀":4,"ｚ":5,"\\u0001":6}'
     ordered = '{"\\u0001":6,"a\\"":3,"z":2,"é":1,"ｚ":5,"😀":4}'
     opts = JqOptions(compact=compact, sort_keys=True)
-    assert (await dump_text(text, opts)) == (
-        await dump_text(ordered, JqOptions(compact=compact))
+    assert (await format_one(text, opts)) == (
+        await format_one(ordered, JqOptions(compact=compact))
     )
 
 

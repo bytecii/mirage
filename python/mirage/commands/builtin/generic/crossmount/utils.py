@@ -37,6 +37,7 @@ from mirage.commands.builtin.generic.rg import (
 from mirage.commands.builtin.generic.rg import parse_flags as parse_rg_flags
 from mirage.commands.builtin.generic_bind.files import dispatched_call
 from mirage.commands.builtin.grep_binary import group_line
+from mirage.commands.builtin.utils.paths import virtual_key
 from mirage.commands.builtin.utils.stream import is_stdin
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -218,9 +219,7 @@ def run_separator(cmd_name: str, flags: dict[str, FlagValue]) -> bytes:
 def flat_scopes(scopes: list[PathSpec]) -> list[PathSpec]:
     # Address by full virtual path so a generic sees one flat namespace;
     # the relayed primitives route each full path to its mount.
-    return [
-        dataclasses.replace(s, vfs_path=s.virtual.strip("/")) for s in scopes
-    ]
+    return [virtual_key(s) for s in scopes]
 
 
 def transfer_primitives(dispatch: DispatchFn) -> dict[str, Any]:

@@ -26,6 +26,7 @@ import jq as _libjq
 from mirage.core.jq.errors import JqCompileError
 from mirage.core.jq.parse import string_text
 from mirage.core.jq.types import JqError, JqHalt, JqOptions, JqRun, StreamReads
+from mirage.core.render.json import compact_json_text
 from mirage.types import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -724,10 +725,7 @@ def _run(expr: str, bound: _Bound, dump: bool) -> JqRun[JsonValue]:
         # The last resort of a program that refused the dump: its values,
         # written back as JSON.
         return JqRun(
-            [
-                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-                for value in run.outputs
-            ],
+            [compact_json_text(value) for value in run.outputs],
             run.stop,
         )
     run, ended = _collected(compiled.input_text(bound.stdin), dump)

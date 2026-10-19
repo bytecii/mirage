@@ -24,7 +24,7 @@ from mirage.core.disk.stat import stat_of
 from mirage.core.disk.utils import read_entries, resolve_inside
 from mirage.errors.fs import enoent, enotdir
 from mirage.types import DirListing, FileStat, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +73,7 @@ def _scan(p: Path, versioned: bool) -> DirListing:
 
 
 async def readdir(accessor: DiskAccessor, path_spec: PathSpec) -> DirListing:
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
-    path = path_spec.directory if path_spec.pattern else path_spec.virtual
-    if prefix and path.startswith(prefix):
-        rest = path[len(prefix) :]
-        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-            path = rest or "/"
+    path = raw_path_of(path_spec.dir if path_spec.pattern else path_spec)
     p = await resolve_inside(accessor.root, path_spec, path)
     # The kernel already separates ENOENT (a component does not exist) from
     # ENOTDIR (a component exists but is not a directory); let listdir make

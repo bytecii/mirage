@@ -63,8 +63,8 @@ export async function handleResponse(r: Response): Promise<unknown> {
   return JSON.parse(text) as unknown
 }
 
-export function formatAge(epoch: number, now: number = Date.now() / 1000): string {
-  const delta = Math.max(0, now - epoch)
+export function formatAge(epoch: number): string {
+  const delta = Math.max(0, Date.now() / 1000 - epoch)
   if (delta < 60) return `${String(Math.floor(delta))}s`
   if (delta < 3600) return `${String(Math.floor(delta / 60))}m`
   if (delta < 86400) return `${String(Math.floor(delta / 3600))}h`

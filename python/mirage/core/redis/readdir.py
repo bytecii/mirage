@@ -16,7 +16,7 @@ from mirage.accessor.redis import RedisAccessor
 from mirage.core.redis.stat import key_stats
 from mirage.errors.fs import readdir_error
 from mirage.types import FileStat, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 from mirage.utils.path import norm
 
 
@@ -24,12 +24,7 @@ async def readdir(
     accessor: RedisAccessor, path_spec: PathSpec
 ) -> list[FileStat]:
     virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
-    path = path_spec.directory if path_spec.pattern else path_spec.virtual
-    if prefix and path.startswith(prefix):
-        rest = path[len(prefix) :]
-        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-            path = rest or "/"
+    path = raw_path_of(path_spec.dir if path_spec.pattern else path_spec)
     store = accessor.store
     p = norm(path)
     if not await store.has_dir(p):

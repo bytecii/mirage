@@ -12,13 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { chunks } from '@struktoai/mirage-core/io/cooperative'
 import type { ByteSource } from '@struktoai/mirage-core/io/types'
 import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { joinRoot, openForWrite, stripPrefix } from './utils.ts'
+import { joinRoot, openForWrite } from './utils.ts'
 
 export async function appendBytes(
   accessor: SSHAccessor,
@@ -36,7 +37,7 @@ export async function appendStream(
 ): Promise<void> {
   const timer = startOp()
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   const handle = await openForWrite(sftp, remote, p, 'a')
   let size = 0

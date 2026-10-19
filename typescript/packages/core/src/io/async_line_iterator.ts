@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { findBytes } from '../utils/bytes.ts'
+import { concat, findBytes } from '../utils/bytes.ts'
 import { abortable } from '../utils/abort.ts'
 import { YieldBudget } from './yield_budget.ts'
 import { chunks } from './cooperative.ts'
@@ -283,7 +283,7 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
   private async failed(error: unknown, taken: readonly Uint8Array[] = []): Promise<void> {
     const aborted = error instanceof DOMException && error.name === 'AbortError'
     if (this.input instanceof PipeInput && aborted) {
-      if (taken.length > 0) this.buf = join([...taken, this.buf])
+      if (taken.length > 0) this.buf = concat([...taken, this.buf])
       return
     }
     await this.close()
@@ -337,12 +337,12 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
         if (idx >= 0) {
           const tail = this.buf.subarray(0, idx)
           this.buf = this.buf.subarray(idx + width)
-          return [parts.length === 0 ? tail : join([...parts, tail]), true]
+          return [parts.length === 0 ? tail : concat([...parts, tail]), true]
         }
         if (this.exhausted) {
           parts.push(this.buf)
           this.buf = new Uint8Array()
-          return [join(parts), false]
+          return [concat(parts), false]
         }
         const keep = Math.min(width - 1, this.buf.length)
         const cut = this.buf.length - keep
@@ -560,16 +560,6 @@ export function charWidth(data: Uint8Array): number {
     if (byte < 0x80 || byte >= 0xc0) return i
   }
   return limit
-}
-
-function join(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
-  const out = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0))
-  let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.byteLength
-  }
-  return out
 }
 
 function concat2(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {

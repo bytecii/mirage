@@ -10,7 +10,7 @@ import { sliceWindow } from '../../utils/ranges.ts'
 import { readdir } from '../../core/mem0/readdir.ts'
 import { read, readStream } from '../../core/mem0/read.ts'
 import { stat } from '../../core/mem0/stat.ts'
-import { searchResource, searchMany } from '../../core/mem0/search.ts'
+import { searchMany } from '../../core/mem0/search.ts'
 
 export interface Mem0VFSState {
   type: string
@@ -64,7 +64,7 @@ export class Mem0VFS extends BaseVFS {
   }
 
   override search(path: PathSpec, query: SearchQuery): Promise<[string, string][] | null> {
-    return searchResource(this.accessor, path, query)
+    return searchMany(this.accessor, [path], query)
   }
 
   override searchMany(paths: PathSpec[], query: SearchQuery): Promise<[string, string][] | null> {

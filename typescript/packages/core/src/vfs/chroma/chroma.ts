@@ -30,7 +30,7 @@ import type { Handed } from '../types.ts'
 import { CHROMA_TREE } from '../../core/chroma/tree.ts'
 import { read, readStream } from '../../core/chroma/read.ts'
 import { stat } from '../../core/chroma/stat.ts'
-import { filesContaining, searchResource, searchMany } from '../../core/chroma/search.ts'
+import { filesContaining, searchMany } from '../../core/chroma/search.ts'
 
 export interface ChromaVFSOptions {
   config: ChromaConfig
@@ -111,7 +111,7 @@ export class ChromaVFS extends BaseVFS {
   }
 
   override search(path: PathSpec, query: SearchQuery): Promise<[string, string][] | null> {
-    return searchResource(this.accessor, path, query)
+    return searchMany(this.accessor, [path], query)
   }
 
   override searchMany(paths: PathSpec[], query: SearchQuery): Promise<[string, string][] | null> {

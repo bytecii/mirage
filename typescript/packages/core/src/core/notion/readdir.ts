@@ -33,23 +33,9 @@ import {
   searchPages,
 } from './pages.ts'
 import { formatSegment } from './pathing.ts'
+import { asArray, asObject, strOf } from './render.ts'
 import { detectScope } from './scope.ts'
 import { guardRow } from './resolve.ts'
-
-function pickString(record: Record<string, unknown>, key: string): string {
-  const value = record[key]
-  return typeof value === 'string' ? value : ''
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {}
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : []
-}
 
 export const PAGE = entryStat('page_id', FileType.DIRECTORY)
 export const DATABASE = entryStat('database_id', FileType.DIRECTORY)
@@ -58,10 +44,10 @@ export const DATA_SOURCE = entryStat('data_source_id', FileType.DIRECTORY)
 async function listPagesRoot(accessor: NotionAccessor, _match: ScopeMatch): Promise<FileStat[]> {
   const pages = await searchPages(accessor.transport)
   return pages
-    .filter((page) => asRecord(page.parent).type === 'workspace')
+    .filter((page) => asObject(page.parent).type === 'workspace')
     .map((page) =>
-      PAGE(pageSegmentName(page), pickString(page, 'id'), {
-        modified: pickString(page, 'last_edited_time'),
+      PAGE(pageSegmentName(page), strOf(page, 'id'), {
+        modified: strOf(page, 'last_edited_time'),
       }),
     )
 }
@@ -76,7 +62,7 @@ async function listDatabasesRoot(
   // directory is named and rendered from.
   const owners: string[] = []
   for (const dataSource of await searchDataSources(accessor.transport)) {
-    const owner = pickString(asRecord(dataSource.parent), 'database_id')
+    const owner = strOf(asObject(dataSource.parent), 'database_id')
     if (owner !== '' && !owners.includes(owner)) owners.push(owner)
   }
   const rows: FileStat[] = []
@@ -84,7 +70,7 @@ async function listDatabasesRoot(
     const database = await getDatabase(accessor.transport, databaseId)
     rows.push(
       DATABASE(databaseSegmentName(database), databaseId, {
-        modified: pickString(database, 'last_edited_time'),
+        modified: strOf(database, 'last_edited_time'),
       }),
     )
   }
@@ -131,10 +117,10 @@ async function listDatabase(
     }),
   ]
   for (const stub of asArray(database.data_sources)) {
-    const record = asRecord(stub)
+    const record = asObject(stub)
     rows.push(
-      DATA_SOURCE(dataSourceSegmentName(record), pickString(record, 'id'), {
-        modified: pickString(database, 'last_edited_time'),
+      DATA_SOURCE(dataSourceSegmentName(record), strOf(record, 'id'), {
+        modified: strOf(database, 'last_edited_time'),
       }),
     )
   }

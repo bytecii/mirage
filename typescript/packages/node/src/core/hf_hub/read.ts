@@ -12,34 +12,18 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { fileEntry } from '@struktoai/mirage-core/core/hierarchy/probe'
 import { record, startOp } from '@struktoai/mirage-core/observe/context'
-import { FileType, type FileStat, type PathSpec } from '@struktoai/mirage-core/types'
-import { eisdir, enoent } from '@struktoai/mirage-core/errors/fs'
+import { type FileStat, type PathSpec } from '@struktoai/mirage-core/types'
 import type { ByteWindow } from '@struktoai/mirage-core/utils/ranges'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { etagValue, hubBytesTagged, resolveUrl } from './client.ts'
 import { REFUSED_STATUSES } from './constants.ts'
 import { refusalsDenied } from './lookup.ts'
-import { stripSlash } from '@struktoai/mirage-core/utils/slash'
 
 export interface HfHubReadOptions {
   offset?: number
   size?: number
-}
-
-/**
- * The file's row, or the error that says why there is none.
- *
- * Shared by every content read so a file, a directory and an absence are told
- * apart in exactly one place. It also means a read never reaches the network
- * for a path the listing already knows is absent. Mirrors Python's
- * `resolve_entry`.
- */
-export function resolveEntry(pathSpec: PathSpec, entry: FileStat | null | undefined): FileStat {
-  if (stripSlash(pathSpec.mountPath) === '') throw eisdir(pathSpec.virtual)
-  if (entry === undefined || entry === null) throw enoent(pathSpec.virtual)
-  if (entry.type === FileType.DIRECTORY) throw eisdir(pathSpec.virtual)
-  return entry
 }
 
 /**
@@ -67,7 +51,7 @@ export async function read(
   options: HfHubReadOptions = {},
   entry?: FileStat | null,
 ): Promise<Uint8Array> {
-  const row = resolveEntry(path, entry)
+  const row = fileEntry(path, entry)
   const url = resolveUrl(
     accessor.endpoint,
     accessor.repoType,

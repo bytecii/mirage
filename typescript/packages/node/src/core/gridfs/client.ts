@@ -14,7 +14,7 @@
 
 import type { Collection, Db, Document, GridFSBucket, ObjectId } from 'mongodb'
 import * as kp from '@struktoai/mirage-core/utils/key_prefix'
-import { loadOptionalPeer } from '../../optional_peer.ts'
+import { loadOptionalPeer } from '@struktoai/mirage-core/utils/optional_peer'
 import type { GridFSAccessor } from '../../accessor/gridfs.ts'
 import type { GridFSConfig } from '../../vfs/gridfs/config.ts'
 

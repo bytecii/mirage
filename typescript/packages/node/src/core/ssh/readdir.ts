@@ -15,7 +15,7 @@
 import type { FileEntryWithStats, Stats } from 'ssh2'
 import { FileStat, FileType, type PathSpec } from '@struktoai/mirage-core/types'
 import { eacces, listingError } from '@struktoai/mirage-core/errors/fs'
-import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
+import { mountPrefixOf, rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
@@ -26,7 +26,6 @@ import {
   isNoSuchFile,
   isPermissionDenied,
   joinRoot,
-  stripPrefix,
 } from './utils.ts'
 
 async function attrsOrNull(accessor: SSHAccessor, key: string): Promise<Stats | null> {
@@ -84,7 +83,7 @@ async function rowOf(
 
 export async function readdir(accessor: SSHAccessor, p: PathSpec): Promise<FileStat[]> {
   const mountPrefix = mountPrefixOf(p.virtual, p.vfsPath)
-  const virtual = p.pattern !== null ? p.directory.slice(mountPrefix.length) || '/' : stripPrefix(p)
+  const virtual = p.pattern !== null ? p.directory.slice(mountPrefix.length) || '/' : rawPathOf(p)
   const sftp = await accessor.sftp()
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   const list = await new Promise<FileEntryWithStats[] | null>((resolveFn, rejectFn) => {

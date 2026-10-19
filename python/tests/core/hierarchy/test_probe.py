@@ -12,10 +12,26 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.core.hierarchy.probe import parent_spec
+import pytest
+
+from mirage.core.hierarchy.probe import file_entry, parent_spec
+from mirage.types import FileStat, FileType
 from tests.core.hierarchy.conftest import spec
 
 
 def test_parent_spec_is_the_directory_holding_the_path():
     parent = parent_spec(spec("/rooms/red/a.json"))
     assert (parent.virtual, parent.vfs_path) == ("/h/rooms/red", "rooms/red")
+
+
+def test_file_entry_answers_a_file_and_refuses_the_rest():
+    row = FileStat(name="a.json", type=FileType.FILE)
+    assert file_entry(spec("/rooms/red/a.json"), row) is row
+    with pytest.raises(IsADirectoryError):
+        file_entry(
+            spec("/rooms/red"), FileStat(name="red", type=FileType.DIRECTORY)
+        )
+    with pytest.raises(IsADirectoryError):
+        file_entry(spec("/"), None)
+    with pytest.raises(FileNotFoundError):
+        file_entry(spec("/rooms/red/missing.json"), None)

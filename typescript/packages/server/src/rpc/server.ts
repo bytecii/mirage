@@ -55,7 +55,6 @@ export class RpcError extends Error {
   constructor(
     readonly code: number,
     message: string,
-    readonly data: Record<string, JsonValue> | null = null,
   ) {
     super(message)
   }
@@ -215,7 +214,7 @@ export class MirageRpcServer {
       const result = await handler(params as Params, signal)
       return { jsonrpc: '2.0', id: requestId, result }
     } catch (err) {
-      if (err instanceof RpcError) return errorResponse(requestId, err.code, err.message, err.data)
+      if (err instanceof RpcError) return errorResponse(requestId, err.code, err.message)
       if (signal?.aborted === true) {
         return errorResponse(requestId, RPC_REQUEST_CANCELLED, 'request cancelled')
       }

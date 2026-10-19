@@ -17,7 +17,7 @@ from typing import Any
 
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 
 
 def dropbox_path_of(accessor: DropboxAccessor, path: PathSpec) -> str:
@@ -27,10 +27,7 @@ def dropbox_path_of(accessor: DropboxAccessor, path: PathSpec) -> str:
         accessor (DropboxAccessor): carries the normalized root_path.
         path (PathSpec): mount path to translate.
     """
-    prefix = mount_prefix_of(path.virtual, path.vfs_path)
-    p = path.virtual
-    if prefix and p.startswith(prefix):
-        p = p[len(prefix) :] or "/"
+    p = raw_path_of(path)
     key = p.strip("/")
     return accessor.root_path if not key else f"{accessor.root_path}/{key}"
 

@@ -24,22 +24,9 @@ import {
 } from '../../../../utils/timezone.ts'
 import { DateFormatColonError, UnknownDateFormatError } from './errors.ts'
 import { DateKind, type DateMode } from './types.ts'
+import { MONTHS } from '../../../builtin/utils/constants.ts'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
-const MONTHS = [
-  'Jan',
-  'Feb',
-  'Mar',
-  'Apr',
-  'May',
-  'Jun',
-  'Jul',
-  'Aug',
-  'Sep',
-  'Oct',
-  'Nov',
-  'Dec',
-] as const
 
 // git's test clock: when set, the moment relative and human dates count from;
 // its leading integer is read, and anything else reads as 0.

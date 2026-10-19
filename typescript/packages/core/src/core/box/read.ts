@@ -12,28 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { fileEntry } from '../hierarchy/probe.ts'
 import { publishRead, writesConditioned } from '../../cache/context.ts'
 import type { BoxAccessor } from '../../accessor/box.ts'
 import { record, recordStream, startOp } from '../../observe/context.ts'
-import { type FileStat, FileType, type PathSpec } from '../../types.ts'
+import { type FileStat, type PathSpec } from '../../types.ts'
 import { Sha1, sha1Hex } from '../../utils/hash.ts'
 import { downloadFile, downloadFileStream } from './api.ts'
 import { entryToken, readToken } from './fingerprint.ts'
-import { stripSlash } from '../../utils/slash.ts'
-import { eisdir, enoent } from '../../errors/fs.ts'
 import { windowFor } from '../../utils/ranges.ts'
-
-/**
- * What is at the file `path`, as its parent's listing named it. Throws ENOENT
- * when nothing is there and EISDIR when a folder is. Mirrors Python's
- * `file_entry`.
- */
-export function fileEntry(path: PathSpec, entry: FileStat | null | undefined): FileStat {
-  if (stripSlash(path.vfsPath) === '') throw eisdir(path.virtual)
-  if (entry === null || entry === undefined) throw enoent(path.virtual)
-  if (entry.type === FileType.DIRECTORY) throw eisdir(path.virtual)
-  return entry
-}
 
 /**
  * Read a file, optionally only a byte range of it. On a `write: conditional`

@@ -123,7 +123,7 @@ def _parse_csv(value: str) -> tuple[str, ...]:
     return tuple(p.strip() for p in value.split(",") if p.strip())
 
 
-_CONFIG_ENV_KEYS = {
+CONFIG_ENV_KEYS = {
     "auth_mode": ENV_AUTH_MODE,
     "jwt_alg": ENV_JWT_ALG,
     "jwt_issuer": ENV_JWT_ISSUER,
@@ -153,7 +153,7 @@ def _merge_config_table(
         dict[str, str]: env copy with config fallbacks applied.
     """
     merged = dict(env)
-    for cfg_key, env_name in _CONFIG_ENV_KEYS.items():
+    for cfg_key, env_name in CONFIG_ENV_KEYS.items():
         if merged.get(env_name, "").strip():
             continue
         value = table.get(cfg_key)

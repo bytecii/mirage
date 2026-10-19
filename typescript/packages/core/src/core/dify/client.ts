@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { sleep } from '../../utils/abort.ts'
 import type { DifyAccessor, DifyRequestOptions } from '../../accessor/dify.ts'
 
 class DifyHttpError extends Error {
@@ -23,10 +24,6 @@ class DifyHttpError extends Error {
     this.status = status
     this.retryAfter = retryAfter
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function isRetryable(error: unknown): boolean {

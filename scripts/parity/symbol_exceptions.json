@@ -1,5 +1,5 @@
 {
-  "baseline": 3249,
+  "baseline": 3220,
  "modules": {
   "runtime/sandbox/microsandbox/config": {
    "typescript_only": {
@@ -165,9 +165,6 @@
     "newlines": "Counts newlines in a Uint8Array, which has no count; Python's bytes.count does it."
    }
   },
-  "policy/policies": {
-   "typescript_only": {}
-  },
   "core/hf_hub/client": {
    "typescript_only": {
     "hubFetch": "fetch reports a transport failure as a bare TypeError, so TypeScript wraps it; aiohttp already raises ClientError, which the Python callers catch.",
@@ -327,7 +324,6 @@
   },
   "server/routers/sessions": {
    "python_only": {
-    "_require_session": "The session lookup the delete, cancel and kill routes share; TypeScript's is sessionWorkspace, declared inside registerSessionsRoutes.",
     "cancel_session_lines": "FastAPI routes are module functions; Fastify registers the same handler inline in registerSessionsRoutes.",
     "kill_session_jobs": "FastAPI routes are module functions; Fastify registers the same handler inline in registerSessionsRoutes.",
     "UpdateSessionRequest": "Python uses decorated Typer/FastAPI handlers and request models; TypeScript registers matching routes and commands as closures with typed inputs. Cross-host document and session behavior is covered by integ/access.",
@@ -615,7 +611,6 @@
    }
   },
   "workspace/mount/write_policy": {
-   "typescript_only": {},
    "python_only": {
     "_endpoint": "Python reads the endpoint through the EndpointVFS protocol (S3VFS.resolved_endpoint); TypeScript asks `vfs instanceof S3VFSBase` and reads its resolvedEndpoint getter."
    }
@@ -876,11 +871,6 @@
     "namespaceOfFiles": "TypeScript has no package-private: Files assigns it from its static block so namespaceOf reaches the private members; Python's namespace_of reads them directly.",
     "viewOfFiles": "TypeScript has no package-private: Files assigns it from its static block so viewOf reaches the private members; Python's view_of reads them directly.",
     "withCaller": "The door to the private forCaller for the file tool and explain.vfs; Python's task context carries the caller instead, so it has no counterpart."
-   }
-  },
-  "agents/openai_agents/editor": {
-   "typescript_only": {
-    "ensureParent": "JavaScript Editor creates parent directories through VFS calls; the Python Editor runs mkdir -p through the workspace."
    }
   },
   "agents/openai_agents/sandbox": {

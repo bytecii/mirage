@@ -3,7 +3,8 @@ from typing import Any
 
 from mirage.accessor.dify import DifyAccessor
 from mirage.core.dify.client import get_document_segments, iter_segment_pages
-from mirage.core.slug_tree.read import file_entry, join_lines
+from mirage.core.hierarchy.probe import file_entry
+from mirage.core.slug_tree.read import join_lines
 from mirage.types import FileStat, PathSpec
 from mirage.utils.ranges import slice_window
 

@@ -25,6 +25,7 @@ from mirage.core.api.client import (
     ApiResponse,
     api_request,
     api_stream,
+    lowered_headers,
     status_error,
 )
 from mirage.core.github.constants import (
@@ -286,10 +287,7 @@ def _error_of(resp: aiohttp.ClientResponse, text: str) -> Exception:
         resp.status,
         body=text,
         url=str(resp.url),
-        headers={
-            key.lower(): ", ".join(resp.headers.getall(key))
-            for key in resp.headers.keys()
-        },
+        headers=lowered_headers(resp.headers),
     )
 
 

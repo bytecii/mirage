@@ -26,7 +26,6 @@ import { PipeClosed } from '../../../io/errors.ts'
 import { OutputStream, closeQuietly } from '../../../io/stream.ts'
 import { ContextScope } from '../../../utils/context_scope.ts'
 import { captureSessionContext } from '../../../context/session_context.ts'
-import { captureExecutionContext } from '../../../execution/context.ts'
 import { isProcessExecutor, isStreamingProcess } from '../../../runtime/mixin.ts'
 import type { RouteDecision } from '../../../runtime/routing/types.ts'
 import { shellJoin } from '../../../shell/join.ts'
@@ -128,7 +127,7 @@ function streamExternal(
   const pipe = new BytePipe()
   const controller = new AbortController()
   const runSignal = mergeSignals(signal, controller.signal) ?? controller.signal
-  const scope = new ContextScope([...captureSessionContext(), captureExecutionContext()])
+  const scope = new ContextScope(captureSessionContext())
   const io = new IOResult({
     producer: {
       command: argv.name,

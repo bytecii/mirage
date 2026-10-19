@@ -15,6 +15,8 @@
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
 from mirage.commands.builtin.generic_bind.files import command_files
+from mirage.commands.builtin.utils.operands import operands_io
+from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.config import Context
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
@@ -56,8 +58,7 @@ async def touch(
                 f"touch: cannot touch '{p.virtual}': {fs_strerror(exc)}"
             )
             continue
-    stderr = ("\n".join(errors) + "\n").encode() if errors else None
-    return None, IOResult(stderr=stderr, exit_code=1 if errors else 0)
+    return None, operands_io(format_records(errors))
 
 
 BUILDER = GenericCommand("touch", touch, write=True)

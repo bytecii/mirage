@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { apiRequest } from '@struktoai/mirage-core/core/api/client'
+import { apiRequest, loweredHeaders } from '@struktoai/mirage-core/core/api/client'
 import type { HfAccountAccessor } from '../../accessor/hf_hub.ts'
 import type { ApiResponse, RetryPolicy } from '@struktoai/mirage-core/core/api/client'
 import type { ByteWindow } from '@struktoai/mirage-core/utils/ranges'
@@ -385,11 +385,7 @@ export async function* hubStream(
   const response = await stallFetch(account.timeoutMs)(url, { headers: hubHeaders(account.token) })
   if (response.status >= 400) throw errorOf(response, await response.text())
   if (onResponse !== undefined) {
-    const headers: Record<string, string> = {}
-    response.headers.forEach((value, name) => {
-      headers[name.toLowerCase()] = value
-    })
-    onResponse(headers)
+    onResponse(loweredHeaders(response.headers))
   }
   const body = response.body
   if (body === null) return

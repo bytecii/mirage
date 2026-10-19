@@ -77,10 +77,10 @@ class _AsyncBridge:
             self._thread = t
             return self._state["loop"]
 
-    def run(self, coro: Any, timeout: float | None = None) -> Any:
+    def run(self, coro: Any) -> Any:
         loop = self._ensure()
         fut = asyncio.run_coroutine_threadsafe(coro, loop)
-        return fut.result(timeout=timeout)
+        return fut.result()
 
     def shutdown(self) -> None:
         with self._lock:

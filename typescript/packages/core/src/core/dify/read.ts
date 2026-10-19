@@ -15,7 +15,8 @@
 import type { DifyAccessor } from '../../accessor/dify.ts'
 import type { FileStat, PathSpec } from '../../types.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
-import { fileEntry, joinLines } from '../slug_tree/read.ts'
+import { fileEntry } from '../hierarchy/probe.ts'
+import { joinLines } from '../slug_tree/read.ts'
 import { scalarString } from '../slug_tree/rows.ts'
 import { getDocumentSegments, iterSegmentPages } from './client.ts'
 

@@ -28,10 +28,10 @@ from mirage.workspace.executor.builtins.df.constants import (
     BLOCK_SUFFIX,
     SI_UNITS,
 )
+from mirage.workspace.executor.builtins.scope import _scope_path
 from mirage.workspace.executor.builtins.shared import (
     fail,
     ok,
-    operand_text,
     result,
     split_value_flags,
 )
@@ -83,7 +83,7 @@ def _last_format(args: list[str | PathSpec]) -> str | None:
     last: str | None = None
     i = 0
     while i < len(args):
-        s = operand_text(args[i])
+        s = _scope_path(args[i])
         if s == "--" or not (len(s) >= 2 and s[0] == "-" and s[1] != "-"):
             break
         body = s[1:]

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '@struktoai/mirage-core/utils/bytes'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { chunks } from '@struktoai/mirage-core/io/cooperative'
@@ -106,18 +107,10 @@ async function get(conn: GridFSAccessor, key: string): Promise<Uint8Array | null
   const b = await bucket(conn)
   const readable = b.openDownloadStream(doc._id)
   const chunks: Uint8Array[] = []
-  let total = 0
   for await (const chunk of readable as AsyncIterable<Uint8Array>) {
     chunks.push(chunk)
-    total += chunk.byteLength
   }
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
+  return concat(chunks)
 }
 
 async function put(

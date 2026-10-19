@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mirage.core.hf_hub.client import HfHubError
-from mirage.core.hf_hub.read import read, resolve_entry, row_token
+from mirage.core.hf_hub.read import read, row_token
 from mirage.core.hf_hub.readdir import readdir
 from mirage.observe.context import RecordingScope
 from mirage.types import FileStat, FileType, PathSpec
@@ -80,11 +80,6 @@ async def test_read_of_a_directory_is_eisdir(loaded):
 async def test_read_of_the_mount_root_is_eisdir(loaded):
     with pytest.raises(IsADirectoryError):
         await _read(loaded, ps(""))
-
-
-def test_resolve_entry_returns_the_row():
-    row = FileStat(name="a.txt", size=7, type=FileType.FILE)
-    assert resolve_entry(ps("a.txt"), row) is row
 
 
 @pytest.mark.asyncio

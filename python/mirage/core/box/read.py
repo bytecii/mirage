@@ -19,30 +19,10 @@ from mirage.accessor.box import BoxAccessor
 from mirage.cache.context import publish_read, writes_conditioned
 from mirage.core.box.api import download_file, download_file_stream
 from mirage.core.box.fingerprint import entry_token, read_token
-from mirage.errors.fs import eisdir, enoent
+from mirage.core.hierarchy.probe import file_entry
 from mirage.observe.context import record, record_stream, start_op
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.types import FileStat, PathSpec
 from mirage.utils.ranges import window_for
-
-
-def file_entry(path: PathSpec, entry: FileStat | None) -> FileStat:
-    """What is at the file ``path``, as its parent's listing named it.
-
-    Args:
-        path (PathSpec): the file.
-        entry (FileStat | None): what is at the path.
-
-    Raises:
-        FileNotFoundError: nothing is there.
-        IsADirectoryError: a folder is.
-    """
-    if not path.vfs_path.strip("/"):
-        raise eisdir(path.virtual)
-    if entry is None:
-        raise enoent(path.virtual)
-    if entry.type is FileType.DIRECTORY:
-        raise eisdir(path.virtual)
-    return entry
 
 
 async def read(

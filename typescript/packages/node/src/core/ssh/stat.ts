@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { Stats } from 'ssh2'
 import { FileStat, FileType, type PathSpec } from '@struktoai/mirage-core/types'
 import { epochToIso } from '@struktoai/mirage-core/utils/dates'
@@ -27,7 +28,6 @@ import {
   isNoSuchFile,
   isPermissionDenied,
   joinRoot,
-  stripPrefix,
 } from './utils.ts'
 
 export const FIND = 'env LC_ALL=C find -L'
@@ -87,7 +87,7 @@ export function attrsToFileStat(name: string, attrs: SshAttrs): FileStat {
 
 export async function stat(accessor: SSHAccessor, p: PathSpec): Promise<FileStat> {
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   const attrs = await new Promise<Stats>((resolveFn, rejectFn) => {
     // Follow symlinks (stat, not lstat), like the Python core: reads
@@ -128,7 +128,7 @@ export async function tree(
   accessor: SSHAccessor,
   p: PathSpec,
 ): Promise<Map<string, FileStat> | null> {
-  const scope = joinRoot(accessor.config.root ?? '/', stripPrefix(p))
+  const scope = joinRoot(accessor.config.root ?? '/', rawPathOf(p))
   let status: number | null
   let out: Uint8Array
   let err: Uint8Array

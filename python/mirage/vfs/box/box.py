@@ -64,8 +64,7 @@ class BoxVFS(BaseVFS):
     def __init__(self, config: BoxConfig) -> None:
         super().__init__()
         self.config = config
-        self._token_manager = BoxTokenManager(config)
-        self.accessor = BoxAccessor(self.config, self._token_manager)
+        self.accessor = BoxAccessor(self.config, BoxTokenManager(config))
 
     async def readdir(
         self, path: PathSpec, entry: FileStat | None = None
@@ -211,11 +210,6 @@ class BoxVFS(BaseVFS):
         if not whole_word or not self.accessor.config.content_search:
             return None
         return await _files_containing(self.accessor, text, path, entry)
-
-    async def close(self) -> None:
-        """Drain the token manager's connection pool with the VFS."""
-        await self._token_manager.close()
-        await super().close()
 
     async def capacity(self) -> CapacityResult:
         return await _capacity(self.accessor)

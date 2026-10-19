@@ -497,7 +497,6 @@ def format_ls_long(
     *,
     human: bool = False,
     identity: Identity | None = None,
-    size_width: int | None = None,
     columns: LsColumns = DEFAULT_COLUMNS,
     names: list[str] | None = None,
 ) -> list[str]:
@@ -517,8 +516,6 @@ def format_ls_long(
         human (bool): render sizes with ``-h`` units.
         identity (Identity | None): who the session is; None outside a
             workspace, where both columns fall back to ``-``.
-        size_width (int | None): the size column's width, computed from
-            the rows when None.
         columns (LsColumns): which columns to carry and how to spell the
             time.
         names (list[str] | None): the name column per row when the
@@ -530,11 +527,7 @@ def format_ls_long(
         else _ls_size_and_time(s, human, columns=columns)
         for s in stats
     ]
-    width = (
-        size_width
-        if size_width is not None
-        else max((len(size) for size, _ in cells), default=1)
-    )
+    width = max((len(size) for size, _ in cells), default=1)
     time_width = max((len(when) for _, when in cells), default=1)
     out: list[str] = []
     for i, (s, (raw_size, when)) in enumerate(zip(stats, cells)):

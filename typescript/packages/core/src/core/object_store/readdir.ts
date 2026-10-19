@@ -18,7 +18,7 @@ import type { TreeEntry } from './driver.ts'
 import type { Accessor } from '../../accessor/base.ts'
 import { listingError } from '../../errors/fs.ts'
 import * as kp from '../../utils/key_prefix.ts'
-import { mountPrefixOf } from '../../utils/key_prefix.ts'
+import { rawPathOf } from '../../utils/key_prefix.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import type { ObjectStoreDriver, ReaddirFn, TreeFn } from './driver.ts'
@@ -44,13 +44,10 @@ async function probeDir<A extends Accessor, C>(
 /** Build a prefix listing over one driver. Mirrors Python's `make_readdir`. */
 export function makeReaddir<A extends Accessor, C>(driver: ObjectStoreDriver<A, C>): ReaddirFn<A> {
   return async function readdir(accessor, path) {
-    const prefix = mountPrefixOf(path.virtual, path.vfsPath)
     // When called from resolveGlob with a pattern (e.g. *.txt), use
     // path.directory for the listing. Direct callers (ls, ops) pass
     // pattern=null so path.virtual is used.
-    const virtual = path.pattern !== null ? path.directory : path.virtual
-    const rawPath =
-      prefix !== '' && virtual.startsWith(prefix) ? virtual.slice(prefix.length) || '/' : virtual
+    const rawPath = rawPathOf(path.pattern !== null ? path.dir : path)
     const kpfx = driver.keyPrefixOf(accessor)
     const pfx = kp.applyDir(kpfx, rawPath)
     const names: string[] = []

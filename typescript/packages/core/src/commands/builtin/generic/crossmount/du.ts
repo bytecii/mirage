@@ -27,6 +27,7 @@ import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { FollowOperands } from '../../../../view/types.ts'
 import { PathSpec } from '../../../../types.ts'
 import { stripSlash } from '../../../../utils/slash.ts'
+import { virtualKey } from '../../utils/paths.ts'
 import type { Files } from '../../../../workspace/files.ts'
 import { mountView } from '../../utils/links.ts'
 
@@ -138,16 +139,7 @@ export async function runDu(
   const records: PathRecord[] = []
   paths.forEach((path, index) => {
     if (!present[index]) return
-    const target = new PathSpec({
-      virtual: path.virtual,
-      directory: path.directory,
-      vfsPath: stripSlash(path.virtual),
-      pattern: path.pattern,
-      resolved: path.resolved,
-      rawPath: path.rawPath,
-      dotted: path.dotted,
-      walkError: path.walkError,
-    })
+    const target = virtualKey(path)
     measured.set(target, found[index] ?? [])
     records.push({ path: target, run: index }, ...(found[index] ?? []))
   })

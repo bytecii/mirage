@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from mirage.policy.types import Decision, Outcome, Scope
-from mirage.server.routers.vfs import require_entry
+from mirage.server.routers.vfs import require_entry, session_of
 
 router = APIRouter(prefix="/v1/workspaces/{workspace_id}/asks")
 
@@ -69,14 +69,10 @@ async def list_asks(
     ``all=true``. The ledger already serves both views from one store,
     so the entry point only picks which query to run."""
     entry = require_entry(request, workspace_id)
-    await entry.runner.call(entry.runner.ws.ensure_sessions_loaded())
     # The ledger reads a named session through SessionManager.get, which
     # raises for an unknown id; a mistyped filter is the caller's error,
     # answered in the sessions router's voice rather than as a 500.
-    if session_id and not any(
-        s.session_id == session_id for s in entry.runner.ws.list_sessions()
-    ):
-        raise HTTPException(status_code=404, detail="session not found")
+    await session_of(entry, session_id)
     decisions = entry.runner.ws.decisions
     records = (
         decisions.list(session_id)

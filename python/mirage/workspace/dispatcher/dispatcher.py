@@ -3594,20 +3594,6 @@ class Dispatcher:
             mtime=mtime,
         )
 
-    async def stat(self, path: str) -> FileStat:
-        scope = PathSpec(
-            virtual=path, directory=path, vfs_path="", resolved=True
-        )
-        result, _ = await self.dispatch("stat", scope)
-        return result
-
-    async def readdir(self, path: str) -> list[str]:
-        scope = PathSpec(
-            virtual=path, directory=path, vfs_path="", resolved=False
-        )
-        raw, _ = await self.dispatch("readdir", scope)
-        return raw
-
     async def keep_versions(
         self,
         records: list[OpRecord],

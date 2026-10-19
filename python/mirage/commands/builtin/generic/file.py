@@ -169,7 +169,7 @@ async def file_cmd(
                 "file: failed to read header for %s: %s", p.virtual, exc
             )
             header = b""
-        result = detect_file_type(p.virtual, header, s)
+        result = detect_file_type(header, s)
         lines.append(format_file_result(p.raw_path, result, b, i))
     return format_records(lines), IOResult()
 

@@ -12,20 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '../../utils/bytes.ts'
 import { Channel, type ConsoleChunk, type OwnedStream, type ReadResult } from './types.ts'
 import { RAMConsoleStore } from './ram.ts'
 import type { ConsoleStore } from './store.ts'
 import { encodeText } from '../bytes.ts'
 
 function join(chunks: ConsoleChunk[]): Uint8Array {
-  const total = chunks.reduce((sum, c) => sum + c.data.byteLength, 0)
-  const out = new Uint8Array(total)
-  let at = 0
-  for (const c of chunks) {
-    out.set(c.data, at)
-    at += c.data.byteLength
-  }
-  return out
+  return concat(chunks.map((c) => c.data))
 }
 
 /**

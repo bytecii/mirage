@@ -42,7 +42,7 @@ from mirage.types import (
     PathSpec,
 )
 from mirage.utils.glob_walk import glob_prefix, literal_span
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import mount_prefix_of, raw_path_of
 from mirage.utils.record_search import non_plain_words
 from mirage.vfs.gcal.event_entry import (
     CALENDAR_FILE,
@@ -90,11 +90,7 @@ def normalize(path: PathSpec) -> tuple[str, str, str]:
         tuple[str, str, str]: prefix, key, virtual key.
     """
     prefix = mount_prefix_of(path.virtual, path.vfs_path)
-    raw = path.directory if path.pattern else path.virtual
-    if prefix and raw.startswith(prefix):
-        rest = raw[len(prefix) :]
-        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-            raw = rest or "/"
+    raw = raw_path_of(path.dir if path.pattern else path)
     key = raw.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
     return prefix, key, virtual_key

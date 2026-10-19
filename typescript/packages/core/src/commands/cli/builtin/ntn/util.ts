@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '../../../../utils/bytes.ts'
 import { NotionAccessor } from '../../../../accessor/notion.ts'
 import { HttpNotionTransport } from '../../../../core/notion/client.ts'
 import type { NotionConfig } from '../../../../core/notion/config.ts'
@@ -121,14 +122,7 @@ export async function contentOrStdin(
   if (stdin instanceof Uint8Array) return new TextDecoder().decode(stdin)
   const chunks: Uint8Array[] = []
   for await (const chunk of stdin) chunks.push(chunk)
-  let total = 0
-  for (const chunk of chunks) total += chunk.length
-  const joined = new Uint8Array(total)
-  let at = 0
-  for (const chunk of chunks) {
-    joined.set(chunk, at)
-    at += chunk.length
-  }
+  const joined = concat(chunks)
   return new TextDecoder().decode(joined)
 }
 

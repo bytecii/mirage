@@ -12,14 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { eisdir, enoent } from '@struktoai/mirage-core/errors/fs'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isDirectoryAttrs, isFailure, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isDirectoryAttrs, isFailure, isNoSuchFile, joinRoot } from './utils.ts'
 
 export async function unlink(accessor: SSHAccessor, p: PathSpec): Promise<void> {
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   try {
     await new Promise<void>((resolveFn, rejectFn) => {

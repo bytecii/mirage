@@ -50,7 +50,7 @@ import { MountEntry, type MountInit } from './mount.ts'
 import type { IndexConfig } from '../../cache/index/config.ts'
 import { buildIndex } from '../../cache/index/factory.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { ownerPrefix, rstripSlash, stripSlash } from '../../utils/slash.ts'
+import { normDir, ownerPrefix, rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 
 // What the registry needs from a reconciler. Depending on this local
@@ -269,11 +269,11 @@ export class MountRegistry {
     const seen = new Set<string>()
     const overrides: Record<string, MountMode> = {}
     for (const [k, v] of Object.entries(modeOverrides)) {
-      overrides[normalizePrefix(k)] = v
+      overrides[normDir(k)] = v
     }
     const readByPrefix: Record<string, ReadSpec> = {}
     for (const [k, v] of Object.entries(readOverrides)) {
-      readByPrefix[normalizePrefix(k)] = v
+      readByPrefix[normDir(k)] = v
     }
     this.defaultRead = defaultRead
     this.defaultWrite = placements.defaultWrite ?? WritePolicy.UNCONDITIONAL
@@ -295,7 +295,7 @@ export class MountRegistry {
     )
     seen.add(DEV_PREFIX)
     for (const [rawPrefix, vfs] of Object.entries(mounts)) {
-      const prefix = normalizePrefix(rawPrefix)
+      const prefix = normDir(rawPrefix)
       if (seen.has(prefix)) {
         throw new Error(`duplicate mount prefix: ${prefix}`)
       }
@@ -403,7 +403,7 @@ export class MountRegistry {
     placement: MountPlacementInit = {},
   ): MountEntry {
     this.checkVfsAvailable(vfs)
-    const norm = normalizePrefix(prefix)
+    const norm = normDir(prefix)
     for (const existing of this.mountList) {
       if (existing.prefix === norm) {
         throw new Error(`duplicate mount prefix: ${norm}`)
@@ -437,7 +437,7 @@ export class MountRegistry {
    * The /dev/ mount is reserved and cannot be removed.
    */
   unmount(prefix: string): MountEntry {
-    const norm = normalizePrefix(prefix)
+    const norm = normDir(prefix)
     if (norm === DEV_PREFIX) {
       throw new Error(`cannot unmount reserved prefix: ${norm}`)
     }
@@ -465,7 +465,7 @@ export class MountRegistry {
 
   /** The mount at exactly this prefix, or null when none matches. */
   tryMountForPrefix(prefix: string, includeHidden = false): MountEntry | null {
-    const norm = normalizePrefix(prefix)
+    const norm = normDir(prefix)
     for (const m of includeHidden ? this.mountList : this.visibleMounts()) {
       if (m.prefix === norm) return m
     }
@@ -491,7 +491,7 @@ export class MountRegistry {
   }
 
   descendantMounts(path: string): MountEntry[] {
-    const norm = normalizePrefix(path)
+    const norm = normDir(path)
     const out: MountEntry[] = []
     for (const m of this.visibleMounts()) {
       if (m.prefix === norm) continue
@@ -690,9 +690,4 @@ export class MountRegistry {
     }
     return mount
   }
-}
-
-function normalizePrefix(prefix: string): string {
-  const stripped = stripSlash(prefix)
-  return stripped ? `/${stripped}/` : '/'
 }

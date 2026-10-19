@@ -18,14 +18,15 @@ import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { hubStream, resolveUrl } from './client.ts'
 import { REFUSED_STATUSES } from './constants.ts'
 import { asRefusal } from './lookup.ts'
-import { resolveEntry, rowToken } from './read.ts'
+import { fileEntry } from '@struktoai/mirage-core/core/hierarchy/probe'
+import { rowToken } from './read.ts'
 
 export async function* readStream(
   accessor: HfHubAccessor,
   path: PathSpec,
   entry?: FileStat | null,
 ): AsyncIterable<Uint8Array> {
-  const row = resolveEntry(path, entry)
+  const row = fileEntry(path, entry)
   const raw = path.mountPath
   const url = resolveUrl(
     accessor.endpoint,

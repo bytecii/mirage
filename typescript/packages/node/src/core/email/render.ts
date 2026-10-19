@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { compactJsonBytes } from '@struktoai/mirage-core/core/render/json'
 import type { FetchedMessage } from './client.ts'
 
 const encoder = new TextEncoder()
@@ -65,5 +66,5 @@ function envelopeDocument(message: FetchedMessage): Envelope {
 }
 
 export function envelopesJsonBytes(messages: readonly FetchedMessage[]): Uint8Array {
-  return encoder.encode(JSON.stringify(messages.map((m) => envelopeDocument(m))))
+  return compactJsonBytes(messages.map((m) => envelopeDocument(m)))
 }

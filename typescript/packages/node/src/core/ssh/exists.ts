@@ -12,13 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { joinRoot, stripPrefix } from './utils.ts'
+import { joinRoot } from './utils.ts'
 
 export async function exists(accessor: SSHAccessor, p: PathSpec): Promise<boolean> {
   const sftp = await accessor.sftp()
-  const remote = joinRoot(accessor.config.root ?? '/', stripPrefix(p))
+  const remote = joinRoot(accessor.config.root ?? '/', rawPathOf(p))
   return new Promise<boolean>((resolveFn) => {
     sftp.exists(remote, (yes) => {
       resolveFn(yes)

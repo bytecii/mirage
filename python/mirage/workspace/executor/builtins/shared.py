@@ -27,6 +27,7 @@ from mirage.workspace.executor.builtins.constants import (
     COUNT_WORD_RE,
     IDENTIFIER_RE,
 )
+from mirage.workspace.executor.builtins.scope import _scope_path
 from mirage.workspace.executor.builtins.types import Result
 from mirage.workspace.executor.command.flags import option_error, parse_flags
 from mirage.workspace.executor.command.types import ParsedCommand
@@ -81,16 +82,6 @@ def finish(cmd: str, errors: list[str], io: IOResult | None = None) -> Result:
     if errors:
         return result(cmd, exit_code=1, stderr="".join(errors), io=io)
     return result(cmd, io=io)
-
-
-def operand_text(arg: str | PathSpec) -> str:
-    """A non-path operand's text (a mode or owner spec the classifier may
-    have wrapped as a path).
-
-    Args:
-        arg (str | PathSpec): a classified command part.
-    """
-    return arg.virtual if isinstance(arg, PathSpec) else str(arg)
 
 
 def abs_path(arg: str | PathSpec, cwd: str) -> str:
@@ -155,7 +146,7 @@ def split_value_flags(
     i = 0
     while i < len(args):
         arg = args[i]
-        s = operand_text(arg)
+        s = _scope_path(arg)
         if parsing and s == "--":
             parsing = False
             i += 1

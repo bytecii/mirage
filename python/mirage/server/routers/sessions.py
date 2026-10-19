@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from mirage.policy.errors import PolicyError
-from mirage.server.routers.vfs import require_entry
+from mirage.server.routers.vfs import require_entry, session_of
 from mirage.server.schemas import CancelLinesResponse, KillJobsResponse
 
 router = APIRouter(prefix="/v1/workspaces/{workspace_id}/sessions")
@@ -41,14 +41,6 @@ class SessionResponse(BaseModel):
 
 class DeleteSessionResponse(BaseModel):
     session_id: str
-
-
-async def _require_session(entry, session_id: str) -> None:
-    await entry.runner.call(entry.runner.ws.ensure_sessions_loaded())
-    if not any(
-        s.session_id == session_id for s in entry.runner.ws.list_sessions()
-    ):
-        raise HTTPException(status_code=404, detail="session not found")
 
 
 @router.post("", response_model=SessionResponse, status_code=201)
@@ -93,7 +85,7 @@ async def delete_session(
     workspace_id: str, session_id: str, request: Request
 ) -> DeleteSessionResponse:
     entry = require_entry(request, workspace_id)
-    await _require_session(entry, session_id)
+    await session_of(entry, session_id)
     await entry.runner.call(entry.runner.ws.close_session(session_id))
     return DeleteSessionResponse(session_id=session_id)
 
@@ -107,7 +99,7 @@ async def cancel_session_lines(
     The session stays open; returns once those lines have ended.
     """
     entry = require_entry(request, workspace_id)
-    await _require_session(entry, session_id)
+    await session_of(entry, session_id)
     canceled = await entry.runner.call(entry.runner.ws.cancel(session_id))
     return CancelLinesResponse(canceled=canceled)
 
@@ -118,7 +110,7 @@ async def kill_session_jobs(
 ) -> KillJobsResponse:
     """Kill the session's background jobs and runners; it stays open."""
     entry = require_entry(request, workspace_id)
-    await _require_session(entry, session_id)
+    await session_of(entry, session_id)
     killed = await entry.runner.call(entry.runner.ws.kill(session_id))
     return KillJobsResponse(killed=killed)
 

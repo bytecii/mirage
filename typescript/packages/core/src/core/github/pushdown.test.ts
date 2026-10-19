@@ -12,17 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
-import { PathSpec } from '../../types.ts'
 import type { TreeEntry } from './tree_entry.ts'
-import {
-  countScopeFiles,
-  scopeBlobs,
-  scopeRelativeKey,
-  searchSafe,
-  unsearchableKeys,
-} from './pushdown.ts'
+import { countScopeFiles, scopeBlobs, searchSafe, unsearchableKeys } from './pushdown.ts'
 
 const TREE: Record<string, TreeEntry> = {
   docs: { path: 'docs', type: 'tree', sha: 's1', size: null },
@@ -32,31 +24,6 @@ const TREE: Record<string, TreeEntry> = {
   'src/main.py': { path: 'src/main.py', type: 'blob', sha: 's5', size: 10 },
   'readme.txt': { path: 'readme.txt', type: 'blob', sha: 's6', size: 7 },
 }
-
-describe('scopeRelativeKey', () => {
-  it('strips the mount prefix', () => {
-    const p = new PathSpec({
-      virtual: '/github/src',
-      directory: '/github',
-      vfsPath: mountKey('/github/src', '/github'),
-    })
-    expect(scopeRelativeKey(p)).toBe('/src')
-  })
-
-  it('returns / for the mount root', () => {
-    const p = new PathSpec({
-      virtual: '/github',
-      directory: '/',
-      vfsPath: mountKey('/github', '/github'),
-    })
-    expect(scopeRelativeKey(p)).toBe('/')
-  })
-
-  it('passes through unprefixed paths', () => {
-    const p = new PathSpec({ vfsPath: 'src', virtual: '/src', directory: '/' })
-    expect(scopeRelativeKey(p)).toBe('/src')
-  })
-})
 
 describe('countScopeFiles', () => {
   it('counts all files at the repo root', () => {

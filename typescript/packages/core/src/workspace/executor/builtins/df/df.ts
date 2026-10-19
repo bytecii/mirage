@@ -30,7 +30,8 @@ import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { MountEntry } from '../../../mount/mount.ts'
 import type { MountRegistry } from '../../../mount/registry.ts'
 import type { SessionState } from '../../../session/session.ts'
-import { fail, ok, operandText, result, splitValueFlags } from '../shared.ts'
+import { fail, ok, result, splitValueFlags } from '../shared.ts'
+import { scopePath } from '../scope.ts'
 import { BLOCK_SUFFIX, SI_UNITS } from './constants.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { Result } from '../types.ts'
@@ -67,7 +68,7 @@ function lastFormat(args: (string | PathSpec)[]): string | null {
   while (i < args.length) {
     const arg = args[i]
     if (arg === undefined) break
-    const s = operandText(arg)
+    const s = scopePath(arg)
     if (s === '--' || !(s.length >= 2 && s.startsWith('-') && s[1] !== '-')) break
     const body = s.slice(1)
     for (let j = 0; j < body.length; j++) {

@@ -20,6 +20,11 @@ from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
 from mirage.commands.builtin.generic_bind.files import command_files
 from mirage.commands.builtin.utils.links import links_of, mount_root
+from mirage.commands.builtin.utils.operands import operands_io
+from mirage.commands.builtin.utils.output import (
+    format_optional_records,
+    format_records,
+)
 from mirage.commands.builtin.utils.paths import (
     descendant_path,
     entry_kind,
@@ -105,9 +110,7 @@ async def mkdir(
             # -p keep the default mode (GNU).
             await files.set_attrs(path, {"mode": mode})
         lines.extend(created_lines(names))
-    output = ("\n".join(lines) + "\n").encode() if lines else None
-    stderr = ("\n".join(errors) + "\n").encode() if errors else None
-    return output, IOResult(stderr=stderr, exit_code=1 if errors else 0)
+    return format_optional_records(lines), operands_io(format_records(errors))
 
 
 async def created_names(

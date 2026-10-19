@@ -16,7 +16,13 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { dirname, join } from 'node:path'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
+import { CONFIG_ENV_KEYS } from '@struktoai/mirage-server/auth/config'
 import { defaultTokenFile, readTokenFile } from '@struktoai/mirage-server/auth/storage'
+import {
+  ENV_ALLOWED_HOSTS,
+  ENV_DAEMON_PORT,
+  ENV_IDLE_GRACE_SECONDS,
+} from '@struktoai/mirage-server/env'
 import {
   ALLOWED_KEYS,
   DaemonConfigError,
@@ -114,19 +120,11 @@ function configPath(env: Record<string, string | undefined> = process.env): stri
 
 const ENV_FOR_KEY: Record<string, string> = {
   url: ENV_DAEMON_URL,
-  allowed_hosts: 'MIRAGE_ALLOWED_HOSTS',
-  auth_mode: 'MIRAGE_AUTH_MODE',
-  jwt_alg: 'MIRAGE_JWT_ALG',
-  jwt_issuer: 'MIRAGE_JWT_ISSUER',
-  jwt_audience: 'MIRAGE_JWT_AUDIENCE',
-  jwt_pubkey_file: 'MIRAGE_JWT_PUBKEY_FILE',
-  jwt_jwks_url: 'MIRAGE_JWT_JWKS_URL',
-  jwt_clock_skew: 'MIRAGE_JWT_CLOCK_SKEW_SECONDS',
-  jwt_authorized_parties: 'MIRAGE_JWT_AUTHORIZED_PARTIES',
-  login_client_id: 'MIRAGE_LOGIN_CLIENT_ID',
+  allowed_hosts: ENV_ALLOWED_HOSTS,
+  ...CONFIG_ENV_KEYS,
   auth_token: ENV_TOKEN,
-  idle_grace_seconds: 'MIRAGE_IDLE_GRACE_SECONDS',
-  port: 'MIRAGE_DAEMON_PORT',
+  idle_grace_seconds: ENV_IDLE_GRACE_SECONDS,
+  port: ENV_DAEMON_PORT,
   ...SSH_ENV_KEYS,
 }
 

@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '../utils/bytes.ts'
+
 const ENC = new TextEncoder()
 const DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
@@ -89,15 +91,7 @@ export function encodeText(text: string): Uint8Array {
     }
   }
   if (run !== '') parts.push(ENC.encode(run))
-  let total = 0
-  for (const part of parts) total += part.length
-  const out = new Uint8Array(total)
-  let at = 0
-  for (const part of parts) {
-    out.set(part, at)
-    at += part.length
-  }
-  return out
+  return concat(parts)
 }
 
 /**

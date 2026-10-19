@@ -12,14 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { sleep } from '../../utils/abort.ts'
+
 function monotonicSeconds(): number {
   return performance.now() / 1000
-}
-
-function sleepSeconds(seconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, seconds * 1000)
-  })
 }
 
 export interface RateLimiterOptions {
@@ -52,7 +48,7 @@ export class RateLimiter {
     if (!(rate > 0)) throw new RangeError(`rate must be positive, got ${String(rate)}`)
     this.interval = 1 / rate
     this.clock = options.clock ?? monotonicSeconds
-    this.sleep = options.sleep ?? sleepSeconds
+    this.sleep = options.sleep ?? ((seconds) => sleep(seconds * 1000))
   }
 
   /** Wait for this key's next slot (an Airtable base id). */

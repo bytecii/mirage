@@ -12,14 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { mountKey, mountPrefixOf, rawPathOf } from '../../utils/key_prefix.ts'
 import type { GitHubAccessor } from '../../accessor/github.ts'
 import { PathSpec } from '../../types.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../utils/filetype.ts'
 import { lstripSlash, stripSlash } from '../../utils/slash.ts'
 import { type GitHubTransport, type GitHubCodeSearch, searchCode } from './client.ts'
 import { SCOPE_ERROR, SCOPE_WARN } from './constants.ts'
-import { countScopeFiles, scopeRelativeKey, searchSafe, unsearchableKeys } from './pushdown.ts'
+import { countScopeFiles, searchSafe, unsearchableKeys } from './pushdown.ts'
 
 // Use GitHub code search to narrow grep/rg scopes to candidate files.
 // Returns null whenever the narrowed set cannot be trusted as a superset of
@@ -37,7 +37,7 @@ export async function narrowPaths(
   const mountPrefix = mountPrefixOf(first.virtual, first.vfsPath)
   const narrowed: string[] = []
   for (const p of paths) {
-    const key = scopeRelativeKey(p)
+    const key = rawPathOf(p)
     const pathFilter = stripSlash(key)
     let answer: GitHubCodeSearch
     try {
@@ -76,7 +76,7 @@ export async function narrowPaths(
 // reseated by every listing since.
 function scopeFiles(accessor: GitHubAccessor, under: readonly PathSpec[]): number {
   let count = 0
-  for (const p of under) count += countScopeFiles(accessor.tree, scopeRelativeKey(p))
+  for (const p of under) count += countScopeFiles(accessor.tree, rawPathOf(p))
   return count
 }
 

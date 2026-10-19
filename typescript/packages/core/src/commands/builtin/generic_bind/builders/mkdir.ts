@@ -12,7 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult } from '../../../../io/types.ts'
+import { formatOptionalRecords } from '../../utils/output.ts'
+import { operandsIo } from '../../utils/operands.ts'
 import { posixPhrase } from '../../../../errors/posix.ts'
 import { errorVirtualPath, fsStrerror, isFsError } from '../../../../errors/fs.ts'
 import { operandSpelling } from '../../../../errors/render.ts'
@@ -253,9 +254,7 @@ const mkdir: CommandFn = async (_accessor, paths, _texts, ctx) => {
     if (mode !== null && files.answers('setattr')) await files.setAttrs(p, { mode })
     lines.push(...createdLines(names))
   }
-  const out = lines.length > 0 ? new TextEncoder().encode(lines.join('\n') + '\n') : null
-  const stderr = errors.length > 0 ? new TextEncoder().encode(errors.join('\n') + '\n') : null
-  return [out, new IOResult({ stderr, exitCode: errors.length > 0 ? 1 : 0 })]
+  return [formatOptionalRecords(lines), operandsIo(errors.map((line) => `${line}\n`).join(''))]
 }
 
 export const BUILDER: GenericCommand = {

@@ -24,7 +24,11 @@ from mirage.commands.builtin.utils.links import (
     links_of,
     mount_root,
 )
-from mirage.commands.builtin.utils.output import format_optional_records
+from mirage.commands.builtin.utils.operands import operands_io
+from mirage.commands.builtin.utils.output import (
+    format_optional_records,
+    format_records,
+)
 from mirage.commands.config import Context
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -196,8 +200,7 @@ async def rmdir(
                 )
             break
     output = format_optional_records(verbose_parts) if v else None
-    stderr = ("\n".join(errors) + "\n").encode() if errors else None
-    return output, IOResult(stderr=stderr, exit_code=1 if errors else 0)
+    return output, operands_io(format_records(errors))
 
 
 BUILDER = GenericCommand("rmdir", rmdir, write=True)

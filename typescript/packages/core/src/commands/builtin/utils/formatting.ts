@@ -349,7 +349,6 @@ export interface LsLongOptions {
   // Who the session is; null outside a workspace, where both the owner
   // and the group column fall back to `-`.
   identity?: Identity | null
-  sizeWidth?: number
   // Which columns to carry and how to spell the time.
   columns?: LsColumns
   // The name column per row when the caller decorated it
@@ -410,7 +409,7 @@ export function formatLsLong(stats: readonly FileStat[], opts: LsLongOptions = {
       ? [UNKNOWN_STAT_FIELD, UNKNOWN_STAT_FIELD]
       : lsSizeAndTime(s, human, false, columns),
   )
-  const width = opts.sizeWidth ?? cells.reduce((m, [size]) => Math.max(m, size.length), 1)
+  const width = cells.reduce((m, [size]) => Math.max(m, size.length), 1)
   const timeWidth = cells.reduce((m, [, time]) => Math.max(m, time.length), 1)
   return stats.map((s, i) => {
     const [rawSize, time] = cells[i] ?? [UNKNOWN_NAME, UNKNOWN_NAME]

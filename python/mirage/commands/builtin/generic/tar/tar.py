@@ -62,6 +62,7 @@ from mirage.commands.builtin.utils.output import (
     format_optional_records,
     format_records,
 )
+from mirage.commands.builtin.utils.paths import virtual_key
 from mirage.commands.builtin.utils.stream import stdin_stream
 from mirage.commands.config import Context
 from mirage.commands.errors import UsageError
@@ -843,7 +844,7 @@ async def tar(
         # Relay functions address by full virtual path (flat_scopes'
         # convention), not by the mount-relative key the wrapper's
         # accessor stamped.
-        archive = replace(archive, vfs_path=archive.virtual.strip("/"))
+        archive = virtual_key(archive)
     # Only the last -C is a destination; create checks every one.
     dest_path = extract_dest(C[-1] if C else None, cwd, relay)
     chosen = list(selectors or [])

@@ -43,6 +43,7 @@ from mirage.bridge.sync import run_async_from_sync
 from mirage.io.types import IOResult
 from mirage.workspace.files import Files
 from mirage.workspace.tools.io_text import replace_text, with_refusal
+from mirage.workspace.tools.tool_operations import ensure_parents
 from mirage.workspace.workspace import Session, Workspace
 
 logger = logging.getLogger(__name__)
@@ -236,12 +237,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
         except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
             # missing file is the good path: the write may proceed
             logger.debug("nothing to overwrite at %s: %s", file_path, exc)
-        parent = "/".join(file_path.rstrip("/").split("/")[:-1]) or "/"
-        try:
-            await ops.mkdir(parent)
-        except (FileExistsError, ValueError) as exc:
-            # mkdir -p semantics: an existing parent is success
-            logger.debug("parent not created at %s: %s", parent, exc)
+        await ensure_parents(ops, file_path)
         await ops.write(file_path, content.encode("utf-8"))
         return WriteResult(path=file_path)
 
@@ -366,12 +362,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
         ops = self._vfs
         results: list[FileUploadResponse] = []
         for path, data in files:
-            parent = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
-            try:
-                await ops.mkdir(parent)
-            except (FileExistsError, ValueError) as exc:
-                # mkdir -p semantics: an existing parent is success
-                logger.debug("parent not created at %s: %s", parent, exc)
+            await ensure_parents(ops, path)
             await ops.write(path, data)
             results.append(FileUploadResponse(path=path))
         return results

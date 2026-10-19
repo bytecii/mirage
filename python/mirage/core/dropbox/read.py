@@ -28,30 +28,11 @@ from mirage.core.dropbox.constants import (
 )
 from mirage.core.dropbox.fingerprint import result_of, result_token
 from mirage.core.dropbox.paths import dropbox_path_of
+from mirage.core.hierarchy.probe import file_entry
 from mirage.errors.fs import eisdir, enoent
 from mirage.observe.context import record, record_stream, start_op
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.types import FileStat, PathSpec
 from mirage.utils.ranges import window_for
-
-
-def file_entry(path: PathSpec, entry: FileStat | None) -> FileStat:
-    """What is at the file ``path``, as its parent's listing named it.
-
-    Args:
-        path (PathSpec): the file.
-        entry (FileStat | None): what is at the path.
-
-    Raises:
-        FileNotFoundError: nothing is there.
-        IsADirectoryError: a folder is.
-    """
-    if not path.vfs_path.strip("/"):
-        raise eisdir(path.virtual)
-    if entry is None:
-        raise enoent(path.virtual)
-    if entry.type is FileType.DIRECTORY:
-        raise eisdir(path.virtual)
-    return entry
 
 
 def _refusal(path: PathSpec, exc: DropboxApiError) -> OSError | None:

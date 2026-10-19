@@ -24,9 +24,9 @@ from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import encode_text
 from mirage.types import PathSpec
 from mirage.workspace.executor.builtins.links.ln import operand_abs
+from mirage.workspace.executor.builtins.scope import _scope_path
 from mirage.workspace.executor.builtins.shared import (
     fail,
-    operand_text,
     parse_line,
 )
 from mirage.workspace.executor.builtins.types import Result
@@ -53,7 +53,7 @@ def operand_words(args: list[str | PathSpec]) -> list[str | PathSpec]:
     words: list[str | PathSpec] = []
     options = True
     for arg in args:
-        text = operand_text(arg)
+        text = _scope_path(arg)
         if options and text == "--":
             options = False
         elif not (options and text.startswith("-") and text != "-"):

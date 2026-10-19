@@ -12,21 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
-import type { PathSpec } from '../../types.ts'
 import { CODE_SEARCH_SIZE_LIMIT } from './constants.ts'
 import type { TreeEntry } from './tree_entry.ts'
-
-export function scopeRelativeKey(path: PathSpec): string {
-  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-  let key = path.virtual
-  if (prefix !== '' && key.startsWith(prefix)) {
-    key = key.slice(prefix.length) || '/'
-  }
-  return key
-}
 
 // The file entries at or below a repo-relative scope key, in tree order:
 // every blob for the repository root, the file itself for a file key. A

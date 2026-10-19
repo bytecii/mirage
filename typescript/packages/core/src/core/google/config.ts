@@ -88,19 +88,6 @@ export const GoogleConfigSchema = z
 // adds a shape that can drift from it.
 export type GoogleConfig = ConfigOf<typeof GoogleConfigSchema>
 
-export type GoogleConfigRedacted = RedactedConfig<
-  GoogleConfig,
-  'accessToken' | 'clientSecret' | 'refreshToken' | 'refreshFn'
->
-
-export function redactGoogleConfig(config: GoogleConfig): GoogleConfigRedacted {
-  return redactConfigWithSchema(GoogleConfigSchema, config) as unknown as GoogleConfigRedacted
-}
-
-export function normalizeGoogleConfig(input: Record<string, unknown>): GoogleConfig {
-  return parseConfigWithSchema(GoogleConfigSchema, input)
-}
-
 export const GoogleAppConfigSchema = GoogleConfigSchema.extend({
   // Let grep -w and rg -w read only the files Drive full-text search names
   // (`filesContaining`). Off by default: Drive indexes a write some time

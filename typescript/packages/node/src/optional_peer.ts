@@ -15,8 +15,6 @@
 import type { RedisClientType } from 'redis'
 import { loadOptionalPeer } from '@struktoai/mirage-core/utils/optional_peer'
 
-export { loadOptionalPeer }
-
 /**
  * A connected node-redis client for `url`, reconnection off. node-redis throws
  * an `error` nobody listens for, which would end the process, so `onError`

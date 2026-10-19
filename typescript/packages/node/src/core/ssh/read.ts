@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '@struktoai/mirage-core/utils/bytes'
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
@@ -19,7 +21,7 @@ import { enoent } from '@struktoai/mirage-core/errors/fs'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
 import { readChunks } from './stream.ts'
 import { singleQuote } from '@struktoai/mirage-core/utils/quote'
-import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot } from './utils.ts'
 
 export const WC = 'env LC_ALL=C wc -l'
 
@@ -44,7 +46,7 @@ export async function read(
   const size = options?.size ?? null
   const sftp = await accessor.sftp()
   const timer = startOp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   // ssh2's readFile stats the file and issues a single READ for the whole
   // size; servers that honor large reads (asyncssh) reply with a packet over
@@ -65,12 +67,7 @@ export async function read(
     if (isNoSuchFile(err)) throw enoent(p)
     throw err
   }
-  const out = new Uint8Array(total)
-  let at = 0
-  for (const c of chunks) {
-    out.set(c, at)
-    at += c.byteLength
-  }
+  const out = concat(chunks)
   record('read', p.virtual, VFSName.SSH, total, timer)
   return out
 }
@@ -82,7 +79,7 @@ export async function read(
  * read, which reports it. Mirrors Python's `line_count`.
  */
 export async function lineCount(accessor: SSHAccessor, p: PathSpec): Promise<number | null> {
-  const remote = joinRoot(accessor.config.root ?? '/', stripPrefix(p))
+  const remote = joinRoot(accessor.config.root ?? '/', rawPathOf(p))
   let status: number | null
   let out: Uint8Array
   let err: Uint8Array

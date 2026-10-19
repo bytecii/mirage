@@ -72,8 +72,7 @@ class GCalVFS(BaseVFS):
     def __init__(self, config: GCalConfig) -> None:
         super().__init__()
         self.config = config
-        self._token_manager = TokenManager(config)
-        self.accessor = GCalAccessor(self.config, self._token_manager)
+        self.accessor = GCalAccessor(self.config, TokenManager(config))
         self.prompt = (
             tree_prompt(config.bucket_days) + self.accessor.time_range.prompt()
         )
@@ -116,11 +115,6 @@ class GCalVFS(BaseVFS):
         self, path: PathSpec, entry: FileStat | None = None
     ) -> None:
         await _unlink(self.accessor, path, entry)
-
-    async def close(self) -> None:
-        """Drain the token manager's connection pool with the VFS."""
-        await self._token_manager.close()
-        await super().close()
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

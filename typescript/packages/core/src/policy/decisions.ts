@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '../utils/bytes.ts'
 import { asyncContextIsolatesTasks } from '../utils/async_context.ts'
 import {
   type Caller,
@@ -116,13 +117,7 @@ export async function decisionId(
 ): Promise<string> {
   const enc = new TextEncoder()
   const parts = [sessionId, cwd, ...argv].map((part) => enc.encode(part + '\0'))
-  const total = parts.reduce((n, p) => n + p.byteLength, 0)
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const part of parts) {
-    bytes.set(part, offset)
-    offset += part.byteLength
-  }
+  const bytes = concat(parts)
   return (await sha256Hex(bytes)).slice(0, 12)
 }
 

@@ -1,3 +1,4 @@
+import { concat } from '../../utils/bytes.ts'
 import type { WandbAccessor } from '../../accessor/wandb.ts'
 import { FileType, type PathSpec } from '../../types.ts'
 import { eisdir, enoent } from '../../errors/fs.ts'
@@ -55,16 +56,8 @@ export async function* readStream(
 }
 export async function read(accessor: WandbAccessor, path: PathSpec): Promise<Uint8Array> {
   const chunks: Uint8Array[] = []
-  let size = 0
   for await (const chunk of readStream(accessor, path)) {
     chunks.push(chunk)
-    size += chunk.length
   }
-  const result = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) {
-    result.set(chunk, offset)
-    offset += chunk.length
-  }
-  return result
+  return concat(chunks)
 }

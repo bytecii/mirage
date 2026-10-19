@@ -12,24 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { gnuDirname } from '@struktoai/mirage-core/utils/path'
+import { ensureParents } from '@struktoai/mirage-core/workspace/tools/tool_operations'
 import { decode } from '@struktoai/mirage-core/workspace/tools/io_text'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { applyDiff } from '@openai/agents'
 import type { ApplyPatchOperation, ApplyPatchResult, Editor } from '@openai/agents'
-
-async function ensureParent(ws: Workspace, path: string): Promise<void> {
-  const parent = gnuDirname(path)
-  if (parent === '/' || parent === '' || parent === '.') return
-  if (await ws.vfs.exists(parent)) return
-  await ensureParent(ws, parent)
-  try {
-    await ws.vfs.mkdir(parent)
-  } catch (err) {
-    // Tolerate mkdir race: another caller may have created the dir between exists() and mkdir().
-    if (!(await ws.vfs.exists(parent))) throw err
-  }
-}
 
 export class MirageEditor implements Editor {
   constructor(private readonly ws: Workspace) {}
@@ -37,7 +24,7 @@ export class MirageEditor implements Editor {
   async createFile(
     op: Extract<ApplyPatchOperation, { type: 'create_file' }>,
   ): Promise<ApplyPatchResult> {
-    await ensureParent(this.ws, op.path)
+    await ensureParents(this.ws.vfs, op.path)
     const content = applyDiff('', op.diff, 'create')
     await this.ws.vfs.write(op.path, content)
     return { status: 'completed' }

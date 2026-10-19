@@ -187,24 +187,10 @@ def _namespace_children(
     ]
 
 
-def _as_spec(match: str | PathSpec, prefix: str) -> PathSpec:
-    """Normalize one backend match to a PathSpec.
-
-    Args:
-        match (str | PathSpec): one match as the backend reported it.
-        prefix (str): the mount prefix with no trailing slash.
-    """
-    if isinstance(match, PathSpec):
-        return match
-    full = match if match.startswith(prefix) else prefix + match
-    return PathSpec.from_str_path(full, mount_key(full, prefix))
-
-
 def _merge_namespace(
-    matches: list[str | PathSpec],
+    matches: list[PathSpec],
     extra: list[str],
     directory: str,
-    prefix: str,
     registry: MountRegistry,
     mount: MountEntry,
 ) -> list[PathSpec]:
@@ -225,19 +211,18 @@ def _merge_namespace(
     directory holding it, while a word can be spelled exactly like one.
 
     Args:
-        matches (list[str | PathSpec]): the backend's own matches.
+        matches (list[PathSpec]): the backend's own matches.
         extra (list[str]): namespace-owed virtual paths.
         directory (str): the globbed directory, slash-terminated, with
             its marks off: a match is a real path a backend listed, so a
             glob character quoted in the directory's name is a character
             of it and the marked spelling would match no match at all.
-        prefix (str): the mount prefix with no trailing slash.
         registry (MountRegistry): registry holding the mount table.
         mount (MountEntry): the mount owning the glob word.
     """
     specs = [
         s
-        for s in (_as_spec(m, prefix) for m in matches)
+        for s in matches
         if s.virtual.startswith(directory) and s.virtual != directory
     ]
     seen = {s.virtual for s in specs}
@@ -353,16 +338,7 @@ async def _level_matches(
     # file answers with that file, which walked back out as a doubled
     # segment (`/base/f*/f1` -> `/base/base/f1`); bash keeps the literal
     # because a file is not a directory to descend into.
-    out = [
-        v
-        for v in (
-            m.virtual
-            if isinstance(m, PathSpec)
-            else (m if m.startswith(prefix) else prefix + m)
-            for m in matches
-        )
-        if v.startswith(f"{base}/")
-    ]
+    out = [m.virtual for m in matches if m.virtual.startswith(f"{base}/")]
     out.extend(_namespace_children(registry, links, real, seg))
     return out if real == dir_virtual else _respell(out, dir_virtual)
 
@@ -725,16 +701,13 @@ async def resolve_globs(
                     # spec has no literal to reinstate, so an empty list
                     # means no match and every spec returned is one.
                     resolved = _merge_namespace(
-                        list(
-                            await expand_glob(
-                                registry.dispatch, mount, [item.dir]
-                            )
+                        await expand_glob(
+                            registry.dispatch, mount, [item.dir]
                         ),
                         _namespace_children(
                             registry, links, directory, pattern
                         ),
                         directory,
-                        prefix,
                         registry,
                         mount,
                     )
@@ -742,7 +715,7 @@ async def resolve_globs(
                     kept: list[PathSpec] = []
                     for p in resolved:
                         if await _is_directory(
-                            registry, mount, links, _as_spec(p, prefix).virtual
+                            registry, mount, links, p.virtual
                         ):
                             kept.append(p)
                     resolved = kept
@@ -766,7 +739,7 @@ async def resolve_globs(
                         )
                     continue
                 for p in resolved:
-                    spelled = _match_raw(item, _as_spec(p, prefix))
+                    spelled = _match_raw(item, p)
                     if dirs_only:
                         spelled = dataclasses.replace(
                             spelled, raw_path=spelled.raw_path + "/"
@@ -822,22 +795,20 @@ async def expand_boundary_globs(
     """
     prefixes = [m.prefix for m in registry.mounts()]
     vis = session_visibility()
-    if not any(
-        isinstance(p, PathSpec)
-        and p.pattern
-        and not p.resolved
-        and child_mount_names(vis, prefixes, _glob_head(p))
-        for p in parts
-    ):
+
+    def spans(p: str | PathSpec) -> bool:
+        return (
+            isinstance(p, PathSpec)
+            and bool(p.pattern)
+            and not p.resolved
+            and bool(child_mount_names(vis, prefixes, _glob_head(p)))
+        )
+
+    if not any(spans(p) for p in parts):
         return parts
     out: list[str | PathSpec] = []
     for item in parts:
-        if (
-            isinstance(item, PathSpec)
-            and item.pattern
-            and not item.resolved
-            and child_mount_names(vis, prefixes, _glob_head(item))
-        ):
+        if spans(item):
             out.extend(await resolve_globs([item], registry, links=links))
         else:
             out.append(item)

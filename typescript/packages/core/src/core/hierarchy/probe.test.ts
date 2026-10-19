@@ -13,9 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { PathSpec } from '../../types.ts'
+import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { stripSlash } from '../../utils/slash.ts'
-import { parentSpec } from './probe.ts'
+import { fileEntry, parentSpec } from './probe.ts'
 
 function spec(mountPath: string): PathSpec {
   const key = stripSlash(mountPath)
@@ -30,5 +30,22 @@ describe('hierarchy probe', () => {
   it('parentSpec is the directory holding the path', () => {
     const parent = parentSpec(spec('/rooms/red/a.json'))
     expect([parent.virtual, parent.vfsPath]).toEqual(['/h/rooms/red', 'rooms/red'])
+  })
+
+  it('fileEntry answers a file and refuses the rest', () => {
+    const row = new FileStat({ name: 'a.json', type: FileType.FILE })
+    expect(fileEntry(spec('/rooms/red/a.json'), row)).toBe(row)
+    const folder = new FileStat({ name: 'red', type: FileType.DIRECTORY })
+    const code = (fn: () => unknown): unknown => {
+      try {
+        fn()
+      } catch (err) {
+        return (err as { code?: unknown }).code
+      }
+      return null
+    }
+    expect(code(() => fileEntry(spec('/rooms/red'), folder))).toBe('EISDIR')
+    expect(code(() => fileEntry(spec('/'), null))).toBe('EISDIR')
+    expect(code(() => fileEntry(spec('/rooms/red/missing.json'), null))).toBe('ENOENT')
   })
 })

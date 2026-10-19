@@ -12,16 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
-import type { PathSpec } from '../../types.ts'
+import { makeExists } from '../object_store/exists.ts'
 import { stat } from './stat.ts'
 
-export async function exists(accessor: DatabricksVolumeAccessor, path: PathSpec): Promise<boolean> {
-  try {
-    await stat(accessor, path)
-    return true
-  } catch (exc) {
-    if ((exc as { code?: string }).code === 'ENOENT') return false
-    throw exc
-  }
-}
+export const exists = makeExists(stat)

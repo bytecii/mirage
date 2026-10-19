@@ -17,7 +17,8 @@ import type { FileStat, PathSpec } from '@struktoai/mirage-core/types'
 import { stripSlash } from '@struktoai/mirage-core/utils/slash'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { refusalsDenied } from './lookup.ts'
-import { resolveEntry, rowToken } from './read.ts'
+import { fileEntry } from '@struktoai/mirage-core/core/hierarchy/probe'
+import { rowToken } from './read.ts'
 import { fetchPath } from './tree.ts'
 
 export const LFS_OID = /^[0-9a-f]{64}$/
@@ -41,7 +42,7 @@ export async function checksum(
   entry?: FileStat | null,
 ): Promise<string | null> {
   if (algorithm !== 'sha256') return null
-  const listed = resolveEntry(path, entry)
+  const listed = fileEntry(path, entry)
   const lfs = listed.extra.lfs_oid
   if (typeof lfs !== 'string' || lfs === '') return null
   const rel = stripSlash(path.mountPath)

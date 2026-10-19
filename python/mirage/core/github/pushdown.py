@@ -16,24 +16,6 @@ import re
 
 from mirage.core.github.constants import CODE_SEARCH_SIZE_LIMIT
 from mirage.core.github.tree_entry import TreeEntry
-from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
-
-
-def scope_relative_key(path: PathSpec) -> str:
-    """Strip the mount prefix from a path to get its repo-relative key.
-
-    Args:
-        path (PathSpec): Scope path, possibly mount-prefixed.
-
-    Returns:
-        str: Repo-relative key with a leading slash; ``/`` for the root.
-    """
-    prefix = mount_prefix_of(path.virtual, path.vfs_path)
-    key = path.virtual
-    if prefix and key.startswith(prefix):
-        key = key[len(prefix) :] or "/"
-    return key
 
 
 def scope_blobs(
@@ -48,7 +30,7 @@ def scope_blobs(
 
     Args:
         tree (dict[str, TreeEntry]): The recursive git tree.
-        key (str): Repo-relative scope key from :func:`scope_relative_key`.
+        key (str): Repo-relative scope key from :func:`raw_path_of`.
 
     Returns:
         list[tuple[str, TreeEntry]]: each blob's key and entry, in tree
@@ -68,7 +50,7 @@ def count_scope_files(tree: dict[str, TreeEntry], key: str) -> int:
 
     Args:
         tree (dict[str, TreeEntry]): The recursive git tree.
-        key (str): Repo-relative scope key from :func:`scope_relative_key`.
+        key (str): Repo-relative scope key from :func:`raw_path_of`.
 
     Returns:
         int: Number of file entries at or below the scope.
@@ -113,7 +95,7 @@ def unsearchable_keys(tree: dict[str, TreeEntry], key: str) -> list[str]:
 
     Args:
         tree (dict[str, TreeEntry]): The recursive git tree.
-        key (str): Repo-relative scope key from :func:`scope_relative_key`.
+        key (str): Repo-relative scope key from :func:`raw_path_of`.
 
     Returns:
         list[str]: Sorted repo-relative keys of those files.

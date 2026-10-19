@@ -12,16 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/errors/fs'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot } from './utils.ts'
 
 export async function rename(accessor: SSHAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const sftp = await accessor.sftp()
   const root = accessor.config.root ?? '/'
-  const srcVirtual = stripPrefix(src)
-  const dstVirtual = stripPrefix(dst)
+  const srcVirtual = rawPathOf(src)
+  const dstVirtual = rawPathOf(dst)
   const remoteSrc = joinRoot(root, srcVirtual)
   const remoteDst = joinRoot(root, dstVirtual)
   // POSIX rename semantics (replace an existing destination); plain SFTP
