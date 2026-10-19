@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
 import os
 import socket
 import subprocess
@@ -37,6 +38,8 @@ from mirage.server.daemon_config import (
     validate_daemon_table,
 )
 from mirage.server.paths import mirage_home
+
+logger = logging.getLogger(__name__)
 
 
 class DaemonUnreachable(RuntimeError):
@@ -174,7 +177,8 @@ class DaemonClient:
                 timeout=0.3,
             ):
                 return True
-        except OSError:
+        except OSError as exc:
+            logger.debug("nothing accepts on the daemon's port: %s", exc)
             return False
 
     def _spawn_daemon(self) -> subprocess.Popen[bytes]:

@@ -224,7 +224,8 @@ export class DaemonClient {
       sock.once('timeout', () => {
         done(false)
       })
-      sock.once('error', () => {
+      sock.once('error', (err) => {
+        console.debug(`nothing accepts on the daemon's port: ${String(err)}`)
         done(false)
       })
     })
