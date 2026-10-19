@@ -639,6 +639,52 @@ describe('whole-line runtimes', () => {
     }
   })
 
+  it('keeps what an aborted runtime read on the books', async () => {
+    // The runtime finished its read before the line was aborted: the read
+    // happened, so it reaches the ledger and the line's record all the same.
+    let readDone = (): void => undefined
+    const reading = new Promise<void>((resolve) => {
+      readDone = resolve
+    })
+    class StallingBox extends LineBox {
+      override async runLine(
+        _e: unknown,
+        _p: PathSpec[],
+        _t: string[],
+        ctx: Context,
+      ): Promise<RunResult> {
+        if (ctx.vfs === undefined) throw new Error('no files')
+        await ctx.vfs.read('/f.txt')
+        readDone()
+        return new Promise<RunResult>(() => undefined)
+      }
+    }
+    const parser = await getTestParser()
+    const box = new StallingBox()
+    box.captures = ['*']
+    const ws = new Workspace(
+      { '/': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: parser, runtimes: [box, 'workspace'] },
+    )
+    try {
+      await ws.vfs.write('/f.txt', 'hi\n')
+      const mark = ws.records.length
+      const stop = new AbortController()
+      const running = ws.shell('anything', { signal: stop.signal })
+      await reading
+      stop.abort()
+      await expect(running).rejects.toMatchObject({ name: 'AbortError' })
+      expect(ws.records.slice(mark).map((r) => [r.op, r.path])).toEqual([['read', '/f.txt']])
+      const logged = await ws.observer.events()
+      const line = logged.findIndex((e) => e.command === 'anything')
+      expect(line).toBeGreaterThan(0)
+      const before = logged[line - 1]
+      expect([before?.type, before?.op, before?.path]).toEqual(['op', 'read', '/f.txt'])
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('a named capture keeps the pipeline and redirect in Mirage', async () => {
     const parser = await getTestParser()
     const box = new LineBox()

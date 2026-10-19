@@ -1168,7 +1168,28 @@
           "bucket": "search",
           "fixture": "search/v1"
         }
-      ]
+      ],
+      "sessions": {
+        "veiled": {
+          "paths": {
+            "hide": [
+              "/search/beta.txt"
+            ]
+          }
+        },
+        "walled": {
+          "commands": {
+            "deny": [
+              {
+                "reason": "kept off limits",
+                "paths": [
+                  "/search/gamma.txt"
+                ]
+              }
+            ]
+          }
+        }
+      }
     },
     {
       "id": "dropbox-root",
@@ -1732,7 +1753,28 @@
           "folder": "search",
           "seed": "search/v1"
         }
-      ]
+      ],
+      "sessions": {
+        "veiled": {
+          "paths": {
+            "hide": [
+              "/search/beta.txt"
+            ]
+          }
+        },
+        "walled": {
+          "commands": {
+            "deny": [
+              {
+                "reason": "kept off limits",
+                "paths": [
+                  "/search/gamma.txt"
+                ]
+              }
+            ]
+          }
+        }
+      }
     },
     {
       "id": "github",

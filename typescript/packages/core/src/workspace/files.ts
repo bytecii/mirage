@@ -15,7 +15,8 @@
 import { type ByteSource, IOResult, OpReport } from '../io/types.ts'
 import { closeQuietly, ensureStream } from '../io/stream.ts'
 import type { OpRecord } from '../observe/record.ts'
-import { record, type RecordingState, startOp } from '../observe/context.ts'
+import { finishRecord, record, type RecordingState, startOp } from '../observe/context.ts'
+import { asyncContextIsolatesTasks } from '../utils/async_context.ts'
 import type { FileStat, SetAttrFields, Visibility } from '../types.ts'
 import { FileType, PathSpec } from '../types.ts'
 import { isEnotdir, isMissingPath } from '../errors/fs.ts'
@@ -484,9 +485,10 @@ export class Files {
    * Run one op through the workspace dispatcher and record it.
    *
    * The dispatcher owns the whole pipeline (follow, grants, gates, cache,
-   * structure, invalidation). The op records where a running line records,
-   * so its records are the line's; outside a line it records into its own
-   * recording, handed to the ledger and the sink once the op ends, a
+   * structure, invalidation). On a line this workspace runs, the op records
+   * where the line records, so its records are the line's; anywhere else
+   * (outside a line, or on another workspace's) it records into its own
+   * recording, handed to this ledger and the sink once the op ends, a
    * stream's once it closes. What records it is what records a line's
    * calls: the backend and the dispatcher, with the tokens they read. An op
    * nothing below recorded (a stat, a listing, a warm cache hit, a
@@ -506,18 +508,25 @@ export class Files {
     const report = new OpReport()
     const spelled = typeof path === 'string' ? path : path.virtual
     const outer = currentCaller()
+    // Without task isolation (a browser) a backend's record lands in
+    // whichever call bound last, so a call cannot tell its own records from
+    // an overlapping call's: there it records the op itself, from the
+    // dispatcher's report, straight onto the ledger.
+    const isolated = asyncContextIsolatesTasks
+    // Only a line this workspace runs is joined: another workspace's line
+    // would take this workspace's records.
     const own: RecordingState | null =
-      outer.recording === null ? { records: [], mountId: null } : null
+      !isolated || outer.recording?.ledger === this.recorded
+        ? null
+        : { records: [], mountId: null, ledger: null }
     // The op's own list gathers every record made below it; a command the
-    // op runs in (a handler reaching `ws.vfs`) is charged them once the op
-    // ends.
+    // op runs in on that line (a handler reaching `ws.vfs`) is charged them
+    // once the op ends.
     const mine: OpRecord[] = []
-    const enclosing = outer.commandSink?.[0] ?? null
-    const caller: Caller = {
-      ...outer,
-      ...(own === null ? {} : { recording: own }),
-      commandSink: [mine, mine],
-    }
+    const enclosing = isolated && own === null ? (outer.commandSink?.[0] ?? null) : null
+    const caller: Caller = isolated
+      ? { ...outer, ...(own === null ? {} : { recording: own }), commandSink: [mine, mine] }
+      : outer
     // The record names the session the op ran as: noted inside the
     // bind, since the facade's own id may be null (the default) and a
     // session bound by the caller is kept over it.
@@ -535,14 +544,17 @@ export class Files {
     const settle = async (answer: unknown): Promise<void> => {
       const ran = report.path ?? spelled
       const owner = this.ownerOf(ran)
-      if (mine.length === 0 && report.completed && owner !== null) {
-        callsAs(caller, record)(
-          op,
-          ran,
-          report.source ?? owner.kind,
-          report.bytes ?? payloadBytes(answer, args),
-          timer,
-        )
+      const source = owner === null ? null : (report.source ?? owner.kind)
+      const bytes = report.bytes ?? payloadBytes(answer, args)
+      if (!isolated) {
+        if (!report.completed || source === null) return
+        const rec = finishRecord(op, ran, source, bytes, timer)
+        this.recorded.push(rec)
+        if (this.sink !== null) await this.sink(rec, this.sessionFor(seen))
+        return
+      }
+      if (mine.length === 0 && report.completed && source !== null) {
+        callsAs(caller, record)(op, ran, source, bytes, timer)
       }
       enclosing?.push(...mine)
       if (own === null || own.records.length === 0) return
@@ -555,9 +567,9 @@ export class Files {
     let result: unknown
     try {
       const bound = sessionId ?? this.sessionId
-      const [value] = await runWithCaller(caller, () =>
-        this.bind === null ? run() : this.bind(bound, run),
-      )
+      const go = (): Promise<[unknown, IOResult]> =>
+        this.bind === null ? run() : this.bind(bound, run)
+      const [value] = await (isolated ? runWithCaller(caller, go) : go())
       result = value
     } catch (err) {
       // Anything thrown after the op ran (a postVfs deny, a hard

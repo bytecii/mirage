@@ -22,8 +22,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mirage import Workspace
+from mirage.commands.config import command
+from mirage.commands.spec.types import CommandSpec
 from mirage.context import reset_current_session, set_current_session
 from mirage.errors.types import CommandTimeoutError
+from mirage.io import IOResult
 from mirage.policy import (
     Action,
     Deny,
@@ -1192,3 +1195,30 @@ def test_is_mounted_skips_the_anchor_and_claims_for_a_root_mount():
     assert not anchored.vfs.is_mounted("/tmp/x.txt")
     rooted = Workspace({"/": RAMVFS()})
     assert rooted.vfs.is_mounted("/tmp/x.txt")
+
+
+@pytest.mark.asyncio
+async def test_a_call_to_another_workspace_is_on_that_workspaces_ledger():
+    # A handler on one workspace's line reading another workspace's files:
+    # the read is the other workspace's, in its ledger, not the line's.
+    other = Workspace({"/o/": RAMVFS()}, mode=MountMode.WRITE)
+    await other.vfs.write("/o/f.txt", b"theirs\n")
+    del other.vfs.records[:]
+
+    @command("peek", vfs="ram", spec=CommandSpec())
+    async def peek(accessor, paths, texts, opts):
+        return await other.vfs.read("/o/f.txt"), IOResult()
+
+    ws = Workspace({"/m/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        ws.mount("/m").register_commands([peek])
+        await ws.shell("cd /m")
+        result = await ws.shell("peek")
+        assert result.stdout == b"theirs\n"
+        assert [(r.op, r.path) for r in other.vfs.records] == [
+            ("read", "/o/f.txt")
+        ]
+        assert "/o/f.txt" not in [r.path for r in ws.vfs.records]
+    finally:
+        await ws.close()
+        await other.close()

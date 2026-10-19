@@ -365,6 +365,24 @@ it.each(['grep -r ada', 'rg ada'])('%s keeps a match beside a hidden operand', a
   expect(err).toContain('/d/b.txt')
 })
 
+// Twin of test_a_deny_rule_on_a_file_keeps_the_search_on: the search still
+// narrows under the rule. The refused c.txt holds no match, so the search rules
+// it out, and that answer meets the rule as the read it stands in for: it
+// reports Permission denied, exit 2, as a full scan does, and only the files
+// holding the text are read.
+it.each(['grep -r ada /d', 'grep -rc ada /d', 'grep -rl ada /d', 'rg ada /d'])(
+  'keeps the search on under a deny rule on a file: %s',
+  async (line) => {
+    const vfs = new SearchRAM(MOUNTS.files)
+    const deny = ['/d/c.txt']
+    const [out, err, code] = await run(vfs, line, undefined, {}, deny)
+    expect([out, err, code]).toEqual(await run(new RAMVFS(), line, undefined, {}, deny))
+    expect([err.includes('/d/c.txt: Permission denied'), code]).toEqual([true, 2])
+    expect([vfs.asked, vfs.scans]).toEqual([[['ada', false]], []])
+    expect([...vfs.reads].sort()).toEqual(['d/a.txt', 'd/sub/d.txt'])
+  },
+)
+
 // Twin of test_a_path_rule_below_the_walk_keeps_greps_answer: the dispatcher
 // asks no search below the rule and judges each line search as a read of its
 // file, so a sealed file is reported as the plain walk reports it.

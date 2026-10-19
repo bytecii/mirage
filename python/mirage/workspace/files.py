@@ -366,10 +366,11 @@ class Files:
         """Run one op through the workspace dispatcher and record it.
 
         The dispatcher owns the whole pipeline (follow, grants, gates, cache,
-        structure, invalidation). The op records where a running line
-        records, so its records are the line's; outside a line it records
-        into its own recorder, handed to the ledger and the observer once
-        the op ends, a stream's once it closes. What records it is what
+        structure, invalidation). On a line this workspace runs, the op
+        records where the line records, so its records are the line's;
+        anywhere else (outside a line, or on another workspace's) it
+        records into its own recorder, handed to this ledger and the
+        observer once the op ends, a stream's once it closes. What records it is what
         records a line's calls: the backend and the dispatcher, with the
         tokens they read. An op nothing below recorded (a stat, a listing,
         a warm cache hit, a synthetic namespace answer) is recorded here,
@@ -394,7 +395,15 @@ class Files:
         timer = start_op()
         report = OpReport()
         seen: list[str] = []
-        own = None if active_recorder() is not None else fresh_recorder()
+        # Only a line this workspace runs is joined: another workspace's
+        # line, or another call's own recorder seen through a shared
+        # browser stack, would take this workspace's records.
+        line = active_recorder()
+        own = (
+            None
+            if line is not None and line.ledger is self._records
+            else fresh_recorder()
+        )
         token = (
             None
             if own is None
@@ -415,9 +424,9 @@ class Files:
             )
 
         # The op's own list gathers every record made below it; a command
-        # the op runs in (a handler reaching ``ws.vfs``) is charged them
-        # once the op ends.
-        held = current_caller().command_sink
+        # the op runs in on that line (a handler reaching ``ws.vfs``) is
+        # charged them once the op ends.
+        held = None if own is not None else current_caller().command_sink
         outer = held[0] if held is not None else None
         try:
             with command_records(own=True) as mine:

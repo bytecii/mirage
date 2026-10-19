@@ -63,6 +63,7 @@ import type * as asyncContextModule from '../utils/async_context.ts'
 import { pathVisible } from '../utils/hidden.ts'
 import { Files, namespaceOf } from '../workspace/files.ts'
 import type { DispatchFn } from '../runtime/types.ts'
+import type { Handed } from '../vfs/types.ts'
 
 const DEC = new TextDecoder()
 
@@ -1473,3 +1474,43 @@ it.each([true, false])(
     }
   },
 )
+
+describe('overlapping file tool calls on the fallback storage', () => {
+  it('keep their own records whichever ends first', async () => {
+    // While the second call starts, the newest live frame is the first
+    // call's, recording included. The second must not take that recording
+    // for a line's: the first hands its records over when it ends, and the
+    // second's, recorded after, would be left in a list nobody reads.
+    const [heldA, releaseA] = gate()
+    const [heldB, releaseB] = gate()
+    class Held extends RAMVFS {
+      override async read(
+        path: PathSpec,
+        handed?: Handed,
+        offset?: number,
+        size?: number | null,
+      ): Promise<Uint8Array> {
+        await (path.virtual.endsWith('/a') ? heldA : heldB)
+        return super.read(path, handed, offset, size)
+      }
+    }
+    const vfs = new Held()
+    vfs.store.files.set('/a', new TextEncoder().encode('a\n'))
+    vfs.store.files.set('/b', new TextEncoder().encode('b\n'))
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.READ })
+    try {
+      const first = ws.vfs.read('/data/a')
+      const second = ws.vfs.read('/data/b')
+      releaseA()
+      await first
+      releaseB()
+      await second
+      expect(ws.vfs.records.map((r) => [r.op, r.path])).toEqual([
+        ['read', '/data/a'],
+        ['read', '/data/b'],
+      ])
+    } finally {
+      await ws.close()
+    }
+  })
+})

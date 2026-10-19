@@ -22,10 +22,15 @@ import { OpRecord, RecordIndex, STAMP_FINGERPRINT_OPS } from './record.ts'
 import { underPath } from '../utils/key_prefix.ts'
 import type { PathSpec } from '../types.ts'
 
-/** A line's recording: its records and the mount serving them. */
+/**
+ * A line's recording: its records, the mount serving them, and the
+ * workspace ledger the line hands its records to when it ends (null for a
+ * file call's own recording, which no other call joins).
+ */
 export interface RecordingState {
   records: OpRecord[]
   mountId: string | null
+  ledger: OpRecord[] | null
 }
 
 /**
@@ -194,8 +199,16 @@ export function activeRecords(): readonly OpRecord[] | undefined {
   return currentCaller().recording?.records
 }
 
-export async function runWithRecording<T>(fn: () => Promise<T>): Promise<[T, OpRecord[]]> {
-  const state: RecordingState = { records: [], mountId: null }
+/**
+ * Run `fn` recording its calls, and answer what it returned with what it
+ * recorded. `ledger` is the workspace ledger a line hands its records to,
+ * which a file call of that workspace made on the line joins.
+ */
+export async function runWithRecording<T>(
+  fn: () => Promise<T>,
+  ledger: OpRecord[] | null = null,
+): Promise<[T, OpRecord[]]> {
+  const state: RecordingState = { records: [], mountId: null, ledger }
   const value = await runWithCaller({ ...currentCaller(), recording: state }, fn)
   return [value, state.records]
 }
@@ -218,7 +231,7 @@ export function runWithMountContext<T>(fn: () => Promise<T>, mountId?: string | 
     {
       ...currentCaller(),
       recording: {
-        records: state.records,
+        ...state,
         mountId: mountId === undefined ? state.mountId : mountId,
       },
     },

@@ -1452,10 +1452,7 @@ export class MountEntry {
     const bound = currentCaller()
     const caller: Caller = {
       ...bound,
-      recording:
-        bound.recording === null
-          ? null
-          : { records: bound.recording.records, mountId: this.mountId },
+      recording: bound.recording === null ? null : { ...bound.recording, mountId: this.mountId },
       write: { prefix: this.prefix, context: this.writeContext() },
       revisions: { map: revisions },
     }
@@ -1722,10 +1719,7 @@ export class MountEntry {
     return runWithCaller(
       {
         ...outer,
-        recording:
-          outer.recording === null
-            ? null
-            : { records: outer.recording.records, mountId: this.mountId },
+        recording: outer.recording === null ? null : { ...outer.recording, mountId: this.mountId },
         revisions: { map: this.revisions.size > 0 ? this.revisions : null },
         cache: { manager: this.cacheManager },
         write: { prefix: this.prefix, context: this.writeContext() },

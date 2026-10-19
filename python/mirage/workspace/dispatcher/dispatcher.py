@@ -1091,7 +1091,9 @@ class Dispatcher:
         # The command's gate judges its own calls; a metadata call passes,
         # as its guards let stat pass, unless it only asks admission, and a
         # scan guard reads nothing: the rule judges each read it guards. A
-        # warm read is judged once the file cache is found to hold a copy.
+        # warm read is judged in the cache stage, held or not: its answer
+        # stands in for the read (a search's ruled-out file is read as
+        # empty), so it meets the rule the read would.
         rule_gate = (
             None
             if (name in METADATA_OPS and not admit_only)
@@ -1168,14 +1170,14 @@ class Dispatcher:
             return None, IOResult()
         # The cache stage answers first where the file cache decides: a
         # call standing in for a read gives way to the read for a file it
-        # holds, and a warm read of a file it holds no copy of answers
-        # None. Neither has anything to judge; the read is judged.
+        # holds, which is judged, and a warm read answers whether it holds
+        # one, judged as the read it stands in for.
         if name in READ_STAND_IN_OPS and await self._held(call, mount):
             _memory_answered(report)
             return None, IOResult()
         if warm:
             held = await self._held(call, mount)
-            if held and caller.rule_gate is not None:
+            if caller.rule_gate is not None:
                 _judge(caller.rule_gate, call.typed, call.walked, call.path)
             _memory_answered(report)
             return (True if held else None), IOResult()
@@ -1836,7 +1838,11 @@ class Dispatcher:
         its paths, it is declined and the caller walks, entry by entry,
         through calls that are each judged. Inside a running line only the
         profile's path rules judge an entry, so a coded policy declines no
-        walk there. A hide declines the copies and the removal, which
+        walk there. A path rule declines no ``files_containing``: its
+        answer only rules files out of a walk that still lists every one,
+        and each file it rules out meets the rule as a warm read, so one
+        the rule refuses reports ``Permission denied`` as its read would.
+        A hide declines the copies and the removal, which
         would reach hidden entries; a read in ``HIDE_FILTERED_OPS`` runs
         and ``_filter`` drops what the session hides from its answer. A
         file copy is declined the same way: the bytes it moves never pass
@@ -1861,7 +1867,9 @@ class Dispatcher:
         ):
             return True
         if call.rule_gate is not None:
-            return any(call.rule_gate.scopes(p.virtual) for p in paths)
+            return call.name != "files_containing" and any(
+                call.rule_gate.scopes(p.virtual) for p in paths
+            )
         return await self._namespace.registry.policies.wants_for(
             "pre_vfs",
             _session_id(call.caller),

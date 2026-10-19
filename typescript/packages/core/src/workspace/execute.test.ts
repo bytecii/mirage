@@ -512,3 +512,37 @@ describe('native output', () => {
     }
   })
 })
+
+describe('the ledger a file call lands in', () => {
+  // Twin of test_a_call_to_another_workspace_is_on_that_workspaces_ledger:
+  // a handler on one workspace's line reading another workspace's files
+  // makes a read that is the other workspace's, in its ledger, not the
+  // line's.
+  it("is the called workspace's, from another workspace's line", async () => {
+    const other = new Workspace(
+      { '/o': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: parser },
+    )
+    const { ws } = buildWorkspace()
+    try {
+      await other.vfs.write('/o/f.txt', 'theirs\n')
+      other.vfs.records.splice(0)
+      ws.mount('/ram').registerCommands(
+        command({
+          name: 'peek',
+          vfs: 'ram',
+          spec: new CommandSpec(),
+          fn: async () => [await other.vfs.read('/o/f.txt'), new IOResult()],
+        }),
+      )
+      await ws.shell('cd /ram')
+      const result = await ws.shell('peek')
+      expect(new TextDecoder().decode(result.stdout)).toBe('theirs\n')
+      expect(other.vfs.records.map((r) => [r.op, r.path])).toEqual([['read', '/o/f.txt']])
+      expect(ws.vfs.records.map((r) => r.path)).not.toContain('/o/f.txt')
+    } finally {
+      await ws.close()
+      await other.close()
+    }
+  })
+})
