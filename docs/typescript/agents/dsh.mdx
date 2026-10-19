@@ -145,7 +145,7 @@ A sandbox mode says where writes may land. It says nothing about which commands 
           ask:
             - { commands: [rm], reason: deletes are reviewed }
           deny:
-            - { commands: [rm -rf], reason: no recursive deletes }
+            - { commands: [rm -rf], reason: rm -rf is blocked }
     profile: agent
 ```
 
@@ -163,7 +163,7 @@ await ctx.plugin(MirageService, { workspace: ws }).await()
 
 Building the handler before the plugins load is fine: it reads `ctx.approval` at ask time, not at construction, so an approval plugin composed later is still found.
 
-A **deny** refuses the line at 126 in bash's voice, and the reason rides on the result as its `refusal` record, which is also what dsh reads to tell a policy refusal from a command that failed on its own. A command entry is a token-prefix pattern, so `rm` would cover every `rm` line while `rm -rf` covers only the recursive ones:
+A **deny** refuses the line at 126 in bash's voice, and the reason rides on the result as its `refusal` record, which is also what dsh reads to tell a policy refusal from a command that failed on its own. Command rules match token prefixes: `rm` covers every `rm` line, while `rm -rf` does not match `rm -r -f` or `rm --recursive --force`. Those forms still match the broader `rm` ask rule.
 
 ```
 $ rm -rf /data/build
@@ -172,7 +172,7 @@ rm: Permission denied
 
 ```ts
 result.refusal
-// { kind: 'deny', reason: 'no recursive deletes', policy: 'PermissionsPolicy', askId: null }
+// { kind: 'deny', reason: 'rm -rf is blocked', policy: 'PermissionsPolicy', askId: null }
 ```
 
 An **ask** is put to the human through dsh's own approval channel, `ctx.approval` — the same prompt dsh already shows for its escalations, so nothing new appears in the UI. The bridge maps dsh's answer onto Mirage's ledger:

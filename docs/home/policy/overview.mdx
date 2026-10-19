@@ -8,19 +8,19 @@ icon: /images/policy-icon.svg
 Policy decides what an agent may do in the virtual terminal: the commands
 it runs, the files it reads and writes, and the variables it sets. A
 policy is a class with a pair of methods for each thing an agent does, or
-[programs](/home/policy/scripts) a profile names for the `pre_` ones:
+[programs](/home/policy/scripts) a profile names for those methods:
 
 | The agent | Methods |
 | --- | --- |
 | runs a line | `pre_execute`, `post_execute` |
 | runs a command or CLI | `pre_command`, `post_command` |
-| calls the VFS: a file tool, `session.vfs`, FUSE, SFTP | `pre_vfs`, `post_vfs` |
+| calls the VFS directly: a file tool, `session.vfs`, FUSE, SFTP | `pre_vfs`, `post_vfs`; see [Lifecycle](/home/policy/policies#lifecycle) |
 | sets a variable: `export`, `X=1`, `unset` | `pre_session`, `post_session` |
 
 A `pre_` method answers before the action runs, a `post_` method after,
-with what came back. An answer can refuse, hold the action until a host approves
-it, bound the output, or choose the underlying runtime. No policy grants what another
-refuses.
+with what came back. An answer can refuse, [ask a host](/home/policy/policies#asks),
+bound the output, or choose the underlying runtime. No policy grants what
+another refuses.
 
 Policies are asked in order: the built-ins first (mount modes, hides,
 [runtime routing](/home/policy/route-runtime)), then the session's profile, then the
@@ -36,7 +36,7 @@ filesystem, so it sees what that string only implies.
 | | Tool-call check | Mirage policy |
 | --- | --- | --- |
 | Commands | the raw string; `$( )`, `xargs`, `find -exec`, `eval` and variables hide what runs | every command after expansion, nested ones included |
-| Files | the paths written in the string | every file a command reads or writes, such as each one `grep -r`, `tar` or `cp -r` reaches |
+| Files | the paths written in the string | declarative profile rules see every path a command reaches, such as each one `grep -r`, `tar` or `cp -r` reaches |
 | Ways in | that harness's own tools | every session and entry point: the SDK, MCP, HTTP, RPC, SSH, FUSE |
 
 ## In this section

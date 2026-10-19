@@ -12,7 +12,7 @@ workspace while seeing different files and using different commands.
 
 | Setting | Purpose |
 | --- | --- |
-| `commands.allow` | Limit the session to the listed commands. |
+| `commands.allow` | Limit the session to the listed tools. |
 | `commands.ask` | Require approval for matching commands. |
 | `commands.deny` | Refuse matching commands. |
 | `paths.hide` | Make matching files and folders invisible to the session. |
@@ -46,9 +46,42 @@ profile: researcher
 
 Replace RAM with your [VFS](/home/setup/vfs). `profile: researcher` selects
 the default for new sessions; another session can use a different named
-profile. Settings you omit add no restriction, and a profile cannot grant
-access beyond the workspace's permissions.
+profile. A profile cannot grant access beyond the workspace's permissions.
 
-Use [Explain](/home/policy/explain) to inspect why an action is allowed or
-refused. For rules that depend on the command's content or other conditions,
-attach a [policy script](/home/policy/scripts).
+## Rule matching
+
+Command patterns match token prefixes. `git push` matches `git push origin main`.
+Spelling and order matter: `rm -rf` does not match `rm -r -f` or
+`rm --recursive --force`. A `*` token matches any token; trailing `*` is redundant.
+
+Omitting `commands.allow` adds no tool allowlist restriction; `allow: []`
+admits no installed tools. This list does not govern shell functions,
+executed paths or direct VFS calls.
+
+Ask and deny rules can name commands, paths, or map a command to its paths:
+
+```yaml
+commands:
+  allow: [rm]
+  ask:
+    - {commands: {rm: ["/data/review/*"]}, reason: deletes need review}
+  deny:
+    - {commands: {rm: ["/data/*"]}, reason: data is retained}
+```
+
+Within one profile’s rules, the deeper literal anchor wins for each path.
+Deny wins at equal depth.
+Here, `rm /data/review/note.txt` asks for approval despite the broader deny;
+`rm /data/other.txt` is denied. A multi-path command must pass each path's checks.
+
+`paths.hide` and ask/deny path entries may be absolute paths or slashless
+name patterns such as `*.pem`, including inside mount sections.
+`paths.show` entries must be absolute paths. A literal path covers its subtree;
+glob patterns use `*`, `?` and `[`, and `*` can cross `/`. A rule naming only
+`paths` also applies to direct VFS operations.
+
+`paths.hide` makes a path appear absent; `paths.show` reopens a more specific
+path. Ask and deny rules control operations while leaving paths visible.
+
+Use [Explain](/home/policy/explain) to check a rule before running a line.
+For conditions beyond these patterns, attach a [policy script](/home/policy/scripts).

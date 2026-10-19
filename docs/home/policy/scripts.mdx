@@ -16,16 +16,19 @@ reads, as JSON, and prints its answer. Two places take a program:
 
 ## A profile's policy
 
+Save these files together. Install Monty as described in [Runtimes](#runtimes).
+The selected profile runs `guard.py` before each command and refuses `rm`.
+
 ```yaml workspace.yaml
+mounts:
+  /data:
+    vfs: ram
 profiles:
   reviewer:
     policy:
       pre_command:
-        - {script: guard.py, runtime: monty}
-      pre_session:
-        - {script: credentials.py, runtime: monty}
-      pre_vfs:
-        - {script: locked.py, runtime: {name: wasi, config: {home: /opt/cpython-wasi}}}
+        - {script: ./guard.py, runtime: monty}
+profile: reviewer
 ```
 
 ```python guard.py
@@ -33,16 +36,15 @@ import json
 import os
 
 ctx = json.loads(os.environ["MIRAGE_POLICY_CTX"])
+if ctx["command"] == "rm":
+    print(json.dumps({"kind": "deny", "reason": "deletes are disabled"}))
+```
 
-def contents(path):
-    try:
-        return open(path).read()
-    except OSError:
-        return ""
-
-if any("marker" in contents(path) for path in ctx["paths"]):
-    reason = "marked files are not read by " + ctx["profile"]
-    print(json.dumps({"kind": "deny", "reason": reason}))
+```bash
+mirage workspace create workspace.yaml --id policy-demo
+mirage shell -w policy-demo -c 'echo hello > /data/note.txt; rm /data/note.txt'
+# rm: Permission denied
+mirage workspace delete policy-demo
 ```
 
 Each entry names its program and its runtime: a name, or `{name, config}`
@@ -101,7 +103,7 @@ it:
 | --- | --- |
 | nothing | no opinion |
 | `{"kind": "deny", "reason": "..."}` | refuses |
-| `{"kind": "ask", "reason": "..."}` | holds the action until a host approves it |
+| `{"kind": "ask", "reason": "..."}` | [asks the host](/home/policy/policies#asks) |
 | `{"kind": "route", "runtime": "docker"}` | at `pre_execute`: runs the line on that runtime |
 
 A deny or an ask without a `reason` gets the default one. Anything else on
