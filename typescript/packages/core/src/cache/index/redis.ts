@@ -1206,7 +1206,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
   override async close(): Promise<void> {
     if (this.closed) return
     await this.flushSeed()
-    this.listings.clear()
+    this.listings.close()
     if (this.providedClient === null && this.clientPromise !== null) {
       const c = await this.clientPromise
       const typed = c as unknown as { destroy?: () => void }

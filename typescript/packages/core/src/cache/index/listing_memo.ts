@@ -17,6 +17,7 @@ import { LISTING_TRUST_WINDOW } from './constants.ts'
 import { soleCommandStarted } from './scope.ts'
 
 const WRITES_BY_PREFIX = new Map<string, number>()
+const HOLDERS_BY_PREFIX = new Map<string, number>()
 
 function copied(listing: ListResult): ListResult {
   const copy = { ...listing }
@@ -39,14 +40,18 @@ interface Read {
  * listing write to the key prefix has finished since the read began, for
  * under LISTING_TRUST_WINDOW seconds, and never past the listing's own
  * expiry. Each fill drops the oldest reads no command can be served any
- * more, so a read stays held for about one window. On the fallback
+ * more, so a read stays held for about one window. The key prefix's write
+ * count lives while an open memo holds the prefix. On the fallback
  * storage, while more than one command is live, there is no sole stamp and
  * every read goes to Redis.
  */
 export class ListingMemo {
   private readonly reads = new Map<string, Read>()
+  private closed = false
 
-  constructor(private readonly keyPrefix: string) {}
+  constructor(private readonly keyPrefix: string) {
+    HOLDERS_BY_PREFIX.set(keyPrefix, (HOLDERS_BY_PREFIX.get(keyPrefix) ?? 0) + 1)
+  }
 
   private written(): number {
     return WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0
@@ -105,7 +110,21 @@ export class ListingMemo {
     WRITES_BY_PREFIX.set(this.keyPrefix, this.written() + 1)
   }
 
-  clear(): void {
+  /**
+   * Drops the kept listings and releases the key prefix. The last open memo
+   * on a prefix drops its write count, so a host that cycles through
+   * prefixes keeps none it no longer uses.
+   */
+  close(): void {
     this.reads.clear()
+    if (this.closed) return
+    this.closed = true
+    const holders = (HOLDERS_BY_PREFIX.get(this.keyPrefix) ?? 0) - 1
+    if (holders > 0) {
+      HOLDERS_BY_PREFIX.set(this.keyPrefix, holders)
+      return
+    }
+    HOLDERS_BY_PREFIX.delete(this.keyPrefix)
+    WRITES_BY_PREFIX.delete(this.keyPrefix)
   }
 }

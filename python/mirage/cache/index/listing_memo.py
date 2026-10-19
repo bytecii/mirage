@@ -23,7 +23,8 @@ from mirage.cache.index.constants import LISTING_TRUST_WINDOW
 from mirage.cache.index.scope import sole_command_started
 
 _WRITES_BY_PREFIX: Counter[str] = Counter()
-_WRITES_LOCK = threading.Lock()
+_HOLDERS_BY_PREFIX: Counter[str] = Counter()
+_PREFIX_LOCK = threading.Lock()
 
 
 def _copied(listing: ListResult) -> ListResult:
@@ -54,7 +55,8 @@ class ListingMemo:
     no listing write to the key prefix has finished since the read began,
     for under LISTING_TRUST_WINDOW seconds, and never past the listing's
     own expiry. Each fill drops the oldest reads no command can be served
-    any more, so a read stays held for about one window.
+    any more, so a read stays held for about one window. The key
+    prefix's write count lives while an open memo holds the prefix.
 
     Args:
         key_prefix (str): the store's key prefix, whose writes count.
@@ -63,6 +65,9 @@ class ListingMemo:
     def __init__(self, key_prefix: str) -> None:
         self._key_prefix = key_prefix
         self._reads: OrderedDict[tuple[int, str], _Read] = OrderedDict()
+        self._closed = False
+        with _PREFIX_LOCK:
+            _HOLDERS_BY_PREFIX[key_prefix] += 1
 
     def _live(self, kept: _Read) -> bool:
         return (
@@ -105,8 +110,21 @@ class ListingMemo:
 
     def wrote(self) -> None:
         """Count a finished listing write to the key prefix."""
-        with _WRITES_LOCK:
+        with _PREFIX_LOCK:
             _WRITES_BY_PREFIX[self._key_prefix] += 1
 
-    def clear(self) -> None:
+    def close(self) -> None:
+        """Drop the kept listings and release the key prefix.
+
+        The last open memo on a prefix drops its write count, so a host
+        that cycles through prefixes keeps none it no longer uses.
+        """
         self._reads.clear()
+        if self._closed:
+            return
+        self._closed = True
+        with _PREFIX_LOCK:
+            _HOLDERS_BY_PREFIX[self._key_prefix] -= 1
+            if _HOLDERS_BY_PREFIX[self._key_prefix] <= 0:
+                del _HOLDERS_BY_PREFIX[self._key_prefix]
+                _WRITES_BY_PREFIX.pop(self._key_prefix, None)

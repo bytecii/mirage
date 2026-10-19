@@ -135,6 +135,47 @@ async def test_a_finished_write_on_the_prefix_drops_the_listing_read(memo):
     assert folder.reads == 2
 
 
+def test_the_last_close_on_a_prefix_releases_its_count(memo):
+    prefix = memo._key_prefix
+    peer = ListingMemo(prefix)
+    peer.wrote()
+    memo.close()
+    assert listing_memo._WRITES_BY_PREFIX[prefix] == 1
+    peer.close()
+    assert prefix not in listing_memo._WRITES_BY_PREFIX
+    assert prefix not in listing_memo._HOLDERS_BY_PREFIX
+
+
+@pytest.mark.asyncio
+async def test_a_closed_peer_leaves_a_live_memo_its_count(memo):
+    folder = Folder()
+    peer = ListingMemo(memo._key_prefix)
+    peer.wrote()
+    async with command_scope():
+        await memo.read("/d", folder)
+        peer.close()
+        peer.close()
+        await memo.read("/d", folder)
+        assert folder.reads == 1
+        ListingMemo(memo._key_prefix).wrote()
+        await memo.read("/d", folder)
+    assert folder.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_finishes_after_close_still_counts(clock):
+    prefix = f"test:{uuid4()}:"
+    closed = ListingMemo(prefix)
+    closed.close()
+    memo = ListingMemo(prefix)
+    folder = Folder()
+    async with command_scope():
+        await memo.read("/d", folder)
+        closed.wrote()
+        await memo.read("/d", folder)
+    assert folder.reads == 2
+
+
 @pytest.mark.asyncio
 async def test_a_read_that_overlaps_a_finished_write_is_not_kept(memo):
     folder = Folder()

@@ -126,6 +126,36 @@ describe('ListingMemo', () => {
     expect(folder.reads).toBe(2)
   })
 
+  it('keeps a live memo its count when a peer on the prefix closes', async () => {
+    const folder = new Folder()
+    const peer = new ListingMemo(prefix)
+    peer.wrote()
+    await runInCommandScope(async () => {
+      await memo.read('/d', folder.fetch)
+      peer.close()
+      peer.close()
+      await memo.read('/d', folder.fetch)
+      expect(folder.reads).toBe(1)
+      new ListingMemo(prefix).wrote()
+      await memo.read('/d', folder.fetch)
+    })
+    expect(folder.reads).toBe(2)
+  })
+
+  it('counts a write that finishes after its memo closed', async () => {
+    const shared = `${prefix}shared:`
+    const closed = new ListingMemo(shared)
+    closed.close()
+    const fresh = new ListingMemo(shared)
+    const folder = new Folder()
+    await runInCommandScope(async () => {
+      await fresh.read('/d', folder.fetch)
+      closed.wrote()
+      await fresh.read('/d', folder.fetch)
+    })
+    expect(folder.reads).toBe(2)
+  })
+
   it('counts a write when it finishes, resolved or rejected', async () => {
     const folder = new Folder()
     const release = gate()

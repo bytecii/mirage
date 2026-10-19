@@ -443,7 +443,7 @@
   },
   "cache/index/listing_memo": {
    "python_only": {
-    "_WRITES_LOCK": "Python runs event loops on several threads, so the shared listing write count takes a lock; TypeScript runs one thread."
+    "_PREFIX_LOCK": "Python runs event loops on several threads, so the shared per-prefix write and holder counts take a lock; TypeScript runs one thread."
    }
   },
   "cache/index/redis": {

@@ -1338,7 +1338,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         if self._closed:
             return
         await self._flush_seed()
-        self._listings.clear()
+        self._listings.close()
         if self._owns_client:
             await self._client.aclose()
         await super().close()
