@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from mirage.execution.context import current_execution_id
+from mirage.context.session_context import current_execution_id
 from mirage.process.config import ProcessPermissions
 from mirage.process.handle import ProcessHandle
 from mirage.process.supervisor import ProcessSupervisor

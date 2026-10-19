@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import Any, Callable, ClassVar, Generic, cast
 
 from mirage.commands.config import Context
+from mirage.context.session_context import bind_caller, reset_caller
 from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.config import RuntimeConfig
 from mirage.runtime.errors import UnsupportedExecutionError
@@ -216,11 +217,13 @@ class Runtime(ABC, Generic[E]):
                     else capture.ctx.processes
                 ),
             )
-            return await capture.scope.run(
-                lambda: self._run(
+            token = bind_caller(capture.caller)
+            try:
+                return await self._run(
                     kind, engine, list(paths), list(texts), run_ctx, output
                 )
-            )
+            finally:
+                reset_caller(token)
         finally:
             release()
 

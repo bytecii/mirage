@@ -12,11 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { currentCaller, liveCallers, runWithCaller } from '../context/session_context.ts'
+import {
+  currentCaller,
+  currentExecutionId,
+  liveCallers,
+  runWithCaller,
+} from '../context/session_context.ts'
 import { OpRecord, RecordIndex, STAMP_FINGERPRINT_OPS } from './record.ts'
 import { underPath } from '../utils/key_prefix.ts'
 import type { PathSpec } from '../types.ts'
-import { currentExecutionId } from '../execution/context.ts'
 
 /** A line's recording: its records and the mount serving them. */
 export interface RecordingState {

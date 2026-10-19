@@ -15,8 +15,6 @@
 import { mergeSignals } from '../utils/abort.ts'
 import type { SessionAccess } from '../view/types.ts'
 import { createAsyncContext } from '../utils/async_context.ts'
-import { captureExecutionContext } from '../execution/context.ts'
-import type { ContextCall } from '../utils/async_context.ts'
 import type { ByteSource, IOResult, OpReport } from '../io/types.ts'
 import type { Redirect } from '../shell/types.ts'
 import type { JobConsole } from '../shell/console/index.ts'
@@ -124,6 +122,9 @@ export interface Caller {
   // output is a value (a substitution's) to send another level's stream
   // bytes toward it.
   readonly enclosing: JobConsole | null
+  // The execution (a line, a job, a spawned process) the call runs in,
+  // which its records name.
+  readonly execution: string | null
 }
 
 /**
@@ -166,6 +167,7 @@ const UNBOUND: Caller = {
   ownVersion: null,
   started: null,
   enclosing: null,
+  execution: null,
 }
 
 const callerStorage = createAsyncContext<Caller>()
@@ -191,6 +193,65 @@ export function liveCallers(): readonly Caller[] {
  */
 export function runWithCaller<T>(caller: Caller, fn: () => Promise<T>): Promise<T> {
   return Promise.resolve(callerStorage.run(caller, fn))
+}
+
+/**
+ * `fn` run as `caller` wherever it is called from: a runtime's guest asks
+ * its questions from a callback of its own, which carries no caller.
+ */
+export function callsAs<A extends unknown[], R>(
+  caller: Caller,
+  fn: (...args: A) => R,
+): (...args: A) => R {
+  return (...args) => callerStorage.run(caller, () => fn(...args)) as R
+}
+
+/** `fn` run as `caller` whoever awaits it. */
+export function awaitsAs<A extends unknown[], R>(
+  caller: Caller,
+  fn: (...args: A) => Promise<R>,
+): (...args: A) => Promise<R> {
+  return (...args) => runWithCaller(caller, () => fn(...args))
+}
+
+/**
+ * `source` pulled and closed as `caller`. A stream keeps the caller it was
+ * made with: whoever pulls it and however late (a reader further down a
+ * pipeline, a host draining a line's output), what each pull runs (a
+ * backend's lazy read, the record it makes, the pins and cache scope it
+ * reads) is that caller's, and so is the close a reader that stops early
+ * sends. Mirrors Python's `with_caller`.
+ */
+export async function* withCaller<T>(source: AsyncIterable<T>, caller: Caller): AsyncGenerator<T> {
+  const iterator = source[Symbol.asyncIterator]()
+  try {
+    for (;;) {
+      const next = await runWithCaller(caller, () => iterator.next())
+      if (next.done === true) return
+      yield next.value
+    }
+  } finally {
+    const finish = iterator.return?.bind(iterator)
+    if (finish !== undefined) await runWithCaller(caller, () => finish())
+  }
+}
+
+/** The execution the current call runs in; never a sibling's on hosts
+ * without task isolation. */
+export function currentExecutionId(): string | null {
+  const id = currentCaller().execution
+  if (
+    id === null ||
+    liveCallers().some((caller) => caller.execution !== null && caller.execution !== id)
+  ) {
+    return null
+  }
+  return id
+}
+
+/** Run `run` as part of the execution `executionId`, which its records name. */
+export function runWithExecution<T>(executionId: string, run: () => Promise<T>): Promise<T> {
+  return runWithCaller({ ...currentCaller(), execution: executionId }, run)
 }
 
 function runChanged<T>(changes: Partial<Caller>, fn: () => Promise<T>): Promise<T> {
@@ -622,19 +683,17 @@ export function runWithRedirectPaths<T>(
   return runChanged({ redirects: [node, paths, runner, syntax] }, fn)
 }
 
-/** Capture the caller and its execution for a deferred workspace
- * callback, bound to `session` when one is named: its evaluation comes
- * along only when it is the session bound now. */
-export function captureSessionContext(session?: SessionState, owner?: SessionOwner): ContextCall[] {
-  if (session === undefined) return [callerStorage.capture(), captureExecutionContext()]
+/** The caller a deferred workspace callback runs as: the bound one, as
+ * `session` when one is named, whose evaluation comes along only when it
+ * is the session bound now. */
+export function sessionCaller(session: SessionState, owner?: SessionOwner): Caller {
   const bound = currentCaller()
-  const caller: Caller = {
+  return {
     ...bound,
     session,
     owner: owner ?? null,
     evaluation: bound.session === session ? bound.evaluation : null,
   }
-  return [(fn) => callerStorage.run(caller, fn), captureExecutionContext()]
 }
 
 /**

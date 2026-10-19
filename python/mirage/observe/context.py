@@ -21,9 +21,9 @@ from mirage.context.session_context import (
     CallerToken,
     bind_caller,
     current_caller,
+    current_execution_id,
     reset_caller,
 )
-from mirage.execution.context import current_execution_id
 from mirage.observe.record import STAMP_FINGERPRINT_OPS, OpRecord, RecordIndex
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import under_path
@@ -167,6 +167,12 @@ class Recorder:
     mount_id: str | None = None
 
 
+def fresh_recorder() -> Recorder:
+    """An empty recorder, for a line or a call outside one."""
+    sink: list[OpRecord] = []
+    return Recorder(sink=sink, lost=LostPaths(sink), index=RecordIndex(sink))
+
+
 def _set_recorder(rec: Recorder | None) -> CallerToken:
     return bind_caller(replace(current_caller(), recorder=rec))
 
@@ -190,10 +196,7 @@ class RecordingScope:
         self.records: list[OpRecord] = []
         self._token = None
         if active:
-            sink: list[OpRecord] = []
-            rec = Recorder(
-                sink=sink, lost=LostPaths(sink), index=RecordIndex(sink)
-            )
+            rec = fresh_recorder()
             self.records = rec.sink
             self._token = _set_recorder(rec)
 
@@ -411,9 +414,7 @@ def finish_record(
 ) -> OpRecord:
     """Close ``timer`` and build the finished record.
 
-    The one place an op's duration and wall-clock stamp are read, shared
-    by the recorder sink (:func:`record`) and by the ``Files`` facade's own
-    ledger, so the two cannot disagree about what a duration measures.
+    The one place an op's duration and wall-clock stamp are read.
 
     Args:
         op (str): Operation name ("read", "write").

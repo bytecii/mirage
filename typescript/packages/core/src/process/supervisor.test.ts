@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { PathSpec } from '../types.ts'
 import { ProcessSupervisor } from './supervisor.ts'
-import { currentExecutionId } from '../execution/context.ts'
+import { currentExecutionId, runWithExecution } from '../context/session_context.ts'
 import type { ProcessHandle } from './handle.ts'
 
 function gate() {
@@ -18,7 +18,7 @@ function gate() {
 }
 
 it('isolates execution context between concurrent runners', async () => {
-  const supervisor = new ProcessSupervisor()
+  const supervisor = new ProcessSupervisor(runWithExecution)
   const release = gate()
   const seen: (string | null)[][] = []
   const handles = ['first', 'second'].map((executionId) =>

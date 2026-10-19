@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Context } from '../commands/config.ts'
+import { runWithCaller } from '../context/session_context.ts'
 import type { PathSpec } from '../types.ts'
 import { Activity } from '../utils/activity.ts'
 import { coerceRuntimeConfig, type RuntimeConfig, type RuntimeOptions } from './config.ts'
@@ -165,7 +166,7 @@ export abstract class Runtime<E = unknown> {
       }
       if (vfs === undefined) delete runCtx.vfs
       else runCtx.vfs = vfs
-      return await capture.scope.run(() =>
+      return await runWithCaller(capture.caller, () =>
         this.runAs(kind, engine, [...paths], [...texts], runCtx, opts.output),
       )
     } finally {

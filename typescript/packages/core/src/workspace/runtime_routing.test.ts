@@ -603,6 +603,42 @@ class LineBox extends Runtime implements LineExecutor {
 }
 
 describe('whole-line runtimes', () => {
+  it("puts what the runtime read in its line's report", async () => {
+    // A runtime's reads are the line's: they reach the workspace's ledger
+    // and the observer's account of the line, as a command's do.
+    class ReadingBox extends LineBox {
+      override async runLine(
+        _e: unknown,
+        _p: PathSpec[],
+        _t: string[],
+        ctx: Context,
+      ): Promise<RunResult> {
+        if (ctx.vfs === undefined) throw new Error('no files')
+        return { stdout: await ctx.vfs.read('/f.txt'), stderr: null, exitCode: 0 }
+      }
+    }
+    const parser = await getTestParser()
+    const box = new ReadingBox()
+    box.captures = ['*']
+    const ws = new Workspace(
+      { '/': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: parser, runtimes: [box, 'workspace'] },
+    )
+    try {
+      await ws.vfs.write('/f.txt', 'hi\n')
+      const mark = ws.records.length
+      const result = await ws.shell('anything')
+      expect(DEC.decode(result.stdout)).toBe('hi\n')
+      expect(ws.records.slice(mark).map((r) => [r.op, r.path])).toEqual([['read', '/f.txt']])
+      const logged = await ws.observer.events()
+      const line = logged.findIndex((e) => e.command === 'anything')
+      const before = logged[line - 1]
+      expect([before?.type, before?.op, before?.path]).toEqual(['op', 'read', '/f.txt'])
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('a named capture keeps the pipeline and redirect in Mirage', async () => {
     const parser = await getTestParser()
     const box = new LineBox()

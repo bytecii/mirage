@@ -582,6 +582,45 @@ class LineBox(Runtime, LineExecutorMixin):
         )
 
 
+class ReadingBox(LineBox):
+    """A whole-line runtime that reads a workspace file for its line."""
+
+    async def run_line(self, engine, paths, texts, ctx) -> RunResult:
+        data = await ctx.vfs.read("/ram/f.txt")
+        return RunResult(stdout=data, stderr=None, exit_code=0)
+
+
+@pytest.mark.asyncio
+async def test_what_a_runtime_reads_is_in_its_lines_report():
+    # A runtime's reads are the line's: they reach the workspace's ledger
+    # and the observer's account of the line, as a command's do.
+    box = ReadingBox()
+    box.captures = ("*",)
+    ws = Workspace(
+        {"/ram": RAMVFS()}, mode=MountMode.EXEC, runtimes=[box, "workspace"]
+    )
+    try:
+        await ws.vfs.write("/ram/f.txt", b"hi\n")
+        mark = len(ws.vfs.records)
+        io = await ws.shell("anything")
+        assert await materialize(io.stdout) == b"hi\n"
+        assert [(r.op, r.path) for r in ws.vfs.records[mark:]] == [
+            ("read", "/ram/f.txt")
+        ]
+        logged = await ws.observer.events()
+        line = next(
+            i for i, e in enumerate(logged) if e.get("command") == "anything"
+        )
+        before = logged[line - 1]
+        assert (before["type"], before["op"], before["path"]) == (
+            "op",
+            "read",
+            "/ram/f.txt",
+        )
+    finally:
+        await ws.close()
+
+
 @pytest.mark.asyncio
 async def test_named_capture_keeps_pipeline_and_redirects_in_mirage():
     box = LineBox()

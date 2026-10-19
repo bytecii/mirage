@@ -18,8 +18,7 @@ import { memoryLimit } from '../../../config.ts'
 import { classify } from '../../../../errors/classify.ts'
 import { CommandTimeoutError } from '../../../../errors/types.ts'
 import type { Context } from '../../../../commands/config.ts'
-import { captureSessionContext } from '../../../../context/session_context.ts'
-import { ContextScope } from '../../../../utils/context_scope.ts'
+import { currentCaller, runWithCaller } from '../../../../context/session_context.ts'
 import type { RunResult } from '../../../types.ts'
 import type { RuntimeFiles } from '../../../files.ts'
 import { applyMutation } from '../fs/journal.ts'
@@ -170,8 +169,8 @@ export class PyodideWorkerClient {
   async execute(request: ExecuteRequest, ctx: Context, files: RuntimeFiles): Promise<RunResult> {
     if (this.failure !== null) throw this.failure
     const signal = ctx.signal
-    // The run's context, replayed for each call the guest makes.
-    const scope = new ContextScope(captureSessionContext())
+    // The run's caller, which each call the guest makes runs as.
+    const caller = currentCaller()
     const responses = new Set<Promise<void>>()
     const processes = new GuestProcessTable(ctx, files)
     const cap = request.config.maxMemory ?? null
@@ -202,7 +201,7 @@ export class PyodideWorkerClient {
         }
         if (message.kind === 'vfs') {
           const response = respond(message.buffer, () =>
-            scope.run(() => this.operation(message, files, processes)),
+            runWithCaller(caller, () => this.operation(message, files, processes)),
           )
           responses.add(response)
           void response.then(() => {

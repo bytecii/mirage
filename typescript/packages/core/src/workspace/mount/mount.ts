@@ -18,14 +18,14 @@ import { RAMAccessor } from '../../accessor/ram.ts'
 import { activePipe, pipeBelow } from '../../core/dev/device.ts'
 import type { DevicePipe } from '../../core/dev/pipe.ts'
 import { norm } from '../../utils/path.ts'
-import { ContextScope } from '../../utils/context_scope.ts'
 import {
-  captureSessionContext,
+  type Caller,
   currentCaller,
   effectiveMountMode,
   requirePathsWritable,
   runWithCaller,
   strongestModeUnder,
+  withCaller,
 } from '../../context/session_context.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { coerceReadPolicy } from './read_policy.ts'
@@ -1449,12 +1449,16 @@ export class MountEntry {
     if (this.retiring) throw ebusy(this.prefix)
     const limit = this.commandLimits.get('read') ?? null
     const revisions = this.revisions.size > 0 ? this.revisions : null
-    const pulls = new ContextScope([
-      ...captureSessionContext(),
-      (fn) => runWithMountContext(async () => await fn(), this.mountId),
-      (fn) => runWithWriteContext(this.prefix, this.writeContext(), async () => await fn()),
-      (fn) => runWithRevisions(revisions, async () => await fn()),
-    ])
+    const bound = currentCaller()
+    const caller: Caller = {
+      ...bound,
+      recording:
+        bound.recording === null
+          ? null
+          : { records: bound.recording.records, mountId: this.mountId },
+      write: { prefix: this.prefix, context: this.writeContext() },
+      revisions: { map: revisions },
+    }
     const signal = callerSignal()
     const stream = withPullTimeout(
       this.wants('readStream').length > 0
@@ -1463,7 +1467,7 @@ export class MountEntry {
       limit?.timeoutSeconds ?? null,
       'read',
     )
-    return this.activity.hold(pulls.stream(stream)) as AsyncIterable<Uint8Array>
+    return this.activity.hold(withCaller(stream, caller)) as AsyncIterable<Uint8Array>
   }
 
   private resolveCascade<T>(
@@ -2149,8 +2153,7 @@ function wrapMountStreams(
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   if (stream === null || stream instanceof Uint8Array) return [stream, io]
-  const scope = new ContextScope(captureSessionContext())
-  return [activity.hold(scope.stream(stream)), io]
+  return [activity.hold(withCaller(stream, currentCaller())), io]
 }
 
 function sortFiletypeMap(m: Map<string, (string | null)[]>): Record<string, (string | null)[]> {

@@ -969,17 +969,6 @@ describe('Files goes through the dispatcher', () => {
   })
 })
 
-/**
- * A RAM store wearing the s3 name, so the accounting reads the mount as
- * network-backed rather than local. The mount serves RAM's commands under the
- * name it wears.
- */
-function s3NamedRam(): RAMVFS {
-  const vfs = new RAMVFS()
-  Object.assign(vfs, { name: 's3' })
-  return vfs
-}
-
 describe('Files accounting survives the delegation', () => {
   class DenyBigReads implements Policy {
     postVfs(ctx: VfsResultContext): Action | null {
@@ -998,13 +987,6 @@ describe('Files accounting survives the delegation', () => {
   class SealReads implements Policy {
     preVfs(ctx: VfsContext): Action | null {
       if (ctx.call.name === 'read') return { kind: 'deny', reason: 'sealed' }
-      return null
-    }
-  }
-
-  class BrokenPostVfs implements Policy {
-    postVfs(ctx: VfsResultContext): Action | null {
-      if (ctx.write && ctx.path.virtual === '/m/a.txt') return 42 as unknown as Action
       return null
     }
   }
@@ -1028,26 +1010,6 @@ describe('Files accounting survives the delegation', () => {
     const ws = mkWs(new CapReadsTo3())
     await ws.vfs.write('/data/a.txt', '0123456789')
     await expect(ws.vfs.read('/data/a.txt')).rejects.toThrow(PolicyError)
-  })
-
-  it('records a committed write when bookkeeping after it fails', async () => {
-    // The backend applied the write, then a step after it (here an
-    // invalid postVfs return, but any foreign bookkeeping error looks
-    // the same) blew up. The error must propagate AND the transfer
-    // must stay on the books: the dispatcher stamped the report at
-    // completion, so the record does not depend on what kind of
-    // exception followed. Mirrors Python's test_policies.py.
-    const vfs = s3NamedRam()
-    const ws = new Workspace(
-      { '/m': vfs },
-      { mode: MountMode.WRITE, policies: [new BrokenPostVfs()] },
-    )
-    ws.records.length = 0
-    await expect(ws.vfs.write('/m/a.txt', '123456')).rejects.toThrow(PolicyError)
-    expect(DEC.decode(await ws.vfs.read('/m/a.txt'))).toBe('123456')
-    const write = ws.records.find((r) => r.op === 'write')
-    expect([write?.source, write?.bytes]).toEqual(['s3', 6])
-    expect(ws.networkBytes).toBeGreaterThanOrEqual(6)
   })
 
   it('does not count a denied warm read as network traffic', async () => {

@@ -113,6 +113,36 @@ def test_strict_load_raises_when_s3_etag_drifts(tmp_path):
         assert live != recorded
 
 
+@pytest.mark.parametrize("write", [False, True])
+def test_strict_load_raises_when_a_file_tool_touched_what_drifted(
+    tmp_path, write
+):
+    """A read or write through ``ws.vfs`` (an agent's file tool, FUSE) is
+    pinned as a shell line's is: it records into the same ledger, with the
+    token the backend returned, so drift since is caught on load.
+    """
+    store = {"data.csv": b"version 1 bytes\n"}
+    with ExitStack() as stack:
+        stack.enter_context(patch_s3_multi({"test-bucket": store}))
+        src = Workspace(
+            {"/s3": (S3VFS(_config()), MountMode.WRITE)}, mode=MountMode.WRITE
+        )
+        if write:
+            asyncio.run(src.vfs.write("/s3/data.csv", b"written\n"))
+        else:
+            assert asyncio.run(src.vfs.read("/s3/data.csv")) == (
+                b"version 1 bytes\n"
+            )
+        snap = tmp_path / "snap.tar"
+        asyncio.run(src.snapshot(snap))
+        store["data.csv"] = b"VERSION 2 DRIFTED\n"
+
+        dst = _load(snap, mounts={"/s3": S3VFS(_config())})
+        with pytest.raises(ContentDriftError) as exc_info:
+            asyncio.run(dst.vfs.read("/s3/data.csv"))
+        assert exc_info.value.path == "/s3/data.csv"
+
+
 def test_strict_drift_names_the_virtual_path_of_a_key_named_like_its_mount(
     tmp_path,
 ):

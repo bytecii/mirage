@@ -15,15 +15,17 @@
 import { type ByteSource, IOResult, OpReport } from '../io/types.ts'
 import { closeQuietly, ensureStream } from '../io/stream.ts'
 import type { OpRecord } from '../observe/record.ts'
-import { finishRecord, type OpTimer, startOp } from '../observe/context.ts'
+import { record, type RecordingState, startOp } from '../observe/context.ts'
 import type { FileStat, SetAttrFields, Visibility } from '../types.ts'
 import { FileType, PathSpec } from '../types.ts'
 import { isEnotdir, isMissingPath } from '../errors/fs.ts'
 import {
   type Caller,
   type CallerDispatchFn,
+  callsAs,
   currentCaller,
   getCurrentSession,
+  runWithCaller,
   sessionVisibility,
 } from '../context/session_context.ts'
 import { leadsHidden, pathVisible } from '../utils/hidden.ts'
@@ -458,19 +460,6 @@ export class Files {
     return [...found].sort(compareCodePoints)
   }
 
-  private async record(
-    op: string,
-    path: string,
-    source: string,
-    bytes: number,
-    timer: OpTimer,
-    session: string,
-  ): Promise<void> {
-    const rec = finishRecord(op, path, source, bytes, timer)
-    this.recorded.push(rec)
-    if (this.sink !== null) await this.sink(rec, session)
-  }
-
   /**
    * `Workspace.dispatch` as this facade runs it: as its session, and
    * recorded on the ledger. The dispatcher `RuntimeFiles` drives for node's
@@ -495,9 +484,15 @@ export class Files {
    * Run one op through the workspace dispatcher and record it.
    *
    * The dispatcher owns the whole pipeline (follow, grants, gates, cache,
-   * structure, invalidation); the facade's own share is the record, which
-   * names the path the dispatcher's report says the op ran on, its links
-   * followed. Mirrors Python's Files._call.
+   * structure, invalidation). The op records where a running line records,
+   * so its records are the line's; outside a line it records into its own
+   * recording, handed to the ledger and the sink once the op ends, a
+   * stream's once it closes. What records it is what records a line's
+   * calls: the backend and the dispatcher, with the tokens they read. An op
+   * nothing below recorded (a stat, a listing, a warm cache hit, a
+   * synthetic namespace answer) is recorded here, on the path the
+   * dispatcher's report says it ran on, its links followed. Mirrors
+   * Python's Files._call.
    */
   private async through(
     op: string,
@@ -510,6 +505,19 @@ export class Files {
     const timer = startOp()
     const report = new OpReport()
     const spelled = typeof path === 'string' ? path : path.virtual
+    const outer = currentCaller()
+    const own: RecordingState | null =
+      outer.recording === null ? { records: [], mountId: null } : null
+    // The op's own list gathers every record made below it; a command the
+    // op runs in (a handler reaching `ws.vfs`) is charged them once the op
+    // ends.
+    const mine: OpRecord[] = []
+    const enclosing = outer.commandSink?.[0] ?? null
+    const caller: Caller = {
+      ...outer,
+      ...(own === null ? {} : { recording: own }),
+      commandSink: [mine, mine],
+    }
     // The record names the session the op ran as: noted inside the
     // bind, since the facade's own id may be null (the default) and a
     // session bound by the caller is kept over it.
@@ -521,37 +529,44 @@ export class Files {
       const typed = PathSpec.fromStrPath(path, undefined, '/')
       const dispatch =
         bound === null || this.dispatchAs === null ? this.dispatchFn : this.dispatchAs(bound)
-      const caller = this.caller === null ? undefined : { ...currentCaller(), ...this.caller }
-      return dispatch(op, typed, args, kwargs, report, caller)
+      const explicit = this.caller === null ? undefined : { ...currentCaller(), ...this.caller }
+      return dispatch(op, typed, args, kwargs, report, explicit)
+    }
+    const settle = async (answer: unknown): Promise<void> => {
+      const ran = report.path ?? spelled
+      const owner = this.ownerOf(ran)
+      if (mine.length === 0 && report.completed && owner !== null) {
+        callsAs(caller, record)(
+          op,
+          ran,
+          report.source ?? owner.kind,
+          report.bytes ?? payloadBytes(answer, args),
+          timer,
+        )
+      }
+      enclosing?.push(...mine)
+      if (own === null || own.records.length === 0) return
+      const records = own.records.splice(0)
+      this.recorded.push(...records)
+      if (this.sink === null) return
+      const session = this.sessionFor(seen)
+      for (const rec of records) await this.sink(rec, session)
     }
     let result: unknown
-    let owner: MountRow | null = null
     try {
       const bound = sessionId ?? this.sessionId
-      const [value] = await (this.bind === null ? run() : this.bind(bound, run))
+      const [value] = await runWithCaller(caller, () =>
+        this.bind === null ? run() : this.bind(bound, run),
+      )
       result = value
-      owner = this.ownerOf(report.path ?? spelled)
     } catch (err) {
-      owner = this.ownerOf(report.path ?? spelled)
       // Anything thrown after the op ran (a postVfs deny, a hard
       // output cap, a bookkeeping failure) suppresses the result, not
       // the effect, so observation must reflect the op before the
       // error propagates. The dispatcher stamps the report at the moment of
       // completion, so even a foreign error the dispatcher never defined
       // leaves the transfer on the books.
-      if (report.completed && owner !== null) {
-        await this.recordOp(
-          op,
-          report.path ?? spelled,
-          owner,
-          report.source,
-          report.bytes,
-          null,
-          args,
-          timer,
-          this.sessionFor(seen),
-        )
-      }
+      await settle(null)
       throw err
     } finally {
       // A write owns its source even when it never reaches the dispatcher
@@ -559,25 +574,16 @@ export class Files {
       if (op === 'write' || op === 'append')
         await closeQuietly((args[0] ?? kwargs.data ?? null) as ByteSource | null)
     }
-    if (owner === null || (op === 'write' && kwargs.admit_only === true)) return result
-    const record = (answer: unknown): Promise<void> =>
-      this.recordOp(
-        op,
-        report.path ?? spelled,
-        owner,
-        report.source,
-        report.bytes,
-        answer,
-        args,
-        timer,
-        this.sessionFor(seen),
-      )
+    if (op === 'write' && kwargs.admit_only === true) {
+      await settle(undefined)
+      return result
+    }
     if (result !== null && typeof result === 'object' && Symbol.asyncIterator in result) {
-      const stream = recorded(result as AsyncIterable<Uint8Array>, () => record(null))
+      const stream = recorded(result as AsyncIterable<Uint8Array>, () => settle(null))
       await stream.next()
       return stream
     }
-    await record(result)
+    await settle(result)
     return result
   }
 
@@ -585,36 +591,6 @@ export class Files {
    * facade's own, else the unbound entry point's empty id. */
   private sessionFor(seen: string | null): string {
     return seen ?? this.sessionId ?? ''
-  }
-
-  /**
-   * Record one op from the dispatcher's report of who served it.
-   *
-   * The dispatcher names the server when it was not the owning mount (a warm
-   * cache hit, a synthetic namespace answer): neither moved bytes over
-   * the network, and 'ram' is what OpRecord.isCache reads. It names the
-   * moved bytes when the delivered result no longer measures them,
-   * because a cap truncated it or a refusal withheld it entirely.
-   */
-  private async recordOp(
-    op: string,
-    path: string,
-    owner: MountRow,
-    source: string | null,
-    moved: number | null,
-    result: unknown,
-    args: readonly unknown[],
-    timer: OpTimer,
-    session: string,
-  ): Promise<void> {
-    await this.record(
-      op,
-      path,
-      source ?? owner.kind,
-      moved ?? payloadBytes(result, args),
-      timer,
-      session,
-    )
   }
 
   // `raw` skips the filetype cascade: an explicit null filetype stops

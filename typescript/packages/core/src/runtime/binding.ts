@@ -14,24 +14,25 @@
 
 import type { Context } from '../commands/config.ts'
 import { compareCodePoints } from '../utils/sort.ts'
-import { captureSessionContext } from '../context/session_context.ts'
+import { awaitsAs, callsAs, currentCaller, type Caller } from '../context/session_context.ts'
 import type { OpKwargs } from '../view/types.ts'
 import { isGlob, showHead } from '../utils/hidden.ts'
 import { PathSpec } from '../types.ts'
-import { ContextScope } from '../utils/context_scope.ts'
 import type { MountResolver } from './resolver.ts'
 import type { BridgeDispatchFn, DispatchFn } from './types.ts'
 import { Files } from '../workspace/files.ts'
 import type { SessionState } from '../workspace/session/session.ts'
 
 /** Local workspace entry points captured for one execution, never guest
- * globals. `ctx` is the same `Context` a command or CLI gets: its `vfs` is
- * the session's files over the binding's dispatch, so a guest's calls are
- * the program's own. */
+ * globals. They run as `caller`, the caller the execution was captured
+ * under (its session, policies, recording and execution), even when a
+ * guest calls them later from a callback of its own. `ctx` is the same
+ * `Context` a command or CLI gets: its `vfs` is the session's files over
+ * the binding's dispatch, so a guest's calls are the program's own. */
 export interface RuntimeContext {
   readonly binding: WorkspaceBinding
   readonly resolver: MountResolver
-  readonly scope: ContextScope
+  readonly caller: Caller
   readonly ctx: Context
   readonly restrictedMounts?: readonly string[]
 }
@@ -118,7 +119,7 @@ export function restrictedMountsFor(session: SessionState, prefixes: readonly st
  * @param binding the workspace connection.
  * @param views the session's context, its restricted mounts, and the
  *   dispatch bound to that session (the binding's own when absent).
- * @param scope the context the entry points replay.
+ * @param caller who the entry points run as.
  */
 export function captureBinding(
   binding: WorkspaceBinding,
@@ -127,32 +128,32 @@ export function captureBinding(
     restrictedMounts?: readonly string[]
     dispatch?: DispatchFn
   } = {},
-  scope = new ContextScope(captureSessionContext()),
+  caller: Caller = currentCaller(),
 ): RuntimeContext {
   const given = views.dispatch ?? binding.dispatch
-  const dispatch = given === null ? null : scope.wrap(given)
+  const dispatch = given === null ? null : awaitsAs(caller, given)
   const vfs =
     dispatch === null
       ? undefined
       : (views.ctx?.vfs?.over(dispatch) ??
         new Files(dispatch, null, null, () => null, { ledger: false }))
   // A read of the session reads the session it is bound to; only a write
-  // passes the gates, which read the caller, so only a write replays it.
+  // passes the gates, which read the caller, so only a write runs as it.
   const session = views.ctx?.session
   const wrapped =
     session === undefined
       ? undefined
       : {
           ...session,
-          set: scope.wrap(session.set.bind(session)),
-          unset: scope.wrap(session.unset.bind(session)),
-          mark: scope.wrap(session.mark.bind(session)),
+          set: awaitsAs(caller, session.set.bind(session)),
+          unset: awaitsAs(caller, session.unset.bind(session)),
+          mark: awaitsAs(caller, session.mark.bind(session)),
         }
   const rest: Partial<Context> = { ...views.ctx }
   delete rest.vfs
   return Object.freeze({
     binding,
-    resolver: new ScopedResolver(binding.resolver, scope),
+    resolver: new CallerResolver(binding.resolver, caller),
     restrictedMounts: Object.freeze(views.restrictedMounts ?? []),
     ctx: Object.freeze({
       stdin: null,
@@ -163,31 +164,32 @@ export function captureBinding(
       env: Object.freeze({ ...views.ctx?.env }),
       ...(wrapped === undefined ? {} : { session: wrapped }),
     }),
-    scope,
+    caller,
   })
 }
 
-/** Delegate every routing question under the captured context. */
-export class ScopedResolver implements MountResolver {
+/** Ask every routing question as the captured caller, whose session
+ * decides which mounts it is told of. */
+export class CallerResolver implements MountResolver {
   /**
    * @param resolver the routing table asked.
-   * @param scope the context each question replays.
+   * @param caller who each question is asked as.
    */
   constructor(
     private readonly resolver: MountResolver,
-    private readonly scope: ContextScope,
+    private readonly caller: Caller,
   ) {}
 
   prefixes(): string[] {
-    return this.scope.call(() => this.resolver.prefixes())
+    return callsAs(this.caller, () => this.resolver.prefixes())()
   }
 
   ownerOf(path: string): string | null {
-    return this.scope.call(() => this.resolver.ownerOf(path))
+    return callsAs(this.caller, () => this.resolver.ownerOf(path))()
   }
 
   linkChildren(directory: string): Set<string> {
-    return this.scope.call(() => this.resolver.linkChildren(directory))
+    return callsAs(this.caller, () => this.resolver.linkChildren(directory))()
   }
 }
 

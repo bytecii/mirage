@@ -5,7 +5,7 @@ from concurrent.futures import Future
 from dataclasses import replace
 from threading import RLock
 
-from mirage.execution.context import run_with_execution
+from mirage.context.session_context import run_with_execution
 from mirage.process.types import ProcessInfo, ProcessRunner, ProcessState
 
 logger = logging.getLogger(__name__)

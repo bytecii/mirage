@@ -19,7 +19,7 @@ import { CLIHandler } from '../commands/cli/types.ts'
 import { EvaluationContext } from '../workspace/evaluation.ts'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  captureSessionContext,
+  sessionCaller,
   getAdmission,
   getCurrentSessionFor,
   getCurrentSession,
@@ -34,6 +34,8 @@ import {
   sessionUmask,
   getCurrentEvaluation,
   runWithEvaluation,
+  currentCaller,
+  runWithCaller,
 } from './session_context.ts'
 import { CLI } from '../commands/cli/types.ts'
 import { IOResult, materialize } from '../io/types.ts'
@@ -58,7 +60,6 @@ import { RAMVFS } from '../vfs/ram/ram.ts'
 import { getTestParser } from '../../tests/workspace/fixtures/workspace_fixture.ts'
 import { Session, Workspace } from '../workspace/workspace/workspace.ts'
 import type * as asyncContextModule from '../utils/async_context.ts'
-import { ContextScope } from '../utils/context_scope.ts'
 import { pathVisible } from '../utils/hidden.ts'
 import { Files, namespaceOf } from '../workspace/files.ts'
 import type { DispatchFn } from '../runtime/types.ts'
@@ -503,21 +504,19 @@ describe('deferred evaluation on the fallback storage', () => {
       const child = parent.fork()
       const deferred = await runAsProgram(parent.session, () =>
         runWithEvaluation(child, () =>
-          Promise.resolve(
-            new ContextScope(captureSessionContext(explicit ? child.session : undefined)),
-          ),
+          Promise.resolve(explicit ? sessionCaller(child.session) : currentCaller()),
         ),
       )
       const other = new EvaluationContext(new SessionState({ sessionId: 'other' }))
       await runWithEvaluation(other, async () => {
-        const recaptured = await deferred.run(async () => {
+        const recaptured = await runWithCaller(deferred, async () => {
           await Promise.resolve()
           expect(getCurrentSession()).toBe(child.session)
           expect(getCurrentEvaluation()).toBe(child)
           expect(isProgramInvocation(child.session)).toBe(true)
-          return new ContextScope(captureSessionContext())
+          return currentCaller()
         })
-        await recaptured.run(async () => {
+        await runWithCaller(recaptured, async () => {
           await Promise.resolve()
           expect(getCurrentEvaluation()).toBe(child)
           expect(isProgramInvocation(child.session)).toBe(true)

@@ -1004,24 +1004,28 @@ async function runParsedLine(
       ))
         ? env.router.context(command, effectiveSession, await judged())
         : null
-      const result = await abortable(
-        inLine(() =>
-          runWholeLine(
-            lineRuntime,
-            command,
-            stdin,
-            effectiveSession,
-            env.registry.allMounts(),
-            env.registry.policies,
-            () => env.invalidateAllAfterRemote(),
-            killed,
-            env.registry.commandLimits,
-            claimantFor(rootNode, handed),
-            route,
-          ),
+      const runLine = (): ReturnType<typeof runWholeLine> =>
+        runWholeLine(
+          lineRuntime,
+          command,
+          stdin,
+          effectiveSession,
+          env.registry.allMounts(),
+          env.registry.policies,
+          () => env.invalidateAllAfterRemote(),
+          killed,
+          env.registry.commandLimits,
+          claimantFor(rootNode, handed),
+          route,
+        )
+      // The runtime's file calls are the line's, recorded as a tree's are.
+      const [result, lineRecords] = await abortable(
+        inLine(async (): Promise<[Awaited<ReturnType<typeof runWholeLine>>, OpRecord[]]> =>
+          isLine ? runWithRecording(runLine) : [await runLine(), []],
         ),
         killed,
       )
+      env.records.push(...lineRecords)
       const refusal = result.refusal ?? nested.latest
       held = isPendingRefusal(refusal)
       recordStatus(targetSession, result.exitCode)
@@ -1038,7 +1042,7 @@ async function runParsedLine(
           env.observer.logExecution(
             command,
             await shown(lineIo, options.sink),
-            [],
+            lineRecords,
             targetSession.sessionId,
             effectiveSession.cwd,
           ),
