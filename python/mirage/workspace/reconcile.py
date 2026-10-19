@@ -376,11 +376,7 @@ class Reconciler:
             await self.on_missing(path)
 
     async def on_fresh_stat(
-        self,
-        mount: MountEntry,
-        path: str,
-        row: FileStat | None,
-        generation: int | None,
+        self, mount: MountEntry, path: str, row: FileStat | None
     ) -> None:
         """Reconcile one path with what a fresh stat got from the backend.
 
@@ -391,21 +387,19 @@ class Reconciler:
         and its listings are dropped. A row that disagrees with the stored
         one, or a held copy the fingerprint cannot vouch for, is
         invalidated as a write is, keeping the version a conditional write
-        sends. A vouched copy whose row moved keeps its bytes. An answer
-        a local change overtook while it was asked (the manager's
-        generation moved) is applied to nothing: that change already
-        settled the caches, and the answer may predate it.
+        sends. A vouched copy whose row moved keeps its bytes. The
+        dispatcher runs the stat and this under the path's writer hold, so
+        no local write to the path lands between the answer and its
+        reconcile.
 
         Args:
             mount (MountEntry): the mount that answered.
             path (str): absolute virtual path the stat asked about.
             row (FileStat | None): the backend's answer, None when it
                 reported the path gone.
-            generation (int | None): the manager's generation before the
-                stat was sent.
         """
         manager = mount.cache_manager
-        if manager is None or manager.generation != generation:
+        if manager is None:
             return
         spec = PathSpec.from_str_path(path)
         stored = (await mount.index.get(path)).entry
@@ -434,10 +428,10 @@ class Reconciler:
         if vouched:
             await mount.index.invalidate_entry(path)
             return
-        token = await self._cache.fingerprint(path)
+        version = await manager.read_version(spec)
         await manager.invalidate_after_write(spec)
-        if token is not None:
-            await self._cache.keep_fingerprints({path: token})
+        if version is not None:
+            await manager.keep_version(spec, version)
 
     async def on_gone(
         self, gone: list[Evicted], excluded: tuple[str, ...] = ()

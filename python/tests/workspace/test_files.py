@@ -355,7 +355,7 @@ class TestFreshStat:
             await ws.close()
 
     @pytest.mark.asyncio
-    async def test_a_late_fresh_miss_keeps_attributes_set_since(self):
+    async def test_a_write_waits_for_a_fresh_stat_of_its_path(self):
         vfs = _LateStatRAM()
         ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
         try:
@@ -365,12 +365,64 @@ class TestFreshStat:
                 ws.vfs.stat("/data/d/f.txt", fresh=True)
             )
             await vfs.asked.wait()
-            await ws.vfs.write("/data/d/f.txt", b"new")
-            await ws.vfs.setxattr("/data/d/f.txt", "user.k", b"v")
+            creating = asyncio.create_task(
+                ws.vfs.write("/data/d/f.txt", b"new")
+            )
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert not creating.done()
             gate.set()
             with pytest.raises(FileNotFoundError):
                 await asking
+            await creating
+            await ws.vfs.setxattr("/data/d/f.txt", "user.k", b"v")
             assert await ws.vfs.getxattr("/data/d/f.txt", "user.k") == b"v"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_write_elsewhere_does_not_skip_the_reconcile(self):
+        vfs = _LateStatRAM()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            listed = await ws.vfs.stat("/data/f.txt")
+            await ws.mount("/data").index.set_dir(
+                "/data",
+                [("f.txt", listed)],
+                datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            vfs._store.files["/f.txt"] = b"grown\n"
+            gate = vfs.gate = asyncio.Event()
+            asking = asyncio.create_task(
+                ws.vfs.stat("/data/f.txt", fresh=True)
+            )
+            await vfs.asked.wait()
+            await ws.vfs.write("/data/g.txt", b"g")
+            gate.set()
+            assert (await asking).size == 6
+            assert (await ws.vfs.stat("/data/f.txt")).size == 6
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_folder_now_a_file_spares_a_nested_mount(self):
+        outer = _ListedRAM()
+        outer.caches_reads = True
+        ws = Workspace(
+            {"/data": outer, "/data/d/inner": RAMVFS()}, mode=MountMode.WRITE
+        )
+        try:
+            await ws.vfs.mkdir("/data/d")
+            await ws.vfs.write("/data/d/x", b"x")
+            await ws.vfs.readdir("/data/d")
+            await ws.cache.keep_fingerprints({"/data/d/inner/f.txt": "v1"})
+            outer._store.files.pop("/d/x")
+            outer._store.dirs.discard("/d")
+            outer._store.files["/d"] = b"file"
+            row = await ws.vfs.stat("/data/d", fresh=True)
+            assert row.type is FileType.FILE
+            assert await ws.cache.fingerprint("/data/d/inner/f.txt") == "v1"
         finally:
             await ws.close()
 

@@ -940,9 +940,12 @@ class CacheManager:
         await self._invalidate_parent(key)
 
     async def _drop_below(self, key: str) -> None:
+        excluded = self._excluded_prefixes()
         if self._caches_reads and self._file_cache is not None:
-            await self._file_cache.evict_prefix(key.rstrip("/") + "/")
-        await self._index.invalidate_prefix(key)
+            await self._file_cache.evict_prefix(
+                key.rstrip("/") + "/", excluded=excluded
+            )
+        await self._index.invalidate_prefix(key, excluded=excluded)
 
     async def _invalidate_parent(self, key: str) -> None:
         await self._index.invalidate_entry(key)

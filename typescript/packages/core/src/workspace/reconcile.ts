@@ -327,18 +327,12 @@ export class Reconciler {
   // mounts and links stay, and its listings are dropped. A row that disagrees
   // with the stored one, or a held copy the fingerprint cannot vouch for, is
   // invalidated as a write is, keeping the version a conditional write sends.
-  // A vouched copy whose row moved keeps its bytes. An answer a local change
-  // overtook while it was asked (the manager's `generation`, read before the
-  // stat was sent, moved) is applied to nothing: that change already settled
-  // the caches, and the answer may predate it.
-  async onFreshStat(
-    mount: MountEntry,
-    path: string,
-    row: FileStat | null,
-    generation: number | null,
-  ): Promise<void> {
+  // A vouched copy whose row moved keeps its bytes. The dispatcher runs the
+  // stat and this under the path's writer hold, so no local write to the path
+  // lands between the answer and its reconcile.
+  async onFreshStat(mount: MountEntry, path: string, row: FileStat | null): Promise<void> {
     const manager = mount.cacheManager
-    if (manager?.generation !== generation) return
+    if (manager === null) return
     const stored = (await mount.index.get(path)).entry ?? null
     const folder = stored?.type === FileType.DIRECTORY || (await mount.index.holdsSubtree(path))
     if (row === null || (folder && row.type !== FileType.DIRECTORY)) {
@@ -357,9 +351,10 @@ export class Reconciler {
       await mount.index.invalidateEntry(path)
       return
     }
-    const token = await this.cache.fingerprint(path)
-    await manager.invalidateAfterWrite(path)
-    if (token !== null) await this.cache.keepFingerprints({ [path]: token })
+    const spec = PathSpec.fromStrPath(path)
+    const version = await manager.readVersion(spec)
+    await manager.invalidateAfterWrite(spec)
+    if (version !== null) await manager.keepVersion(spec, version)
   }
 
   async onGone(gone: readonly Evicted[], excluded: readonly string[] = []): Promise<void> {

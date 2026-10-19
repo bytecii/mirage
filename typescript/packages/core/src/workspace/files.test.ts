@@ -392,7 +392,7 @@ describe('fresh stat', () => {
     }
   })
 
-  it('keeps attributes set since a late fresh miss', async () => {
+  it('makes a write wait for a fresh stat of its path', async () => {
     const vfs = new LateStatRAM()
     const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
     try {
@@ -404,11 +404,65 @@ describe('fresh stat', () => {
       const asking = ws.vfs.stat('/data/d/f.txt', undefined, { fresh: true })
       asking.catch(() => undefined)
       await vfs.started
-      await ws.vfs.write('/data/d/f.txt', 'new')
-      await ws.vfs.setxattr('/data/d/f.txt', 'user.k', new TextEncoder().encode('v'))
+      let created = false
+      const creating = ws.vfs.write('/data/d/f.txt', 'new').then(() => {
+        created = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(created).toBe(false)
       release()
       await expect(asking).rejects.toMatchObject({ code: 'ENOENT' })
+      await creating
+      await ws.vfs.setxattr('/data/d/f.txt', 'user.k', new TextEncoder().encode('v'))
       expect(DEC.decode(await ws.vfs.getxattr('/data/d/f.txt', 'user.k'))).toBe('v')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('does not skip the reconcile for a write elsewhere', async () => {
+    const vfs = new LateStatRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      let release: () => void = () => undefined
+      vfs.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const asking = ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      await vfs.started
+      await ws.vfs.write('/data/g.txt', 'g')
+      release()
+      expect((await asking).size).toBe(6)
+      expect((await ws.vfs.stat('/data/f.txt')).size).toBe(6)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('spares a nested mount when a folder becomes a file', async () => {
+    const outer = new ListedRAM()
+    Object.assign(outer, { cachesReads: true })
+    const ws = new Workspace(
+      { '/data': outer, '/data/d/inner': new RAMVFS() },
+      { mode: MountMode.WRITE },
+    )
+    try {
+      await ws.vfs.mkdir('/data/d')
+      await ws.vfs.write('/data/d/x', 'x')
+      await ws.vfs.readdir('/data/d')
+      await ws.cache.keepFingerprints({ '/data/d/inner/f.txt': 'v1' })
+      outer.store.files.delete('/d/x')
+      outer.store.dirs.delete('/d')
+      outer.store.files.set('/d', new TextEncoder().encode('file'))
+      const row = await ws.vfs.stat('/data/d', undefined, { fresh: true })
+      expect(row.type).toBe(FileType.FILE)
+      expect(await ws.cache.fingerprint('/data/d/inner/f.txt')).toBe('v1')
     } finally {
       await ws.close()
     }

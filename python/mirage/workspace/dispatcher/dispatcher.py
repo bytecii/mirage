@@ -26,7 +26,7 @@ from collections.abc import (
     Collection,
     Mapping,
 )
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -671,7 +671,8 @@ class _Call:
         fresh (bool): whether a stat asks the backend past the mount's
             index, through a throwaway store as a ``read: fresh`` probe
             does, with the index's rows only as hints, and reconciles the
-            index and file cache with the answer.
+            index and file cache with the answer; it runs under its path's
+            writer hold, so no write to the path lands between the two.
         walked (PathSpec | None): the path before a link at its final
             name was followed, the one a listing's names are spelled
             under; None when nothing was followed.
@@ -1058,8 +1059,13 @@ class Dispatcher:
             name in DISPATCH_WRITE_OPS
             or (call.write and name not in POLICY_WRITE_OPS)
         ) and name not in SERIAL_WRITE_OPS
+        prefix = mount.prefix.rstrip("/")
+        key = f"{id(mount.vfs)}:{mount_key(call.path.virtual, prefix)}"
         try:
-            ran = await self._call(call, mount, self._filler(call, mount))
+            async with (
+                self._writers.with_lock(key) if call.fresh else nullcontext()
+            ):
+                ran = await self._call(call, mount, self._filler(call, mount))
         except BaseException:
             if settles:
                 await self._evict_failed_write(mount, name, call.path, kwargs)
@@ -1848,11 +1854,6 @@ class Dispatcher:
                     vfs_path=mount_key(value.virtual, prefix),
                 )
         result: Any
-        generation = (
-            None
-            if mount.cache_manager is None
-            else mount.cache_manager.generation
-        )
         # A fill keeps the token its backend records with the read; a
         # read outside a line (FUSE, ws.vfs) records into a scope of its
         # own for that.
@@ -1908,7 +1909,7 @@ class Dispatcher:
                 )
                 if call.fresh:
                     await self._reconciler.on_fresh_stat(
-                        mount, call.path.virtual, result, generation
+                        mount, call.path.virtual, result
                     )
                 if call.name == "stat":
                     result = await _sized(mount, call.path, result)
@@ -1919,7 +1920,7 @@ class Dispatcher:
             if result is None:
                 if call.fresh:
                     await self._reconciler.on_fresh_stat(
-                        mount, call.path.virtual, None, generation
+                        mount, call.path.virtual, None
                     )
                 else:
                     await self._reconciler.on_enoent(

@@ -479,7 +479,9 @@ interface Call {
   /**
    * Whether a stat asks the backend past the mount's index, through a
    * throwaway store as a `read: fresh` probe does, with the index's rows only
-   * as hints, and reconciles the index and file cache with the answer.
+   * as hints, and reconciles the index and file cache with the answer; it
+   * runs under its path's writer hold, so no write to the path lands between
+   * the two.
    */
   fresh: boolean
   /**
@@ -906,7 +908,12 @@ export class Dispatcher {
       !SERIAL_WRITE_OPS.has(name)
     let ran: Awaited<ReturnType<typeof this.callBackend>>
     try {
-      ran = await this.callBackend(call, mount, vfs, scope, mode)
+      const key = `${String(this.storeId(vfs))}:${mountKey(call.path.virtual, rstripSlash(mount.prefix))}`
+      ran = call.fresh
+        ? await this.state.writers.withLock(key, () =>
+            this.callBackend(call, mount, vfs, scope, mode),
+          )
+        : await this.callBackend(call, mount, vfs, scope, mode)
     } catch (err) {
       if (settles) {
         await this.evictFailedWrite(
@@ -1759,7 +1766,6 @@ export class Dispatcher {
         ? runWithRecording(fill).then(([value]) => value)
         : fill()
     let result
-    const generation = mount.cacheManager?.generation ?? null
     try {
       if (await this.streams(call, mount, vfs)) {
         return [await recorded(() => this.openStream(call, mount, scope, filler)), dst, fullArgs]
@@ -1877,7 +1883,6 @@ export class Dispatcher {
             mount,
             p.virtual,
             result instanceof FileStat ? result : null,
-            generation,
           )
         }
         if (name === 'stat') result = await sized(mount, p, result)
@@ -1892,7 +1897,7 @@ export class Dispatcher {
           isMissingPath(err) || isEnotdir(err) ? this.namespaceResult(name, p.virtual) : null
         if (fallback === null) {
           if (call.fresh && (isMissingPath(err) || isEnotdir(err))) {
-            await this.reconciler.onFreshStat(mount, p.virtual, null, generation)
+            await this.reconciler.onFreshStat(mount, p.virtual, null)
           } else {
             await this.reconciler.onEnoent(mount, name, p.virtual, err)
           }
