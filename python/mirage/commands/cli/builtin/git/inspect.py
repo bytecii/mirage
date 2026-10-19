@@ -8,11 +8,6 @@ from dulwich.refs import DictRefsContainer
 from dulwich.repo import BaseRepo
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.utils.bre import (
-    BreError,
-    PosixSyntax,
-    translate_ere,
-)
 from mirage.commands.cli.builtin.git.constants import GIT_DIR
 from mirage.commands.cli.builtin.git.discover import is_bare
 from mirage.commands.cli.builtin.git.errors import (
@@ -84,8 +79,10 @@ from mirage.commands.spec.types import (
     UsageStyle,
 )
 from mirage.io.types import ByteSource, IOResult
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import posix_regex
+from mirage.shell.bytes import byte_view, utf8_locale
 from mirage.types import PathSpec
-from mirage.utils.posix import compile_posix_regex
 from mirage.version import __version__
 from mirage.workspace.files import Files
 
@@ -373,15 +370,15 @@ async def config(
                 exit_code=129, stderr=b"error: wrong number of arguments\n"
             )
         key = texts[0] if texts else ""
+        # git matches keys by the locale: bytes in C, characters in UTF-8.
+        utf8 = utf8_locale(ctx.env)
         try:
             pattern = (
-                compile_posix_regex(
-                    translate_ere(config_key(key), PosixSyntax.EXTENDED)[0]
-                )
+                posix_regex(byte_view(config_key(key), utf8), True, utf8=utf8)
                 if regexp
                 else None
             )
-        except (BreError, re.error):
+        except RegexError:
             return None, IOResult(
                 exit_code=6,
                 stderr=f"error: invalid key pattern: {key}\n".encode(),
@@ -392,7 +389,7 @@ async def config(
                 for name, value in cfg.items(section):
                     full = b".".join((*section, name.lower())).decode()
                     if listing or (
-                        pattern.search(full)
+                        pattern.search(byte_view(full, utf8)) is not None
                         if pattern
                         else full == config_key(key)
                     ):

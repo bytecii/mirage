@@ -12,7 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import re
 from collections.abc import Iterator
 from difflib import SequenceMatcher
 
@@ -22,46 +21,30 @@ from dulwich.repo import BaseRepo
 
 from mirage.commands.cli.builtin.git.patch import blob_data, byte_lines
 from mirage.commands.cli.builtin.git.summary import BINARY_SNIFF
-from mirage.shell.bytes import decode_text
+from mirage.rs.regex import PosixRegex
+from mirage.shell.bytes import byte_view
 
 EMPTY_TREE = None
 
 
-def contains(text: str, pattern: re.Pattern[str]) -> int:
+def contains(text: str, pattern: PosixRegex) -> int:
     """How many times a pattern matches a blob, git's ``contains`` under
     ``--pickaxe-regex`` and glibc's REG_NEWLINE: a match stays in its line,
     each search resumes where the last match ended (a step further after an
-    empty one), and ``^`` never holds where it resumes. Each line is sliced
-    once, however many matches it holds.
+    empty one), and ``^`` never holds where it resumes. mirage-rs counts
+    the whole blob in one request.
 
     Args:
         text (str): the blob's text.
-        pattern (re.Pattern[str]): the compiled expression.
+        pattern (PosixRegex): the compiled expression.
     """
-    count, start, begin = 0, 0, 0
-    while start < len(text) and begin <= len(text):
-        end = text.find("\n", begin)
-        end = len(text) if end < 0 else end
-        line = text[begin:end]
-        while start <= end and start < len(text):
-            if count and start == begin:
-                found, shift = pattern.search("\0" + line, 1), begin - 1
-            else:
-                found = pattern.search(line, max(start - begin, 0))
-                shift = begin
-            if found is None:
-                break
-            count += 1
-            stop = found.end() + shift
-            start = stop + (found.start() == found.end() and stop < len(text))
-        begin = end + 1
-    return count
+    return pattern.contains(text)
 
 
 def _occurrences(
     repo: BaseRepo,
     entry: tuple[int, bytes] | None,
-    needle: bytes | re.Pattern[str],
+    needle: bytes | PosixRegex,
     ignore_case: bool,
 ) -> int:
     """How many times a string appears in one side, or a pattern matches
@@ -71,15 +54,15 @@ def _occurrences(
         repo (BaseRepo): repository holding the blob.
         entry (tuple[int, bytes] | None): the side's (mode, id), None
             when it does not exist.
-        needle (bytes | re.Pattern[str]): the string being counted,
+        needle (bytes | PosixRegex): the string being counted,
             already folded under ``ignore_case``, or the pattern.
         ignore_case (bool): fold the blob's ASCII letters to lower case,
             the table git folds a ``-S`` string through under ``-i``.
     """
     data = blob_data(repo, entry)
-    if not isinstance(needle, re.Pattern):
+    if not isinstance(needle, PosixRegex):
         return (data.lower() if ignore_case else data).count(needle)
-    return contains(decode_text(data), needle)
+    return contains(byte_view(data, needle.utf8), needle)
 
 
 def _changes(
@@ -114,7 +97,7 @@ def _changes(
 def greps(
     repo: BaseRepo,
     commit: Commit,
-    pattern: re.Pattern[str],
+    pattern: PosixRegex,
     force_text: bool = False,
 ) -> bool:
     """Whether a commit's diff adds or removes a line the pattern matches,
@@ -123,7 +106,7 @@ def greps(
     Args:
         repo (BaseRepo): repository holding the trees.
         commit (Commit): the commit to test.
-        pattern (re.Pattern[str]): the compiled ``-G`` expression.
+        pattern (PosixRegex): the compiled ``-G`` expression.
         force_text (bool): include binary changed lines under ``--text``.
     """
     for old_entry, new_entry in _changes(repo, commit):
@@ -139,7 +122,7 @@ def greps(
             if tag == "equal":
                 continue
             for line in (*before[i1:i2], *after[j1:j2]):
-                text = decode_text(line).removesuffix("\n")
+                text = byte_view(line, pattern.utf8).removesuffix("\n")
                 if pattern.search(text):
                     return True
     return False
@@ -148,7 +131,7 @@ def greps(
 def touches(
     repo: BaseRepo,
     commit: Commit,
-    needle: bytes | re.Pattern[str],
+    needle: bytes | PosixRegex,
     ignore_case: bool = False,
 ) -> bool:
     """Whether a commit changed the number of occurrences of a string.
@@ -168,7 +151,7 @@ def touches(
     Args:
         repo (BaseRepo): repository holding the trees.
         commit (Commit): the commit to test.
-        needle (bytes | re.Pattern[str]): the string being counted, or
+        needle (bytes | PosixRegex): the string being counted, or
             the ``--pickaxe-regex`` pattern.
         ignore_case (bool): ``-i``.
     """

@@ -549,6 +549,40 @@
         "stdout": "",
         "stderr": "sed: -e expression #1, char 4: extra characters after command\n"
       }
+    },
+    {
+      "id": "sed_l_and_q_keep_32_bits_of_their_number",
+      "seq": 9970046,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "z=0000000000; z=$z$z$z$z$z$z$z$z$z$z; z=$z$z$z$z$z$z$z$z$z$z; z=$z$z$z$z$z; echo abcdefghij | sed -n \"l ${z}5\"; echo abcdefghij | sed -n 'l 4294967301'; echo abcdefghij | sed -n 'l 2147483653'; echo abcdefghij | sed -n -l 4294967301 l; echo abcdefghij | sed -n -l \"${z}5\" l; echo abcdefghij | sed -n -l 18446744073709551621 l; seq 2 | sed \"1q${z}7\"; echo rc=$?; seq 2 | sed '1q4294967553'; echo rc=$?; seq 2 | sed '1q4294967295'; echo rc=$?; seq 2 | sed '1Q99999999999999999999999'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "abcd\\\nefgh\\\nij$\nabcd\\\nefgh\\\nij$\nabcdefghij$\nabcd\\\nefgh\\\nij$\nabcd\\\nefgh\\\nij$\nabcdefghij$\n1\nrc=7\n1\nrc=1\n1\nrc=0\nrc=255\n",
+        "stderr": ""
+      }
     }
   ]
 }

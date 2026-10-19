@@ -27,3 +27,15 @@ export class StreamRefusal extends Error {
     this.output = output
   }
 }
+
+/**
+ * A pattern mirage-rs refused to compile. `message` is the refusal as the
+ * program words it, without its `prog: ` prefix (`Unmatched ( or \(`).
+ * Mirrors Python's RegexError.
+ */
+export class RegexError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RegexError'
+  }
+}

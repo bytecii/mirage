@@ -15,8 +15,9 @@
 import { decodeText } from '../../shell/bytes.ts'
 import { compilePosixRegex } from '../../utils/posix.ts'
 import { RegexSyntax } from './types.ts'
-import { BreError, translateBre, translateEre } from './utils/bre.ts'
-import { PcreError, hostFlags, translatePcre } from './utils/pcre.ts'
+import { PcreError, hostFlags, matchStart, matchText, translatePcre } from './utils/pcre.ts'
+import { RegexError } from '../../rs/errors.ts'
+import { LineRegex, type LineSyntax } from '../../rs/regex.ts'
 import { wholeLine } from './utils/rust_regex.ts'
 import type { HostRegex } from './utils/types.ts'
 import { UsageError } from '../errors.ts'
@@ -25,6 +26,9 @@ import { PathSpec } from '../../types.ts'
 import type { FlagView } from '../spec/flag_view.ts'
 
 export const NEVER_MATCH = '(?!)'
+
+/** A compiled pattern list: -G, -E and -F in mirage-rs, -P in the host's engine. */
+export type LineMatcher = RegExp | LineRegex
 // The matcher options, as GNU grep names them: each one picks the dialect,
 // and two different ones on a line are refused.
 const MATCHERS: Readonly<Record<string, RegexSyntax>> = {
@@ -36,10 +40,6 @@ const PERL_SINGLE = 'the -P option only supports a single pattern'
 // What -w puts around a -P pattern: no word character may touch the match on
 // either side (grep 3.11).
 const PERL_WORD_BOUNDS: readonly [string, string] = ['(?<!\\w)(?:', ')(?!\\w)']
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
 
 // Resolve the pattern-list argument from -e values (list[str] when
 // multiple) or the positional. Returns the POSIX newline-joined pattern
@@ -108,35 +108,6 @@ export function mergePatternList(
   return parts.join('\n')
 }
 
-// One basic expression as grep reads it, or grep's refusal. The shared
-// translator that `expr` and `nl` compile their patterns with, asked for
-// grep's dialect: the two GNU dialects agree on every construct measured
-// except an inverted range, which grep refuses (`grep '[z-a]'` is `Invalid
-// range end`) where the other two read it as an empty set.
-//
-// A refusal is glibc's `regerror` string verbatim, which is what GNU prints,
-// and exits 2 as grep does rather than letting the host engine's own wording
-// out (`Invalid regular expression: /(/: Unterminated group` was what
-// `grep '\('` used to say).
-export function breSource(part: string): string {
-  try {
-    return translateBre(part, true)[0]
-  } catch (err) {
-    if (err instanceof BreError) throw new UsageError(`grep: ${err.message}`)
-    throw err
-  }
-}
-
-// One extended expression as grep -E reads it, or grep's refusal.
-export function ereSource(part: string): string {
-  try {
-    return translateEre(part)[0]
-  } catch (err) {
-    if (err instanceof BreError) throw new UsageError(`grep: ${err.message}`)
-    throw err
-  }
-}
-
 /**
  * The dialect grep's matcher options pick, refusing a mixture. GNU grep 3.11
  * keeps one matcher: -G, -E, -F and -P each name one, repeating the same is
@@ -167,25 +138,40 @@ export function matcherSyntax(fl: FlagView, prog = 'grep'): RegexSyntax {
  * start of an expression (`grep: warning: * at start of expression`), once per
  * occurrence, which is also how GNU reads `(?<=...)`.
  */
-export function patternWarnings(pattern: string, syntax: RegexSyntax, prog = 'grep'): string {
-  if (syntax !== RegexSyntax.EXTENDED) return ''
-  const lines: string[] = []
-  for (const part of pattern.split('\n')) {
-    try {
-      lines.push(...translateEre(part)[2])
-    } catch (err) {
-      if (err instanceof BreError) return ''
-      throw err
-    }
-  }
-  return lines.map((w) => `${prog}: warning: ${w}\n`).join('')
+export function patternWarnings(matcher: LineMatcher, prog = 'grep'): string {
+  if (!(matcher instanceof LineRegex)) return ''
+  return matcher.warnings.map((w) => `${prog}: warning: ${w}\n`).join('')
 }
 
-// One pattern's regex source in BASIC or EXTENDED syntax.
-function sourceOf(part: string, fixedString: boolean, syntax: RegexSyntax): string {
-  if (fixedString) return escapeRegex(part)
-  if (syntax === RegexSyntax.BASIC) return breSource(part)
-  return ereSource(part)
+/** Whether a pattern list selects one line, given without its terminator. */
+export function lineSelected(matcher: LineMatcher, line: string): boolean {
+  if (matcher instanceof LineRegex) return matcher.matches(line)
+  matcher.lastIndex = 0
+  return matcher.test(line)
+}
+
+const scanners = new WeakMap<RegExp, RegExp>()
+
+/** What -o prints from one line: each match's start and text. */
+export function linePieces(matcher: LineMatcher, line: string): [number, string][] {
+  if (matcher instanceof LineRegex)
+    return matcher.extents(line).map(([start, end]) => [start, line.slice(start, end)])
+  let scanner = scanners.get(matcher)
+  if (scanner === undefined) {
+    scanner = compilePosixRegex(
+      matcher.source,
+      matcher.flags.includes('g') ? matcher.flags : matcher.flags + 'g',
+    )
+    scanners.set(matcher, scanner)
+  }
+  const out: [number, string][] = []
+  scanner.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = scanner.exec(line)) !== null) {
+    out.push([matchStart(match), matchText(match)])
+    if (match[0] === '') scanner.lastIndex += (line.codePointAt(match.index) ?? 0) > 0xffff ? 2 : 1
+  }
+  return out
 }
 
 /**
@@ -214,31 +200,24 @@ export function rustEscape(text: string): string {
   return text.replace(/[\\.+*?()|[\]{}^$#&\-~]/g, '\\$&')
 }
 
-// Build a regex source string from a POSIX pattern list in BASIC or
-// EXTENDED syntax; the other two dialects compile through `compilePattern`.
-export function buildPatternStr(
+/** grep -P's pattern as the host's matcher; -x outranks -w. */
+export function compilePerl(
   pattern: string,
-  fixedString = false,
+  ignoreCase = false,
   wholeWord = false,
-  syntax = RegexSyntax.EXTENDED,
-): string {
-  const parts = pattern.split('\n')
-  if (parts.length === 1) {
-    let patStr = sourceOf(pattern, fixedString, syntax)
-    if (wholeWord) patStr = `\\b${patStr}\\b`
-    return patStr
-  }
-  const subs: string[] = []
-  for (const part of parts) {
-    const source = sourceOf(part, fixedString, syntax)
-    let sub = fixedString ? source : `(?:${source})`
-    if (wholeWord) sub = `\\b${sub}\\b`
-    subs.push(sub)
-  }
-  return subs.join('|')
+  utf8 = false,
+  lineRegexp = false,
+): RegExp {
+  const translated = perlRegex(pattern, ignoreCase, wholeWord && !lineRegexp)
+  const source = lineRegexp ? wholeLine(translated.source, false) : translated.source
+  return compilePosixRegex(source, hostFlags(translated.source, translated.ignoreCase), utf8)
 }
 
-/** Compile a pattern list into one matcher; `utf8` means the lines are text under a UTF-8 locale. */
+/**
+ * Compile a pattern list into one matcher; `utf8` means the lines are text
+ * under a UTF-8 locale. A refusal is GNU grep's wording, and exits 2 as grep
+ * does.
+ */
 export function compilePattern(
   pattern: string,
   ignoreCase = false,
@@ -247,22 +226,20 @@ export function compilePattern(
   syntax = RegexSyntax.EXTENDED,
   utf8 = false,
   lineRegexp = false,
-): RegExp {
+): LineMatcher {
   // GNU grep 3.11: -x overrides -w in either order.
   wholeWord = wholeWord && !lineRegexp
-  if (syntax === RegexSyntax.PERL && !fixedString) {
-    const translated = perlRegex(pattern, ignoreCase, wholeWord)
-    const source = lineRegexp ? wholeLine(translated.source, false) : translated.source
-    return compilePosixRegex(source, hostFlags(translated.source, translated.ignoreCase), utf8)
-  }
-  let source = buildPatternStr(pattern, fixedString, wholeWord, syntax)
-  if (lineRegexp) source = wholeLine(source, false)
+  if (syntax === RegexSyntax.PERL && !fixedString)
+    return compilePerl(pattern, ignoreCase, wholeWord, utf8, lineRegexp)
+  const kind: LineSyntax = fixedString
+    ? 'fixed'
+    : syntax === RegexSyntax.BASIC
+      ? 'basic'
+      : 'extended'
   try {
-    // A basic or extended `.` matches every character a line holds: a CR, and
-    // under -z a newline; PCRE's does not.
-    return compilePosixRegex(source, ignoreCase ? 'is' : 's', utf8)
+    return new LineRegex(pattern.split('\n'), kind, ignoreCase, utf8, wholeWord, lineRegexp)
   } catch (err) {
-    if (!(err instanceof SyntaxError)) throw err
-    throw new UsageError('grep: Invalid regular expression')
+    if (err instanceof RegexError) throw new UsageError(`grep: ${err.message}`)
+    throw err
   }
 }

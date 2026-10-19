@@ -14,21 +14,28 @@
 
 import re
 from collections.abc import Sequence
+from typing import TypeAlias
 
 from mirage.commands.builtin.types import RegexSyntax
-from mirage.commands.builtin.utils.bre import (
-    BreError,
-    translate_bre,
-    translate_ere,
-)
 from mirage.commands.builtin.utils.operands import materialized_read
-from mirage.commands.builtin.utils.pcre import PcreError, translate_pcre
+from mirage.commands.builtin.utils.pcre import (
+    PcreError,
+    match_start,
+    match_text,
+    translate_pcre,
+)
 from mirage.commands.builtin.utils.rust_regex import whole_line
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.flag_view import FlagView
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import LineRegex, LineSyntax
 from mirage.shell.bytes import decode_text
 from mirage.types import PathSpec, PolymorphicReadFn
 from mirage.utils.posix import compile_posix_regex
+
+# A compiled pattern list: -G, -E and -F in mirage-rs, -P in the host's
+# engine.
+LineMatcher: TypeAlias = re.Pattern[str] | LineRegex
 
 NEVER_MATCH = r"(?!)"
 # The matcher options, as GNU grep names them: each one picks the
@@ -123,50 +130,6 @@ def merge_pattern_list(
     return "\n".join(parts)
 
 
-def bre_source(part: str) -> str:
-    """One basic expression as grep reads it, or grep's refusal.
-
-    The shared translator that `expr` and `nl` compile their patterns
-    with, asked for grep's dialect: the two GNU dialects agree on every
-    construct measured except an inverted range, which grep refuses
-    (`grep '[z-a]'` is `Invalid range end`) where the other two read it
-    as an empty set.
-
-    A refusal is glibc's `regerror` string verbatim, which is what GNU
-    prints, and exits 2 as grep does rather than letting the host
-    engine's own wording out (`missing ), unterminated subpattern at
-    position 0` was what `grep '\\('` used to say).
-
-    Args:
-        part (str): a single basic expression from the pattern list.
-
-    Returns:
-        str: the host regex source for that expression.
-
-    Raises:
-        UsageError: the pattern is one glibc's compiler would refuse.
-    """
-    try:
-        return translate_bre(part, True)[0]
-    except BreError as exc:
-        raise UsageError(f"grep: {exc}") from exc
-
-
-def ere_source(part: str) -> str:
-    """One extended expression as grep -E reads it, or grep's refusal.
-
-    Args:
-        part (str): a single extended expression from the pattern list.
-
-    Raises:
-        UsageError: the pattern is one glibc's compiler would refuse.
-    """
-    try:
-        return translate_ere(part)[0]
-    except BreError as exc:
-        raise UsageError(f"grep: {exc}") from exc
-
-
 def matcher_syntax(fl: FlagView, prog: str = "grep") -> RegexSyntax:
     """The dialect grep's matcher options pick, refusing a mixture.
 
@@ -197,9 +160,7 @@ def matcher_syntax(fl: FlagView, prog: str = "grep") -> RegexSyntax:
     return RegexSyntax.BASIC
 
 
-def pattern_warnings(
-    pattern: str, syntax: RegexSyntax, prog: str = "grep"
-) -> bytes:
+def pattern_warnings(matcher: LineMatcher, prog: str = "grep") -> bytes:
     """GNU grep's compile-time warnings for a pattern list, as stderr.
 
     Only an extended expression has any: GNU warns about a repetition
@@ -208,34 +169,40 @@ def pattern_warnings(
     `(?<=...)`.
 
     Args:
-        pattern (str): the newline-separated pattern list.
-        syntax (RegexSyntax): its dialect.
+        matcher (LineMatcher): the compiled pattern list.
         prog (str): the name the warning carries.
     """
-    if syntax is not RegexSyntax.EXTENDED:
+    if not isinstance(matcher, LineRegex):
         return b""
-    lines: list[str] = []
-    for part in pattern.split("\n"):
-        try:
-            lines.extend(translate_ere(part)[2])
-        except BreError:
-            return b""
-    return "".join(f"{prog}: warning: {w}\n" for w in lines).encode()
+    return "".join(
+        f"{prog}: warning: {w}\n" for w in matcher.warnings
+    ).encode()
 
 
-def _source_of(part: str, fixed_string: bool, syntax: RegexSyntax) -> str:
-    """One pattern's regex source, in the syntax it was written in.
+def line_selected(matcher: LineMatcher, line: str) -> bool:
+    """Whether a pattern list selects one line.
 
     Args:
-        part (str): a single pattern from the list.
-        fixed_string (bool): True if -F flag is set.
-        syntax (RegexSyntax): BASIC or EXTENDED.
+        matcher (LineMatcher): the compiled pattern list.
+        line (str): the line as a byte view, without its terminator.
     """
-    if fixed_string:
-        return re.escape(part)
-    if syntax is RegexSyntax.BASIC:
-        return bre_source(part)
-    return ere_source(part)
+    if isinstance(matcher, LineRegex):
+        return matcher.matches(line)
+    return matcher.search(line) is not None
+
+
+def line_pieces(matcher: LineMatcher, line: str) -> list[tuple[int, str]]:
+    """What -o prints from one line: each match's start and text.
+
+    Args:
+        matcher (LineMatcher): the compiled pattern list.
+        line (str): the line as a byte view, without its terminator.
+    """
+    if isinstance(matcher, LineRegex):
+        return [
+            (start, line[start:end]) for start, end in matcher.extents(line)
+        ]
+    return [(match_start(m), match_text(m)) for m in matcher.finditer(line)]
 
 
 def perl_regex(
@@ -281,39 +248,31 @@ def rust_escape(text: str) -> str:
     )
 
 
-def build_pattern_str(
+def compile_perl(
     pattern: str,
-    fixed_string: bool = False,
+    ignore_case: bool = False,
     whole_word: bool = False,
-    syntax: RegexSyntax = RegexSyntax.EXTENDED,
-) -> str:
-    """Build a regex source string from a POSIX pattern list.
+    utf8: bool = False,
+    line_regexp: bool = False,
+) -> re.Pattern[str]:
+    """grep -P's pattern as the host's matcher.
 
     Args:
-        pattern (str): newline-separated pattern list; a line matches when
-            any of the patterns matches.
-        fixed_string (bool): True if -F flag is set.
-        whole_word (bool): True if -w flag is set.
-        syntax (RegexSyntax): BASIC or EXTENDED; the other two dialects
-            compile through ``compile_pattern``.
+        pattern (str): the pattern (a list of one).
+        ignore_case (bool): -i.
+        whole_word (bool): -w.
+        utf8 (bool): the lines are text under a UTF-8 locale.
+        line_regexp (bool): -x, which outranks -w.
 
-    Returns:
-        str: regex source string.
+    Raises:
+        UsageError: more than one pattern, or PCRE2 refuses it.
     """
-    parts = pattern.split("\n")
-    if len(parts) == 1:
-        pat_str = _source_of(pattern, fixed_string, syntax)
-        if whole_word:
-            pat_str = r"\b" + pat_str + r"\b"
-        return pat_str
-    subs: list[str] = []
-    for part in parts:
-        source = _source_of(part, fixed_string, syntax)
-        sub = source if fixed_string else f"(?:{source})"
-        if whole_word:
-            sub = r"\b" + sub + r"\b"
-        subs.append(sub)
-    return "|".join(subs)
+    source, fold = perl_regex(
+        pattern, ignore_case, whole_word and not line_regexp
+    )
+    if line_regexp:
+        source = whole_line(source, False)
+    return compile_posix_regex(source, re.IGNORECASE if fold else 0, utf8)
 
 
 def compile_pattern(
@@ -324,8 +283,10 @@ def compile_pattern(
     syntax: RegexSyntax = RegexSyntax.EXTENDED,
     utf8: bool = False,
     line_regexp: bool = False,
-) -> re.Pattern[str]:
+) -> LineMatcher:
     """Compile a pattern list into one matcher.
+
+    A refusal is GNU grep's wording, and exits 2 as grep does.
 
     Args:
         pattern (str): newline-separated pattern list.
@@ -335,21 +296,31 @@ def compile_pattern(
         syntax (RegexSyntax): the dialect the patterns are written in.
         utf8 (bool): the lines are text under a UTF-8 locale.
         line_regexp (bool): -x, which overrides -w and spans the whole line.
+
+    Raises:
+        UsageError: a pattern GNU grep refuses.
     """
     # GNU grep 3.11: -x overrides -w in either order.
     whole_word = whole_word and not line_regexp
     if syntax is RegexSyntax.PERL and not fixed_string:
-        source, fold = perl_regex(pattern, ignore_case, whole_word)
-        if line_regexp:
-            source = whole_line(source, False)
-        return compile_posix_regex(source, re.IGNORECASE if fold else 0, utf8)
-    # A basic or extended `.` matches every character a line holds, which
-    # under -z includes a newline; PCRE's does not.
-    flags = (re.IGNORECASE if ignore_case else 0) | re.DOTALL
-    source = build_pattern_str(pattern, fixed_string, whole_word, syntax)
-    if line_regexp:
-        source = whole_line(source, False)
+        return compile_perl(
+            pattern, ignore_case, whole_word, utf8, line_regexp
+        )
+    kind: LineSyntax = (
+        "fixed"
+        if fixed_string
+        else "basic"
+        if syntax is RegexSyntax.BASIC
+        else "extended"
+    )
     try:
-        return compile_posix_regex(source, flags, utf8)
-    except re.error as exc:
-        raise UsageError("grep: Invalid regular expression") from exc
+        return LineRegex(
+            pattern.split("\n"),
+            kind,
+            ignore_case,
+            utf8,
+            whole_word,
+            line_regexp,
+        )
+    except RegexError as exc:
+        raise UsageError(f"grep: {exc.message}") from exc

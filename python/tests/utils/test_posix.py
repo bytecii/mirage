@@ -5,10 +5,13 @@ import pytest
 from mirage.utils.posix import (
     class_characters,
     compile_posix_regex,
-    posix_line_matcher,
     skip_raw_bytes,
     translate_bracket,
 )
+
+
+def _consumes(pattern: re.Pattern[str], text: str) -> bool:
+    return any(m.start() != m.end() for m in pattern.finditer(text))
 
 
 def _bracket(pattern: str) -> str:
@@ -99,11 +102,8 @@ def test_ascii_case_folding(source, text, expected):
         bool(compile_posix_regex(source, re.IGNORECASE).fullmatch(text))
         == expected
     )
-    matcher = posix_line_matcher(
-        compile_posix_regex(source, re.IGNORECASE), True
-    )
-    assert matcher(text) == (expected and bool(text))
-    assert matcher(text) == (expected and bool(text))
+    pattern = compile_posix_regex(source, re.IGNORECASE)
+    assert _consumes(pattern, text) == (expected and bool(text))
 
 
 def test_ascii_captures_preserve_spelling():
@@ -150,7 +150,7 @@ def test_skip_raw_bytes_guards_dots_and_negated_brackets_only():
 )
 def test_utf8_subject_matches_characters_not_raw_bytes(source, text, expected):
     pattern = compile_posix_regex(source, 0, True)
-    assert posix_line_matcher(pattern, True)(text) == expected
+    assert _consumes(pattern, text) == expected
 
 
 def test_utf8_keeps_dotall_and_ascii_classes():

@@ -5286,6 +5286,48 @@
         "stdout": "ref: refs/heads/HEAD\nref: refs/heads/-x\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "git_config_get_regexp_follows_the_locale",
+      "seq": 9970033,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "cp /repo/.git/config /repo/.git/config.loc && printf '[remote \"\\303\\251\"]\\n\\turl = u1\\n' >> /repo/.git/config && LC_ALL=C git -C /repo config --get-regexp '^remote\\.[[:alpha:]]\\.url$'; echo rc=$?; LC_ALL=C.UTF-8 git -C /repo config --get-regexp '^remote\\.[[:alpha:]]\\.url$'; echo rc=$?; mv /repo/.git/config.loc /repo/.git/config",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nremote.\u00e9.url u1\nrc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_log_grep_matches_a_message_as_its_bytes",
+      "seq": 9970039,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "tree=$(git -C /repo rev-parse 'HEAD^{tree}') && oid=$(printf 'tree %s\\nauthor a <a@b> 1754388000 +0000\\ncommitter a <a@b> 1754388000 +0000\\n\\n\\377\\n' \"$tree\" | git -C /repo hash-object -t commit -w --stdin) && git -C /repo branch bytemsg $oid && for loc in C C.UTF-8; do for p in '^.$' '^...$'; do printf '%s %s %s\\n' $loc \"$p\" \"$(LC_ALL=$loc git -C /repo log --format=%h --grep=\"$p\" bytemsg | wc -l)\"; done; done; git -C /repo branch -D bytemsg > /dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "C ^.$ 1\nC ^...$ 0\nC.UTF-8 ^.$ 0\nC.UTF-8 ^...$ 0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_log_author_maps_a_non_utf8_name",
+      "seq": 9970043,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "tree=$(git -C /repo rev-parse 'HEAD^{tree}') && oid=$(printf 'tree %s\\nauthor B\\377d <a@b> 1754388000 +0000\\ncommitter B\\377d <a@b> 1754388000 +0000\\n\\nm\\n' \"$tree\" | git -C /repo hash-object -t commit -w --stdin) && git -C /repo branch bytes $oid && printf 'Canonical <a@b> B\\377d <a@b>\\n' > /repo/.mailmap && for loc in C C.UTF-8; do printf '%s mapped=%s\\n' $loc \"$(LC_ALL=$loc git -C /repo log --use-mailmap --author=Canonical --format=%h bytes | wc -l)\"; done; printf 'raw=%s\\n' \"$(LC_ALL=C git -C /repo log --no-mailmap --author='^B.d ' --format=%h bytes | wc -l)\"; printf 'rawutf8=%s\\n' \"$(LC_ALL=C.UTF-8 git -C /repo log --no-mailmap --author='^B.d ' --format=%h bytes | wc -l)\"; rm /repo/.mailmap; git -C /repo branch -D bytes > /dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "C mapped=1\nC.UTF-8 mapped=1\nraw=1\nrawutf8=0\n",
+        "stderr": ""
+      }
     }
   ]
 }

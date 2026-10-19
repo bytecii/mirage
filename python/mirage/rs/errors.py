@@ -27,3 +27,16 @@ class StreamRefusal(Exception):
         super().__init__(message)
         self.message = message
         self.output = output
+
+
+class RegexError(Exception):
+    """A pattern mirage-rs refused to compile.
+
+    Args:
+        message (str): the refusal as the program words it, without its
+            ``prog: `` prefix (``Unmatched ( or \\(``).
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message

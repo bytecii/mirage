@@ -611,6 +611,74 @@
         "stdout": "1\n0 d\nword\nx41\naa\naa\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "dbl_regex_groups_as_regcomp_places_them",
+      "seq": 9970016,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "[[ abc =~ (a|ab)(bc|c) ]] && echo \"${BASH_REMATCH[@]}\"; [[ abcd =~ ab|abcd ]] && echo \"${BASH_REMATCH[0]}\"; re='*x'; [[ x =~ $re ]]; echo rc=$?; [[ a == a && x =~ $re ]]; echo and=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "abc a bc\nabcd\nrc=2\nand=2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "dbl_regex_follows_the_shell_locale",
+      "seq": 9970024,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "e=$(printf '\\303\\251'); LC_ALL=C; [[ $e =~ ^..$ ]]; echo $?; [[ $e =~ [[:alpha:]] ]]; echo $?; LC_ALL=C.UTF-8; [[ $e =~ ^.$ ]] && echo \"${BASH_REMATCH[0]}\"; [[ $e =~ [[:alpha:]] ]]; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n1\né\n0\n",
+        "stderr": ""
+      }
     }
   ]
 }

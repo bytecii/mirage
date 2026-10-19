@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { byteView, decodeText, encodeText, textView, utf8Locale } from '../../../shell/bytes.ts'
-import { compilePosixRegex } from '../../../utils/posix.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
@@ -22,13 +21,14 @@ import type { CommandFnResult, Context } from '../../config.ts'
 import {
   NEVER_MATCH,
   compilePattern,
+  linePieces,
+  lineSelected,
   matcherSyntax,
   patternWarnings,
   resolvePattern,
 } from '../grep_pattern.ts'
 import { UsageError } from '../../errors.ts'
 import type { RegexSyntax } from '../types.ts'
-import { matchStart, matchText } from '../utils/pcre.ts'
 import { GREP_STDIN_LABEL, STDIN_OPERAND } from '../utils/constants.ts'
 import { linkResolver } from '../utils/links.ts'
 import { operandLabel } from '../utils/stream.ts'
@@ -142,19 +142,12 @@ export async function zgrepGeneric(
   const multi = paths.length > 1
   const showFilename = parsed.forceFilename || (multi && !parsed.suppressFilename)
   const resolver = linkResolver(ctx)
-  const warnings =
-    pattern === null || neverMatch || fixedString ? '' : patternWarnings(rawPattern, syntax)
+  const warnings = pattern === null || neverMatch ? '' : patternWarnings(pattern)
   const result = new IOResult({
     exitCode: 1,
     stderr: warnings === '' ? null : encodeText(warnings),
   })
-  const global =
-    pattern !== null && parsed.onlyMatching
-      ? compilePosixRegex(
-          pattern.source,
-          pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
-        )
-      : null
+  const pieces = pattern !== null && parsed.onlyMatching
   async function* run(): AsyncGenerator<Uint8Array> {
     let anyMatch = false
     let failed = false
@@ -186,17 +179,15 @@ export async function zgrepGeneric(
           )
             continue
           const line = byteView(raw, utf8)
-          const selected: [number, string][] = []
-          if (global !== null && !parsed.invert && !(filesOnly || filesWithoutMatch)) {
-            global.lastIndex = 0
-            let match: RegExpExecArray | null
-            while ((match = global.exec(line)) !== null) {
-              selected.push([matchStart(match), matchText(match)])
-              if (match[0] === '')
-                global.lastIndex += (line.codePointAt(match.index) ?? 0) > 0xffff ? 2 : 1
-            }
-          } else if (pattern.test(line) !== parsed.invert) selected.push([0, line])
-          if (selected.length > 0) {
+          // Whether the line is selected is its own question: an empty match
+          // selects it and gives -o nothing to print.
+          const hit = lineSelected(pattern, line) !== parsed.invert
+          let selected: [number, string][] = []
+          if (!hit) selected = []
+          else if (pieces && !parsed.invert && !(filesOnly || filesWithoutMatch))
+            selected = linePieces(pattern, line)
+          else selected = [[0, line]]
+          if (hit) {
             count++
             anyMatch = true
           }

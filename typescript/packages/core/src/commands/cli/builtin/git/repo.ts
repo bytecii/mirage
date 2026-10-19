@@ -16,6 +16,7 @@ import type { PathSpec } from '../../../../types.ts'
 import git, { Errors } from 'isomorphic-git'
 
 import { abbrevLength, type CommitFacts } from './format.ts'
+import { decodeText } from '../../../../shell/bytes.ts'
 import { configValues, gitFs } from './fs.ts'
 import { exists, readNames, readRange, writeFile } from './io.ts'
 import { entryName } from '../../../../utils/remnants.ts'
@@ -236,7 +237,33 @@ export async function readBlobBytes(repo: Repo, oid: string): Promise<Uint8Array
  */
 export async function commitFacts(repo: Repo, oid: string): Promise<CommitFacts> {
   const { commit } = await git.readCommit({ ...repoArgs(repo), oid })
+  const decoded = [
+    commit.message,
+    commit.author.name,
+    commit.author.email,
+    commit.committer.name,
+    commit.committer.email,
+  ]
+  // A byte that is no part of a character decoded as U+FFFD: the object's own
+  // bytes are read again, as surrogate-escaped text, for the filters that
+  // match them.
+  let bytes: CommitFacts['bytes']
+  if (decoded.some((text) => text.includes('\uFFFD'))) {
+    const text = decodeText((await rawObject(repo, oid)).raw)
+    const split = text.indexOf('\n\n')
+    const head = (split < 0 ? text : text.slice(0, split)).split('\n')
+    const ident = (key: string): string =>
+      (head.find((line) => line.startsWith(`${key} `)) ?? '')
+        .slice(key.length + 1)
+        .replace(/ -?\d+ [+-]\d{4}$/, '')
+    bytes = {
+      message: split < 0 ? '' : text.slice(split + 2),
+      author: ident('author'),
+      committer: ident('committer'),
+    }
+  }
   return {
+    ...(bytes === undefined ? {} : { bytes }),
     oid,
     tree: commit.tree,
     message: commit.message,

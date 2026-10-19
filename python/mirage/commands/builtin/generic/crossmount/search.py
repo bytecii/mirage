@@ -58,7 +58,11 @@ from mirage.commands.builtin.generic.rg import (
     parse_flags as parse_rg_flags,
 )
 from mirage.commands.builtin.grep_binary import GrepFlags
-from mirage.commands.builtin.grep_pattern import compile_pattern, pattern_arg
+from mirage.commands.builtin.grep_pattern import (
+    LineMatcher,
+    compile_pattern,
+    pattern_arg,
+)
 from mirage.commands.builtin.grep_select import dir_admitted, file_admitted
 from mirage.commands.builtin.rg_scan import walk_error_line
 from mirage.commands.builtin.rg_search import RgFlags, Totals, split_footer
@@ -79,7 +83,7 @@ from mirage.errors.render import fs_error_line
 from mirage.io import IOResult
 from mirage.io.types import ByteSource, materialize
 from mirage.runtime.types import DispatchFn
-from mirage.shell.bytes import encode_text
+from mirage.shell.bytes import byte_view, encode_text
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
 from mirage.workspace.files import Files
@@ -110,6 +114,7 @@ async def run_search(
     cwd: str,
     vfs: Files | None = None,
     stdin: ByteSource | None = None,
+    utf8: bool = False,
 ) -> CrossResult:
     """Compose the registered search handlers, preserving operand order.
 
@@ -128,6 +133,7 @@ async def run_search(
         cwd (str): Working directory.
         vfs (Files | None): Namespace ownership and link facts.
         stdin (ByteSource | None): Shared standard input.
+        utf8 (bool): the session runs under a UTF-8 locale.
     """
     links = link_view(vfs)
     mounts = mount_view(vfs)
@@ -166,16 +172,18 @@ async def run_search(
     )
     if rg is not None and rg.type_list:
         return await run_single(name, paths[:1], texts, flags)
+    matcher: LineMatcher | None = None
     if grep is not None:
         pattern = pattern_arg(texts, view)
         if pattern is not None:
-            compile_pattern(
-                pattern,
+            matcher = compile_pattern(
+                byte_view(pattern, utf8),
                 grep.ignore_case,
                 grep.fixed_string,
                 grep.whole_word,
                 grep.syntax,
-                line_regexp=grep.line_regexp,
+                utf8,
+                grep.line_regexp,
             )
     if rg is not None and not rg.list_files:
         pattern = pattern_arg(texts, view)
@@ -378,7 +386,7 @@ async def run_search(
     # Each run says what the line says once, grep's warnings or rg's notes
     # of the ignore files it could not read; the line keeps one.
     noted = (
-        line_warnings(view, grep, pattern_arg(texts, view) or "", False)
+        line_warnings(view, matcher)
         if grep is not None
         else format_records(notes)
         if rg is not None and notes and not rg.no_messages

@@ -1679,6 +1679,37 @@
         "stderr": "expr: non-integer argument\nexpr: non-integer argument\nexpr: syntax error: expecting ')' after ')'\nexpr: syntax error: unexpected argument '('\nexpr: syntax error: unexpected argument '1'\n"
       },
       "flags": []
+    },
+    {
+      "id": "expr_match_is_the_leftmost_longest",
+      "seq": 9970015,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "expr abcd : 'ab\\|abcd'; expr abc : '\\(a\\|ab\\)\\(bc\\|c\\)'; expr aa : 'a**'; expr x : '[z-a]x'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "4\na\n2\n0\nrc=1\n",
+        "stderr": ""
+      }
     }
   ]
 }

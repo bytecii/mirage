@@ -63,6 +63,36 @@
         "stdout": "e\né\n\\303\\251$\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "sed_locale_utf8_classes_and_case_are_unicode",
+      "seq": 9970005,
+      "command": "( export LC_ALL=C.UTF-8; printf '\\303\\251\\n' | sed 's/[[:alpha:]]/X/'; printf '\\303\\211\\n' | sed -n '/[[:upper:]]/p'; printf '\\303\\251\\n' | sed \"s/$(printf '\\303\\211')/X/I\"; printf '\\316\\243\\n' | sed 's/.*/\\L&/' ); printf '\\303\\251\\n' | sed 's/[[:alpha:]]/X/'",
+      "expect": {
+        "exit": 0,
+        "stdout": "X\nÉ\nX\nσ\né\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sed_locale_utf8_no_break_space_is_no_space",
+      "seq": 9970037,
+      "command": "printf 'a\\302\\240b c\\n' | LC_ALL=C.UTF-8 sed 's/[[:space:]]/X/g' | od -An -c",
+      "expect": {
+        "exit": 0,
+        "stdout": "   a 302 240   b   X   c  \\n\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sed_locale_utf8_delimiter_is_one_byte",
+      "seq": 9970047,
+      "command": "e=$(printf '\\303\\251'); ff=$(printf '\\377'); echo xay | LC_ALL=C.UTF-8 sed \"s${e}a${e}b${e}\"; echo rc=$?; echo xay | LC_ALL=C.UTF-8 sed \"1,2y${e}a${e}b${e}\"; echo rc=$?; echo xay | LC_ALL=C.UTF-8 sed -n \"\\\\${e}a${e}p\"; echo rc=$?; echo xay | LC_ALL=C.UTF-8 sed \"s$(printf '\\303')a$(printf '\\303')b$(printf '\\303')\"; echo rc=$?; echo xay | LC_ALL=C.UTF-8 sed \"s${ff}a${ff}b${ff}\"; echo xay | LC_ALL=C.UTF-8 sed -n \"\\\\${ff}a${ff}p\"; echo xay | LC_ALL=C sed \"s${e}a${e}b${e}\"; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=1\nrc=1\nrc=1\nxby\nxay\nrc=1\n",
+        "stderr": "sed: -e expression #1, char 2: delimiter character is not a single-byte character\nsed: -e expression #1, char 5: delimiter character is not a single-byte character\nsed: -e expression #1, char 2: delimiter character is not a single-byte character\nsed: -e expression #1, char 2: delimiter character is not a single-byte character\nsed: -e expression #1, char 9: unknown option to `s'\n"
+      }
     }
   ]
 }

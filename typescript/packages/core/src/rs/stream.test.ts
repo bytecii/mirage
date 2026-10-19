@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { encodeBase64 } from '../utils/base64.ts'
 import { StreamRefusal } from './errors.ts'
 import { Glob } from './glob.ts'
+import { PosixRegex } from './regex.ts'
 import { openStream } from './stream.ts'
 
 const DECODE = { mode: 'decode', ignore_garbage: false }
@@ -47,6 +48,23 @@ describe('openStream', () => {
     }
     expect(refused).toBeInstanceOf(StreamRefusal)
     expect((refused as StreamRefusal).output).toEqual(data)
+  })
+
+  it('moves matchers off an instance a large search grew', async () => {
+    const instance = (stream: unknown): unknown => (stream as { exports: unknown }).exports
+    const small = new PosixRegex('b')
+    const large = new PosixRegex('x$')
+    const size = 34 * 1024 * 1024
+    expect(large.search('a'.repeat(size) + 'x')).toEqual([[size, size + 1]])
+    const before = await openStream('base64', DECODE)
+    const grown = instance(before)
+    // Only the matchers are left on the grown instance, so it retires.
+    before.close()
+    const after = await openStream('base64', DECODE)
+    expect(instance(after)).not.toBe(grown)
+    after.close()
+    expect(small.search('abc')).toEqual([[1, 2]])
+    expect(large.search('ax')).toEqual([[1, 2]])
   })
 
   it('reads one input after another', async () => {

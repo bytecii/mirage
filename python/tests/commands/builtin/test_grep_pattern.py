@@ -3,6 +3,7 @@ import pytest
 from mirage.commands.builtin.grep_pattern import (
     NEVER_MATCH,
     compile_pattern,
+    line_selected,
     matcher_syntax,
     merge_pattern_list,
     pattern_warnings,
@@ -12,53 +13,54 @@ from mirage.commands.builtin.types import RegexSyntax
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.shell.bytes import byte_view
 
 
 def test_single_pattern_keeps_regex_semantics():
     pat = compile_pattern("fo+")
-    assert pat.search("foo")
-    assert not pat.search("f")
+    assert line_selected(pat, "foo")
+    assert not line_selected(pat, "f")
 
 
 def test_single_fixed_string_escapes():
     pat = compile_pattern("a.b", fixed_string=True)
-    assert pat.search("xa.by")
-    assert not pat.search("axb")
+    assert line_selected(pat, "xa.by")
+    assert not line_selected(pat, "axb")
 
 
 def test_newline_separated_patterns_match_any():
     pat = compile_pattern("foo\nbar")
-    assert pat.search("a foo b")
-    assert pat.search("a bar b")
-    assert not pat.search("baz")
+    assert line_selected(pat, "a foo b")
+    assert line_selected(pat, "a bar b")
+    assert not line_selected(pat, "baz")
 
 
 def test_newline_separated_regex_alternation_grouping():
     pat = compile_pattern("ab+\ncd")
-    assert pat.search("abb")
-    assert pat.search("xcdy")
-    assert not pat.search("ax")
+    assert line_selected(pat, "abb")
+    assert line_selected(pat, "xcdy")
+    assert not line_selected(pat, "ax")
 
 
 def test_newline_separated_fixed_strings_escape_each():
     pat = compile_pattern("a.b\nc+", fixed_string=True)
-    assert pat.search("xa.by")
-    assert pat.search("c+")
-    assert not pat.search("axb")
-    assert not pat.search("cc")
+    assert line_selected(pat, "xa.by")
+    assert line_selected(pat, "c+")
+    assert not line_selected(pat, "axb")
+    assert not line_selected(pat, "cc")
 
 
 def test_newline_separated_whole_word_applies_per_pattern():
     pat = compile_pattern("foo\nbar", whole_word=True)
-    assert pat.search("a foo b")
-    assert pat.search("bar.")
-    assert not pat.search("foobar")
+    assert line_selected(pat, "a foo b")
+    assert line_selected(pat, "bar.")
+    assert not line_selected(pat, "foobar")
 
 
 def test_newline_separated_ignore_case():
     pat = compile_pattern("foo\nbar", ignore_case=True)
-    assert pat.search("FOO")
-    assert pat.search("Bar")
+    assert line_selected(pat, "FOO")
+    assert line_selected(pat, "Bar")
 
 
 def test_merge_pattern_list_file_only():
@@ -83,35 +85,34 @@ def test_merge_pattern_list_blank_line_matches_all():
 
 def test_never_match_pattern_matches_nothing():
     pat = compile_pattern(NEVER_MATCH)
-    assert not pat.search("")
-    assert not pat.search("anything")
+    assert not line_selected(pat, "")
+    assert not line_selected(pat, "anything")
 
 
 class TestCompilePattern:
     def test_basic(self):
         pat = compile_pattern("hello")
-        assert pat.search("hello world")
+        assert line_selected(pat, "hello world")
 
     def test_ignore_case(self):
         pat = compile_pattern("hello", ignore_case=True)
-        assert pat.search("HELLO")
+        assert line_selected(pat, "HELLO")
 
     def test_fixed_string(self):
         pat = compile_pattern("a.b", fixed_string=True)
-        assert not pat.search("axb")
-        assert pat.search("a.b")
+        assert not line_selected(pat, "axb")
+        assert line_selected(pat, "a.b")
 
     def test_whole_word(self):
         pat = compile_pattern("foo", whole_word=True)
-        assert not pat.search("foobar")
-        assert pat.search("foo bar")
+        assert not line_selected(pat, "foobar")
+        assert line_selected(pat, "foo bar")
 
 
 # Every row measured against GNU grep 3.11 under LC_ALL=C, which is the
 # locale mirage renders in: `grep -w ab` on `éab` and `grep -w a` on `aé`
 # both select the line, while `grep -i k` on U+212A and `grep -i s` on
-# U+017F select nothing. python's own defaults answer the opposite way on
-# all four, so the pattern is compiled with `re.ASCII`.
+# U+017F select nothing. The subjects are the byte views of their UTF-8.
 @pytest.mark.parametrize(
     "pattern, subject, ignore_case, whole_word, selected",
     [
@@ -132,15 +133,15 @@ def test_ascii_semantics_for_word_boundaries_and_case_folding(
         whole_word=whole_word,
         syntax=RegexSyntax.BASIC,
     )
-    assert bool(pat.search(subject)) is selected
+    assert line_selected(pat, byte_view(subject)) is selected
 
 
 def test_word_class_stays_ascii_in_an_extended_expression():
     # -E takes the same compile, so `\w` must not grow a Unicode meaning
     # there either.
     pat = compile_pattern(r"\w", syntax=RegexSyntax.EXTENDED)
-    assert not pat.search("é")
-    assert pat.search("a")
+    assert not line_selected(pat, byte_view("é"))
+    assert line_selected(pat, "a")
 
 
 # GNU grep 3.11: one matcher, and two different ones are refused.
@@ -174,11 +175,13 @@ def test_two_matchers_conflict(flags):
 
 
 def test_only_an_extended_expression_warns():
-    assert pattern_warnings("*a\n?b", RegexSyntax.EXTENDED) == (
+    extended = compile_pattern("*a\n?b", syntax=RegexSyntax.EXTENDED)
+    assert pattern_warnings(extended) == (
         b"grep: warning: * at start of expression\n"
         b"grep: warning: ? at start of expression\n"
     )
-    assert pattern_warnings("*a", RegexSyntax.BASIC) == b""
+    basic = compile_pattern("*a", syntax=RegexSyntax.BASIC)
+    assert pattern_warnings(basic) == b""
 
 
 def test_perl_takes_one_pattern():
@@ -187,10 +190,12 @@ def test_perl_takes_one_pattern():
     assert str(caught.value) == (
         "grep: the -P option only supports a single pattern"
     )
-    assert compile_pattern(r"\d+", syntax=RegexSyntax.PERL).search("x45")
+    assert line_selected(
+        compile_pattern(r"\d+", syntax=RegexSyntax.PERL), "x45"
+    )
     word = compile_pattern("a", whole_word=True, syntax=RegexSyntax.PERL)
-    assert not word.search("ab")
-    assert word.search("a b")
+    assert not line_selected(word, "ab")
+    assert line_selected(word, "a b")
 
 
 def test_perl_refusals_are_pcre2s():

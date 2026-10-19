@@ -1,36 +1,23 @@
-use regex_syntax::hir::{
-    self, Class as HirClass, ClassBytes, ClassBytesRange, ClassUnicode, ClassUnicodeRange, Hir,
-    Repetition,
-};
+use regex_syntax::hir::{self, Hir, Repetition};
 
-use super::parse::{Ast, Item, Look, Set, Unit};
+use super::class::Members;
+use super::parse::{Ast, Look, Unit};
 
 /// A parsed expression as regex-syntax's HIR, which the automata compile.
-/// Classes, word characters and case folding are ASCII's in every locale;
-/// under UTF-8 a set or `.` matches whole characters, so it never matches
-/// a byte that is no part of one. Nothing matches the record terminator,
-/// so one search can run over many records at once.
+/// Outside a UTF-8 locale classes and case folding are ASCII's; in one
+/// they are Unicode's, and a set or `.` matches whole characters, so it
+/// never matches a byte that is no part of one.
 pub(crate) struct Lower {
     pub(crate) ignore_case: bool,
     pub(crate) utf8: bool,
-    pub(crate) terminator: u8,
-}
-
-/// Inclusive ordinal ranges, each a code point under UTF-8 and a byte
-/// otherwise.
-type Ranges = Vec<(u32, u32)>;
-
-fn swap_case(ranges: &mut Ranges) {
-    let mut extra = Vec::new();
-    for &(low, high) in ranges.iter() {
-        for (from, to, shift) in [(0x41u32, 0x5Au32, 0x20i32), (0x61, 0x7A, -0x20)] {
-            let (a, b) = (low.max(from), high.min(to));
-            if a <= b {
-                extra.push((a.wrapping_add_signed(shift), b.wrapping_add_signed(shift)));
-            }
-        }
-    }
-    ranges.extend(extra);
+    /// The byte records end at, which nothing matches, so one search can
+    /// run over many records at once; None for one subject.
+    pub(crate) terminator: Option<u8>,
+    /// Multi-line matching: `^` and `$` match at the edges of each line,
+    /// and neither `.` nor a negated set matches a newline.
+    pub(crate) multiline: bool,
+    /// `.` leaves out the NUL byte, as regcomp's syntax has it.
+    pub(crate) dot_skips_nul: bool,
 }
 
 impl Lower {
@@ -42,9 +29,18 @@ impl Lower {
         match ast {
             Ast::Empty => Hir::empty(),
             Ast::Unit(unit) => self.unit(*unit),
-            Ast::Any => self.class(Vec::new(), true),
-            Ast::Set(set) => self.set(set),
-            Ast::Look(look) => Hir::look(look_of(*look)),
+            Ast::Any => {
+                let mut any = Members::any(self.utf8);
+                if self.dot_skips_nul {
+                    any.without(0);
+                }
+                self.members(any, true)
+            }
+            Ast::Set(set) => self.members(
+                Members::of(set, self.utf8, self.ignore_case),
+                set.negated && set.bracket,
+            ),
+            Ast::Look(look) => Hir::look(self.look(*look)),
             Ast::Group(_, inner) => self.ast(inner),
             // A pattern with one goes to the backtracker instead.
             Ast::Backref(_) => Hir::fail(),
@@ -63,11 +59,11 @@ impl Lower {
 
     fn unit(&self, unit: Unit) -> Hir {
         let ordinal = unit.ordinal();
-        if ordinal == u32::from(self.terminator) {
+        if self.terminator.is_some_and(|t| ordinal == u32::from(t)) {
             return Hir::fail();
         }
-        if self.ignore_case && unit.ascii().is_some_and(|b| b.is_ascii_alphabetic()) {
-            return self.class(vec![(ordinal, ordinal)], false);
+        if self.ignore_case {
+            return Members::folded(unit, self.utf8).hir();
         }
         match unit {
             Unit::Char(c) if self.utf8 => Hir::literal(c.encode_utf8(&mut [0; 4]).as_bytes()),
@@ -75,71 +71,32 @@ impl Lower {
         }
     }
 
-    fn set(&self, set: &Set) -> Hir {
-        let mut ranges = Ranges::new();
-        for item in &set.items {
-            match item {
-                // Under UTF-8 a stray byte in a set matches nothing.
-                Item::Unit(Unit::Byte(_)) if self.utf8 => {}
-                Item::Unit(unit) => ranges.push((unit.ordinal(), unit.ordinal())),
-                Item::Range(low, high) => ranges.push((low.ordinal(), high.ordinal())),
-                Item::Class(class) => ranges.extend(
-                    class
-                        .ranges()
-                        .iter()
-                        .map(|&(low, high)| (u32::from(low), u32::from(high))),
-                ),
-            }
+    /// A set less the terminator, and under multi-line matching less the
+    /// newline when it is `.` or negated.
+    fn members(&self, mut members: Members, excludes_newline: bool) -> Hir {
+        if let Some(terminator) = self.terminator {
+            members.without(terminator);
         }
-        self.class(ranges, set.negated)
+        if self.multiline && excludes_newline {
+            members.without(b'\n');
+        }
+        members.hir()
     }
 
-    /// The class of `ranges`, folded under -i and then negated, less the
-    /// terminator.
-    fn class(&self, mut ranges: Ranges, negated: bool) -> Hir {
-        if self.ignore_case {
-            swap_case(&mut ranges);
+    fn look(&self, look: Look) -> hir::Look {
+        let lines = self.terminator.is_some() || self.multiline;
+        match look {
+            Look::Start if lines => hir::Look::StartLF,
+            Look::End | Look::GroupedEnd if lines => hir::Look::EndLF,
+            Look::SubjectStart if self.terminator.is_some() => hir::Look::StartLF,
+            Look::SubjectEnd if self.terminator.is_some() => hir::Look::EndLF,
+            Look::Start | Look::SubjectStart => hir::Look::Start,
+            Look::End | Look::GroupedEnd | Look::SubjectEnd => hir::Look::End,
+            Look::Word => hir::Look::WordAscii,
+            Look::NotWord => hir::Look::WordAsciiNegate,
+            Look::WordStart => hir::Look::WordStartAscii,
+            Look::WordEnd => hir::Look::WordEndAscii,
         }
-        let terminator = u32::from(self.terminator);
-        if self.utf8 {
-            let mut class = ClassUnicode::new(ranges.into_iter().filter_map(|(low, high)| {
-                Some(ClassUnicodeRange::new(
-                    char::from_u32(low)?,
-                    char::from_u32(high)?,
-                ))
-            }));
-            if negated {
-                class.negate();
-            }
-            let stop = char::from(self.terminator);
-            class.difference(&ClassUnicode::new([ClassUnicodeRange::new(stop, stop)]));
-            Hir::class(HirClass::Unicode(class))
-        } else {
-            let byte = |n: u32| u8::try_from(n.min(0xFF)).unwrap_or(0xFF);
-            let mut class = ClassBytes::new(
-                ranges
-                    .into_iter()
-                    .filter(|&(low, _)| low <= 0xFF)
-                    .map(|(low, high)| ClassBytesRange::new(byte(low), byte(high))),
-            );
-            if negated {
-                class.negate();
-            }
-            let stop = byte(terminator);
-            class.difference(&ClassBytes::new([ClassBytesRange::new(stop, stop)]));
-            Hir::class(HirClass::Bytes(class))
-        }
-    }
-}
-
-fn look_of(look: Look) -> hir::Look {
-    match look {
-        Look::Start => hir::Look::StartLF,
-        Look::End => hir::Look::EndLF,
-        Look::Word => hir::Look::WordAscii,
-        Look::NotWord => hir::Look::WordAsciiNegate,
-        Look::WordStart => hir::Look::WordStartAscii,
-        Look::WordEnd => hir::Look::WordEndAscii,
     }
 }
 

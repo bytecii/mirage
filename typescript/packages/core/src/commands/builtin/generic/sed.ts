@@ -98,14 +98,18 @@ function scriptFiles(ctx: Context, stream: Stream, write: WriteBytes): ScriptFil
   return access
 }
 
-// GNU's atoi over -l: leading blanks, a sign, digits; a negative length
-// is a huge unsigned one, which never folds, the same as 0.
+// GNU's atoi over -l: leading blanks, a sign, digits. The value stops at the
+// largest long and keeps its low 32 bits as an int, so `-l 4294967297` is 1.
+// A negative length never folds, the same as 0.
 function lineLength(raw: string | undefined): number {
   if (raw === undefined) return SED_LINE_LENGTH
   const m = /^\s*([+-]?)(\d*)/.exec(raw)
-  const value = Number.parseInt(m?.[2] ?? '', 10)
-  if (Number.isNaN(value) || m?.[1] === '-') return 0
-  return value
+  const digits = m?.[2] ?? ''
+  if (digits === '' || m?.[1] === '-') return 0
+  // Twenty digits already pass the largest long.
+  const value = BigInt(digits.replace(/^0+/, '').slice(0, 20) || '0')
+  const longMax = (1n << 63n) - 1n
+  return Math.max(Number(BigInt.asIntN(32, value > longMax ? longMax : value)), 0)
 }
 
 function openFailure(name: string, err: unknown): string {

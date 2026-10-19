@@ -33,6 +33,108 @@
         "stdout": "     1\thello\n     2\tworld\n     3\tfoo\n     4\tbar\n     5\tbaz\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "nl_b_p_reads_a_basic_expression",
+      "seq": 9970017,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'aa\\nb\\n' | nl -b 'pa**'; printf 'a\\n' | nl -b 'p[z-a]'; printf 'abcd\\n' | nl -b 'pab\\|abcd'",
+      "expect": {
+        "exit": 0,
+        "stdout": "     1\taa\n     2\tb\n       a\n     1\tabcd\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "nl_b_p_follows_the_locale",
+      "seq": 9970023,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf '\\303\\251\\303\\251\\n' | LC_ALL=C.UTF-8 nl -b 'p^..$'; printf '\\303\\251\\303\\251\\n' | LC_ALL=C nl -b 'p^..$'; printf '\\303\\251\\303\\251\\n' | LC_ALL=C nl -b 'p^....$'",
+      "expect": {
+        "exit": 0,
+        "stdout": "     1\téé\n       éé\n     1\téé\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "nl_b_p_matches_the_line_as_its_bytes",
+      "seq": 9970035,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf '\\377\\n' | LC_ALL=C nl -b 'p^.$' | od -An -c; printf '\\377\\n' | LC_ALL=C nl -b 'p^...$' | od -An -c; printf '\\377\\n' | LC_ALL=C.UTF-8 nl -b 'p^.$' | od -An -c",
+      "expect": {
+        "exit": 0,
+        "stdout": "                       1  \\t 377  \\n\n                             377  \\n\n                             377  \\n\n",
+        "stderr": ""
+      }
     }
   ]
 }

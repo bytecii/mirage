@@ -6,7 +6,7 @@ import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import { parseFlags } from './generic/grep.ts'
 import { grepInput, PROBE_BLOCK_BYTES } from './grep_binary.ts'
-import { compilePattern } from './grep_pattern.ts'
+import { compilePerl } from './grep_pattern.ts'
 import { parseCommand, parseToKwargs } from '../spec/parser.ts'
 import { UsageError } from '../errors.ts'
 
@@ -826,7 +826,7 @@ it.each([
     }
     const f = parseFlags(new FlagView(flags, specOf('grep')))
     const io = new IOResult({ exitCode: 1 })
-    const pat = compilePattern(pattern, false, false, false, undefined, true)
+    const pat = compilePerl(pattern, false, false, true)
     const out = await materialize(
       grepInput(source(), pat, f, 'f', false, io, false, undefined, true),
     )

@@ -18,7 +18,8 @@ import { IOResult } from '../../../io/types.ts'
 import { command, type CommandFnResult, type Context } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { byteView, fromByteView, utf8Locale } from '../../../shell/bytes.ts'
-import { BreError, compileBre } from '../utils/bre.ts'
+import { RegexError } from '../../../rs/errors.ts'
+import { posixRegex, type PosixRegex } from '../../../rs/regex.ts'
 import { quoteWord } from '../../quote.ts'
 
 const CMP_OPS = new Set(['=', '==', '!=', '<', '<=', '>', '>='])
@@ -181,11 +182,11 @@ function compare(left: string, op: string, right: string): string {
 
 // Compile a BRE, re-wording glibc's refusal under expr's own program
 // prefix, as GNU prints it.
-function compileOrRefuse(pattern: string, utf8: boolean): [RegExp, number] {
+function compileOrRefuse(pattern: string, utf8: boolean): PosixRegex {
   try {
-    return compileBre(pattern, utf8)
+    return posixRegex(pattern, false, 'posix', false, utf8)
   } catch (err) {
-    if (err instanceof BreError) throw new ExprError(`expr: ${err.message}`, { cause: err })
+    if (err instanceof RegexError) throw new ExprError(`expr: ${err.message}`, { cause: err })
     throw err
   }
 }
@@ -204,11 +205,16 @@ function compileOrRefuse(pattern: string, utf8: boolean): [RegExp, number] {
 // the same two answer the whole character, counted by code point. Mirrors
 // Python's colon_match.
 function colonMatch(subject: string, pattern: string, utf8 = false): string {
-  const [regex, groups] = compileOrRefuse(pattern, utf8)
-  regex.lastIndex = 0
-  const found = regex.exec(subject)
-  if (groups > 0) return found?.[1] ?? ''
-  return found === null ? '0' : String(Array.from(found[0]).length)
+  const regex = compileOrRefuse(pattern, utf8)
+  let found = regex.search(subject)
+  // The leftmost match is the one at the start, when there is one.
+  if (found !== null && found[0]?.[0] !== 0) found = null
+  if (regex.groups > 0) {
+    const group = found?.[1] ?? null
+    return group === null ? '' : subject.slice(group[0], group[1])
+  }
+  const whole = found?.[0] ?? null
+  return whole === null ? '0' : String(Array.from(subject.slice(0, whole[1])).length)
 }
 
 // The `index` operator, which is `strcspn` over a character set. It is

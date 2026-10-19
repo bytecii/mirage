@@ -14,6 +14,7 @@
 
 import { PatternType } from './constants.ts'
 import { UNICODE_FOLDED, foldsByUnicode, requiredNeedles } from './grep_prefilter.ts'
+import { LineRegex } from '../../rs/regex.ts'
 
 // Classify a grep pattern for API push-down decisions.
 export function classifyPattern(pattern: string, fixedString: boolean): PatternType {
@@ -69,19 +70,20 @@ export function wholeWordLiterals(
  */
 export function searchTerms(
   pattern: string | null,
-  matcher: RegExp,
+  matcher: RegExp | LineRegex,
   fixedString: boolean,
   wholeWord: boolean,
   lineRegexp: boolean,
   ignoreCase: boolean,
 ): [string[], boolean] | null {
   const words = wholeWordLiterals(pattern, fixedString, wholeWord, lineRegexp)
+  const unicode = matcher instanceof LineRegex ? matcher.unicodeFolds : foldsByUnicode(matcher)
   const untrusted = (w: string): boolean =>
-    /[\u0080-\uffff]/.test(w) || (foldsByUnicode(matcher) && UNICODE_FOLDED.test(w.toLowerCase()))
+    /[\u0080-\uffff]/.test(w) || (unicode && UNICODE_FOLDED.test(w.toLowerCase()))
   if (words !== null && !(ignoreCase && words.some(untrusted))) {
     return [words, true]
   }
-  const needles = requiredNeedles(matcher)
+  const needles = matcher instanceof LineRegex ? matcher.needles : requiredNeedles(matcher)
   if (needles === null || needles.some((n) => n.length < MIN_SEARCH_LITERAL)) return null
   return [needles, false]
 }

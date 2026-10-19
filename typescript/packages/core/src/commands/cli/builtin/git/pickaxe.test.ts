@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { expect, it } from 'vitest'
+import { PosixRegex } from '../../../../rs/regex.ts'
 import { contains } from './pickaxe.ts'
 
 // git 2.47 on debian:stable-slim lists a commit under -S PATTERN
@@ -29,6 +30,11 @@ it.each<[string, string, string, boolean]>([
   ['ab\nab\n', 'ab\nab\nab', '$', true],
   ['a\n\nc\n', 'a\n\n\nc\n', 'b*', true],
 ])('counts %j to %j under %s as git does', (old, now, pattern, listed) => {
-  const regex = new RegExp(pattern)
+  const regex = new PosixRegex(pattern, true, 'posix', false, true, true)
   expect(contains(old, regex) !== contains(now, regex)).toBe(listed)
+})
+
+it('steps over a whole character past an empty match', () => {
+  const regex = new PosixRegex('x*', true, 'posix', false, true, true)
+  expect(contains('😀😀', regex)).toBe(2)
 })

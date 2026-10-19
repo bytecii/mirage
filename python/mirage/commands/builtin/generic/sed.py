@@ -140,8 +140,9 @@ class _ScriptFiles:
 def _line_length(raw: str | None) -> int:
     """GNU's atoi over -l.
 
-    Leading blanks, a sign, digits; a negative length is a huge unsigned
-    one, which never folds, the same as 0.
+    Leading blanks, a sign, digits. The value stops at the largest long
+    and keeps its low 32 bits as an int, so ``-l 4294967297`` is 1. A
+    negative length never folds, the same as 0.
 
     Args:
         raw (str | None): the -l value.
@@ -151,7 +152,10 @@ def _line_length(raw: str | None) -> int:
     m = re.match(r"\s*([+-]?)(\d*)", raw)
     if m is None or not m.group(2) or m.group(1) == "-":
         return 0
-    return int(m.group(2))
+    # Twenty digits already pass the largest long.
+    digits = m.group(2).lstrip("0")[:20] or "0"
+    width = min(int(digits), (1 << 63) - 1) & 0xFFFFFFFF
+    return 0 if width >> 31 else width
 
 
 def _open_failure(name: str, exc: BaseException) -> str:

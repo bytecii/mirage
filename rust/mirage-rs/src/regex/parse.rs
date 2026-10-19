@@ -127,6 +127,10 @@ pub(crate) enum Item {
 pub(crate) struct Set {
     pub(crate) negated: bool,
     pub(crate) items: Vec<Item>,
+    /// Written as a bracket expression, not as `\w \W \s \S`: only a
+    /// negated bracket expression leaves out the newline under multi-line
+    /// matching.
+    pub(crate) bracket: bool,
 }
 
 impl Set {
@@ -141,6 +145,7 @@ impl Set {
         Set {
             negated,
             items: vec![Item::Class(Class::Alnum), Item::Unit(underscore)],
+            bracket: false,
         }
     }
 
@@ -148,16 +153,25 @@ impl Set {
         Set {
             negated,
             items: vec![Item::Class(Class::Space)],
+            bracket: false,
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Look {
-    /// `^`, and `` \` ``: the start of the record.
+    /// `^`: the start of the record, or of a line under multi-line
+    /// matching.
     Start,
-    /// `$`, and `\'`: the end of the record.
+    /// `$`: the end of the record, or of a line.
     End,
+    /// A `$` next to a group, which regcomp holds to the end of the
+    /// subject even before a newline the match goes on to consume.
+    GroupedEnd,
+    /// `` \` ``: the start of the whole subject.
+    SubjectStart,
+    /// `\'`: the end of the whole subject.
+    SubjectEnd,
     Word,
     NotWord,
     WordStart,
@@ -180,13 +194,93 @@ pub(crate) enum Ast {
 
 impl Ast {
     pub(crate) fn has_backref(&self) -> bool {
+        self.any(&|ast| matches!(ast, Ast::Backref(_)))
+    }
+
+    /// Whether `\b \B \< \>` appear.
+    pub(crate) fn has_word_look(&self) -> bool {
+        self.any(&|ast| {
+            matches!(
+                ast,
+                Ast::Look(Look::Word | Look::NotWord | Look::WordStart | Look::WordEnd)
+            )
+        })
+    }
+
+    /// Whether every `^` can only stand where a match starts and every
+    /// `$` only where one ends: elsewhere regcomp's anchors read the
+    /// newlines the match consumes, which the automata cannot see.
+    pub(crate) fn anchors_at_edges(&self) -> bool {
+        self.edges(true, true)
+    }
+
+    fn zero_width(&self) -> bool {
         match self {
-            Ast::Backref(_) => true,
-            Ast::Group(_, inner) | Ast::Repeat(inner, _, _) => inner.has_backref(),
-            Ast::Concat(items) | Ast::Alternate(items) => items.iter().any(Ast::has_backref),
+            Ast::Empty | Ast::Look(_) => true,
+            Ast::Group(_, inner) => inner.zero_width(),
+            Ast::Concat(items) => items.iter().all(Ast::zero_width),
             _ => false,
         }
     }
+
+    fn edges(&self, first: bool, last: bool) -> bool {
+        match self {
+            Ast::Look(Look::Start) => first,
+            Ast::Look(Look::End | Look::GroupedEnd) => last,
+            Ast::Group(_, inner) => inner.edges(first, last),
+            Ast::Repeat(inner, _, _) => inner.edges(false, false),
+            Ast::Alternate(items) => items.iter().all(|item| item.edges(first, last)),
+            Ast::Concat(items) => items.iter().enumerate().all(|(i, item)| {
+                item.edges(
+                    first && items[..i].iter().all(Ast::zero_width),
+                    last && items[i + 1..].iter().all(Ast::zero_width),
+                )
+            }),
+            _ => true,
+        }
+    }
+
+    /// Whether any unit the expression spells, in or out of a set,
+    /// passes `test`.
+    pub(crate) fn any_unit(&self, test: &dyn Fn(Unit) -> bool) -> bool {
+        self.any(&|ast| match ast {
+            Ast::Unit(unit) => test(*unit),
+            Ast::Set(set) => set.items.iter().any(|item| match *item {
+                Item::Unit(unit) => test(unit),
+                Item::Range(low, high) => test(low) || test(high),
+                Item::Class(_) => false,
+            }),
+            _ => false,
+        })
+    }
+
+    fn any(&self, test: &dyn Fn(&Ast) -> bool) -> bool {
+        test(self)
+            || match self {
+                Ast::Group(_, inner) | Ast::Repeat(inner, _, _) => inner.any(test),
+                Ast::Concat(items) | Ast::Alternate(items) => {
+                    items.iter().any(|item| item.any(test))
+                }
+                _ => false,
+            }
+    }
+}
+
+/// Which program's reading of a pattern: they share POSIX's syntax and
+/// GNU's extensions, and differ in what they refuse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Dialect {
+    /// GNU grep 3.11: an extended operator with nothing to repeat is
+    /// dropped with a warning, and a malformed interval is text.
+    Grep,
+    /// GNU sed 4.9: an operator with nothing to repeat is refused in an
+    /// extended expression, and in a basic one a `*` or an interval may
+    /// not follow another repetition.
+    Sed,
+    /// What expr, nl, bash's `=~` and git read: a basic expression refuses
+    /// nothing grep reads as text and takes an inverted range as empty.
+    Posix,
 }
 
 // The refusals, worded as GNU grep prints them after `grep: `.
@@ -202,6 +296,7 @@ pub(crate) const BAD_INTERVAL: &str = "Invalid content of \\{\\}";
 pub(crate) const BAD_BACKREF: &str = "Invalid back reference";
 pub(crate) const BAD_RANGE: &str = "Invalid range end";
 pub(crate) const TOO_BIG: &str = "Regular expression too big";
+pub(crate) const INVALID_PRECEDING: &str = "Invalid preceding regular expression";
 pub(crate) const COLON_CLASS: &str = "character class syntax is [[:space:]], not [:space:]";
 /// GNU's refusal of a pattern nested past what its stack holds (grep 3.11
 /// takes 5,000 nested groups and refuses 20,000).
@@ -237,19 +332,26 @@ pub(crate) struct Parsed {
     pub(crate) extents: Option<Ast>,
     /// What GNU grep warns about the expression, without `grep: warning: `.
     pub(crate) warnings: Vec<&'static str>,
+    /// How many groups the expression opens.
+    pub(crate) groups: usize,
 }
 
-/// Parse one expression of a pattern list: POSIX basic or extended, with
-/// the extensions grep reads (`\w \W \s \S \b \B \< \> \` \'`,
-/// back-references in both dialects, `\| \+ \?` in a basic one and `{,n}`
-/// intervals). Where a dialect leaves a construct open, the choice is the
-/// one GNU grep 3.11 shows.
-pub(crate) fn parse(pattern: &[u8], extended: bool, utf8: bool) -> Result<Parsed, &'static str> {
+/// Parse one expression: POSIX basic or extended, with the extensions GNU
+/// reads (`\w \W \s \S \b \B \< \> \` \'`, back-references in both
+/// syntaxes, `\| \+ \?` in a basic one and `{,n}` intervals). Where POSIX
+/// leaves a construct open, the choice is the one `dialect`'s program
+/// shows.
+pub(crate) fn parse(
+    pattern: &[u8],
+    extended: bool,
+    utf8: bool,
+    dialect: Dialect,
+) -> Result<Parsed, &'static str> {
     let units = units(pattern, utf8);
-    let mut parser = Parser::new(&units, extended, utf8, false);
+    let mut parser = Parser::new(&units, extended, utf8, dialect, false);
     let ast = parser.whole()?;
-    let extents = if extended {
-        let printed = Parser::new(&units, extended, utf8, true).whole()?;
+    let extents = if extended && dialect == Dialect::Grep {
+        let printed = Parser::new(&units, extended, utf8, dialect, true).whole()?;
         (printed != ast).then_some(printed)
     } else {
         None
@@ -258,7 +360,34 @@ pub(crate) fn parse(pattern: &[u8], extended: bool, utf8: bool) -> Result<Parsed
         ast,
         extents,
         warnings: parser.warnings,
+        groups: parser.groups,
     })
+}
+
+fn grouped(ast: &Ast) -> bool {
+    match ast {
+        Ast::Group(..) => true,
+        Ast::Repeat(inner, _, _) => grouped(inner),
+        _ => false,
+    }
+}
+
+/// A `$` reads a newline the match consumes after it only between two
+/// items that are not groups: `b$.` matches across a line, `(b)$.` and
+/// `b$(.)` do not, nor, inside a group, a `$` that starts or ends its
+/// branch (`(b$|x).`).
+fn mark_grouped_ends(items: &mut [Ast], in_group: bool) {
+    for i in 0..items.len() {
+        if items[i] != Ast::Look(Look::End) {
+            continue;
+        }
+        let before = i.checked_sub(1).map(|at| &items[at]);
+        let after = items.get(i + 1);
+        let edge = before.is_none() || after.is_none();
+        if (edge && in_group) || before.is_some_and(grouped) || after.is_some_and(grouped) {
+            items[i] = Ast::Look(Look::GroupedEnd);
+        }
+    }
 }
 
 /// A fixed string's units, each one matched as itself.
@@ -285,6 +414,7 @@ struct Parser<'a> {
     pos: usize,
     extended: bool,
     utf8: bool,
+    dialect: Dialect,
     /// Read the expression as -o does (see `Parsed::extents`).
     as_printed: bool,
     groups: usize,
@@ -297,12 +427,19 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(units: &'a [Unit], extended: bool, utf8: bool, as_printed: bool) -> Self {
+    fn new(
+        units: &'a [Unit],
+        extended: bool,
+        utf8: bool,
+        dialect: Dialect,
+        as_printed: bool,
+    ) -> Self {
         Parser {
             units,
             pos: 0,
             extended,
             utf8,
+            dialect,
             as_printed,
             groups: 0,
             closed: vec![false],
@@ -315,7 +452,7 @@ impl<'a> Parser<'a> {
     fn whole(&mut self) -> Result<Ast, &'static str> {
         let (ast, _) = self.alternation()?;
         if self.pos < self.units.len() {
-            // Only a basic `\)` with no group open stops the top level early.
+            // Only a `)` with no group open stops the top level early.
             return Err(UNMATCHED_CLOSE);
         }
         Ok(ast)
@@ -343,7 +480,8 @@ impl<'a> Parser<'a> {
 
     fn at_close(&self) -> bool {
         if self.depth == 0 {
-            return false;
+            // sed alone refuses an extended `)` that closes nothing.
+            return self.extended && self.dialect == Dialect::Sed && self.is(self.pos, b')');
         }
         if self.extended {
             self.is(self.pos, b')')
@@ -398,12 +536,19 @@ impl<'a> Parser<'a> {
             if !self.extended && self.escaped(self.pos, b')') {
                 return Err(UNMATCHED_CLOSE);
             }
-            // Nothing to repeat: the branch's start, or only anchors
-            // before (a basic expression's `^` alone).
-            let bare = if self.extended {
+            // Nothing to repeat: the branch's start, or for grep only
+            // anchors before (a basic expression's `^` alone); regcomp
+            // repeats no anchor at all.
+            let bare = if self.dialect != Dialect::Grep {
+                items.is_empty() || matches!(items.last(), Some(Ast::Look(_)))
+            } else if self.extended {
                 items.iter().all(|item| matches!(item, Ast::Look(_)))
             } else {
-                items.is_empty() || items.last() == Some(&Ast::Look(Look::Start))
+                items.is_empty()
+                    || matches!(
+                        items.last(),
+                        Some(Ast::Look(Look::Start | Look::SubjectStart))
+                    )
             };
             if bare {
                 let at = self.pos;
@@ -415,12 +560,12 @@ impl<'a> Parser<'a> {
             let (atom, deep) = self.atom(items.is_empty(), bare)?;
             // A leading anchor leaves the operator after it to the next
             // round, which finds nothing to repeat.
-            let leading = bare
-                && match atom {
-                    Ast::Look(Look::Start) => true,
-                    Ast::Look(_) => self.extended,
-                    _ => false,
-                };
+            let leading = match atom {
+                Ast::Look(_) if self.dialect != Dialect::Grep => true,
+                Ast::Look(Look::Start | Look::SubjectStart) => bare,
+                Ast::Look(_) => bare && self.extended,
+                _ => false,
+            };
             let (atom, deep) = if leading {
                 (atom, deep)
             } else {
@@ -428,6 +573,9 @@ impl<'a> Parser<'a> {
             };
             items.push(atom);
             depth = depth.max(deep);
+        }
+        if self.dialect != Dialect::Grep {
+            mark_grouped_ends(&mut items, self.depth > 0);
         }
         Ok(match items.len() {
             0 => (Ast::Empty, 1),
@@ -440,12 +588,22 @@ impl<'a> Parser<'a> {
     /// dropped with GNU's warning; a basic one is a literal, which
     /// `atom` reads. True when one was dropped.
     fn leading_operator(&mut self) -> Result<bool, &'static str> {
-        if !self.extended {
-            return Ok(false);
-        }
         let Some(unit) = self.peek(self.pos) else {
             return Ok(false);
         };
+        if !self.extended {
+            // sed refuses a basic interval with nothing to repeat.
+            if self.dialect == Dialect::Sed && self.escaped(self.pos, b'{') {
+                return Err(INVALID_PRECEDING);
+            }
+            return Ok(false);
+        }
+        if self.dialect != Dialect::Grep {
+            return match unit.ascii() {
+                Some(b'*' | b'+' | b'?' | b'{') => Err(INVALID_PRECEDING),
+                _ => Ok(false),
+            };
+        }
         let warning = match unit.ascii() {
             Some(b'*') => "* at start of expression",
             Some(b'+') => "+ at start of expression",
@@ -546,8 +704,8 @@ impl<'a> Parser<'a> {
                 b'B' => Ast::Look(Look::NotWord),
                 b'<' => Ast::Look(Look::WordStart),
                 b'>' => Ast::Look(Look::WordEnd),
-                b'`' => Ast::Look(Look::Start),
-                b'\'' => Ast::Look(Look::End),
+                b'`' => Ast::Look(Look::SubjectStart),
+                b'\'' => Ast::Look(Look::SubjectEnd),
                 _ => Ast::Unit(unit),
             },
             1,
@@ -555,7 +713,17 @@ impl<'a> Parser<'a> {
     }
 
     fn operators(&mut self, mut atom: Ast, mut depth: usize) -> Result<(Ast, usize), &'static str> {
+        let mut repeated = false;
         loop {
+            // In sed's basic syntax a `*` or an interval may not follow
+            // another repetition (`a**`, `a\{2\}*`); `\+` and `\?` may.
+            if repeated
+                && !self.extended
+                && self.dialect == Dialect::Sed
+                && (self.is(self.pos, b'*') || self.escaped(self.pos, b'{'))
+            {
+                return Err(INVALID_PRECEDING);
+            }
             let (min, max, width) = if self.is(self.pos, b'*') {
                 (0, None, 1)
             } else if self.extended {
@@ -579,6 +747,7 @@ impl<'a> Parser<'a> {
                 return Ok((atom, depth));
             };
             self.pos += width;
+            repeated = true;
             // As -o reads it, an operator leaves an anchor as it was.
             if !(self.as_printed && matches!(atom, Ast::Look(_))) {
                 depth = nested(depth + 1)?;
@@ -624,6 +793,9 @@ impl<'a> Parser<'a> {
     /// malformed one), or a refusal.
     fn extended_interval(&self, at: usize) -> Result<Interval, &'static str> {
         let start = at + 1;
+        if self.dialect != Dialect::Grep {
+            return self.strict_interval(start);
+        }
         match self.peek(start).and_then(Unit::ascii) {
             Some(b'}') => return Err(BAD_INTERVAL),
             Some(c) if c.is_ascii_digit() || c == b',' => {}
@@ -647,6 +819,32 @@ impl<'a> Parser<'a> {
             Some(b',') => Err(BAD_INTERVAL),
             _ => Ok(Interval::Literal),
         }
+    }
+
+    /// An extended `{` as regcomp reads it, from the unit after it: an
+    /// interval or a refusal, never text.
+    fn strict_interval(&self, start: usize) -> Result<Interval, &'static str> {
+        if start >= self.units.len() {
+            return Err(UNMATCHED_BRACE);
+        }
+        let (min, mut at) = self.digits(start);
+        let comma = self.is(at, b',');
+        let mut max = None;
+        if comma {
+            (max, at) = self.digits(at + 1);
+        }
+        if at >= self.units.len() {
+            return Err(UNMATCHED_BRACE);
+        }
+        if !self.is(at, b'}') || (min.is_none() && !comma) {
+            return Err(BAD_INTERVAL);
+        }
+        let (min, max) = Self::bounds(min, max, comma)?;
+        Ok(Interval::Valid {
+            min,
+            max,
+            end: at + 1,
+        })
     }
 
     /// A basic `\{`'s bounds, from the unit after it to its `\}`.
@@ -695,11 +893,16 @@ impl<'a> Parser<'a> {
                 let (Item::Unit(high), true) = self.element()? else {
                     return Err(BAD_RANGE);
                 };
-                if low.ordinal() > high.ordinal() {
-                    return Err(BAD_RANGE);
-                }
                 if self.is(self.pos, b'-') && self.peek(self.pos + 1).is_some_and(|u| !u.is(b']')) {
                     return Err(BAD_RANGE);
+                }
+                if low.ordinal() > high.ordinal() {
+                    // A basic expression's inverted range is empty to
+                    // regcomp; grep, sed and an extended one refuse it.
+                    if self.extended || self.dialect != Dialect::Posix {
+                        return Err(BAD_RANGE);
+                    }
+                    continue;
                 }
                 items.push(Item::Range(self.endpoint(low), self.endpoint(high)));
             } else {
@@ -707,11 +910,19 @@ impl<'a> Parser<'a> {
             }
         }
         let body = &self.units[content..self.pos];
-        if body.len() >= 2 && body[0].is(b':') && body[body.len() - 1].is(b':') {
+        if self.dialect != Dialect::Posix
+            && body.len() >= 2
+            && body[0].is(b':')
+            && body[body.len() - 1].is(b':')
+        {
             return Err(COLON_CLASS);
         }
         self.pos += 1;
-        Ok(Set { negated, items })
+        Ok(Set {
+            negated,
+            items,
+            bracket: true,
+        })
     }
 
     /// One bracket member: a unit, `[:class:]`, `[=u=]` or `[.u.]`, and
@@ -761,11 +972,11 @@ mod tests {
     use super::*;
 
     fn ere(pattern: &str) -> Result<Ast, &'static str> {
-        parse(pattern.as_bytes(), true, false).map(|p| p.ast)
+        parse(pattern.as_bytes(), true, false, Dialect::Grep).map(|p| p.ast)
     }
 
     fn bre(pattern: &str) -> Result<Ast, &'static str> {
-        parse(pattern.as_bytes(), false, false).map(|p| p.ast)
+        parse(pattern.as_bytes(), false, false, Dialect::Grep).map(|p| p.ast)
     }
 
     fn lit(c: char) -> Ast {
@@ -797,10 +1008,13 @@ mod tests {
             ("[:alpha:]", true, COLON_CLASS),
         ];
         for (pattern, extended, want) in cases {
-            let got = parse(pattern.as_bytes(), extended, false).err();
+            let got = parse(pattern.as_bytes(), extended, false, Dialect::Grep).err();
             assert_eq!(got, Some(want), "{pattern}");
         }
-        assert_eq!(parse(b"a\\", true, false).err(), Some(TRAILING_BACKSLASH));
+        assert_eq!(
+            parse(b"a\\", true, false, Dialect::Grep).err(),
+            Some(TRAILING_BACKSLASH)
+        );
     }
 
     #[test]
@@ -826,10 +1040,10 @@ mod tests {
 
     #[test]
     fn extended_leading_operators_are_dropped_with_a_warning() {
-        let parsed = parse(b"*a", true, false).unwrap();
+        let parsed = parse(b"*a", true, false, Dialect::Grep).unwrap();
         assert_eq!(parsed.ast, lit('a'));
         assert_eq!(parsed.warnings, ["* at start of expression"]);
-        let parsed = parse(b"{1}a", true, false).unwrap();
+        let parsed = parse(b"{1}a", true, false, Dialect::Grep).unwrap();
         assert_eq!(parsed.ast, lit('a'));
         assert_eq!(parsed.warnings, ["{...} at start of expression"]);
         assert_eq!(ere("{"), Ok(lit('{')));
@@ -864,6 +1078,7 @@ mod tests {
             Ok(Ast::Set(Set {
                 negated: false,
                 items,
+                bracket: true,
             }))
         };
         let b = |c: char| Unit::Byte(c as u8);

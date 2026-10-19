@@ -33,7 +33,7 @@ import {
   sortHaystacks,
 } from '../rg.ts'
 import type { FlagSet } from '../../grep_binary.ts'
-import { patternArg, compilePattern } from '../../grep_pattern.ts'
+import { patternArg, compilePattern, type LineMatcher } from '../../grep_pattern.ts'
 import { dirAdmitted, fileAdmitted } from '../../grep_select.ts'
 import { isStdin, resolveSource } from '../../utils/stream.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../../utils/filetype.ts'
@@ -52,7 +52,7 @@ import { formatRecords } from '../../utils/output.ts'
 import { concat } from '../../../../utils/bytes.ts'
 import { LinkResolver, linkView, mountView } from '../../utils/links.ts'
 import { fsErrorLine } from '../../../../errors/render.ts'
-import { encodeText } from '../../../../shell/bytes.ts'
+import { byteView, encodeText } from '../../../../shell/bytes.ts'
 import type { Files } from '../../../../workspace/files.ts'
 
 function admitGrep(flags: FlagSet, path: PathSpec, stat: FileStat): boolean {
@@ -77,6 +77,7 @@ export async function runSearch(
   cwd: string,
   vfs?: Files,
   stdin: ByteSource | null = null,
+  utf8 = false,
   signal?: AbortSignal,
 ): Promise<CrossResult> {
   const started = performance.now()
@@ -101,16 +102,17 @@ export async function runSearch(
           filtersFiles(rg) ||
           ignores?.empty === false)))
   if (rg?.typeList) return runSingle(name, paths.slice(0, 1), [...texts], bag)
+  let matcher: LineMatcher | null = null
   if (grep !== null) {
     const pattern = patternArg(texts, view)
     if (pattern !== null)
-      compilePattern(
-        pattern,
+      matcher = compilePattern(
+        byteView(pattern, utf8),
         grep.ignoreCase,
         grep.fixedString,
         grep.wholeWord,
         grep.syntax,
-        false,
+        utf8,
         grep.lineRegexp,
       )
   }
@@ -281,7 +283,7 @@ export async function runSearch(
   // the ignore files it could not read; the line keeps one.
   const noted =
     grep !== null
-      ? encodeText(lineWarnings(view, grep, patternArg(texts, view) ?? '', false))
+      ? encodeText(lineWarnings(view, matcher))
       : rg !== null && notes.length > 0 && !rg.noMessages
         ? formatRecords(notes)
         : new Uint8Array()

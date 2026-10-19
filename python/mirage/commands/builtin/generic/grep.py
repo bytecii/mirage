@@ -17,7 +17,8 @@ from mirage.commands.builtin.grep_binary import (
 )
 from mirage.commands.builtin.grep_pattern import (
     NEVER_MATCH,
-    compile_pattern,
+    LineMatcher,
+    compile_perl,
     matcher_syntax,
     pattern_warnings,
     resolve_pattern,
@@ -326,23 +327,16 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
     )
 
 
-def line_warnings(
-    fl: FlagView, f: GrepFlags, pattern: str, never_match: bool
-) -> bytes:
+def line_warnings(fl: FlagView, matcher: LineMatcher | None) -> bytes:
     """What grep warns once for the line, before it reads a file: an
     obsolete -u, then the pattern's compile-time warnings.
 
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
-        f (GrepFlags): the parsed flags.
-        pattern (str): the pattern list.
-        never_match (bool): the pattern list matches nothing.
+        matcher (LineMatcher | None): the compiled pattern list, None
+            when it matches nothing.
     """
-    warning = (
-        b""
-        if never_match or f.fixed_string
-        else pattern_warnings(pattern, f.syntax)
-    )
+    warning = b"" if matcher is None else pattern_warnings(matcher)
     if fl.as_bool("unix_byte_offsets"):
         warning = UNIX_BYTE_OFFSETS + warning
     return warning
@@ -379,18 +373,16 @@ async def grep_generic(
         pat = (
             re.compile(NEVER_MATCH)
             if never_match
-            else compile_pattern(
+            else compile_perl(
                 byte_view(pattern, utf8),
                 f.ignore_case,
-                f.fixed_string,
                 f.whole_word,
-                f.syntax,
                 utf8,
                 f.line_regexp,
             )
         )
         stream = None
-        warning = line_warnings(fl, f, pattern, never_match)
+        warning = line_warnings(fl, None)
     else:
         stream, warning = open_grep(
             stream_config(f, None if never_match else pattern, utf8)

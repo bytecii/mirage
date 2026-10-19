@@ -12,9 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { compilePosixRegex } from '../../../../utils/posix.ts'
-import { BreError, PosixSyntax, translateEre } from '../../../../commands/builtin/utils/bre.ts'
-import { randomReader, seedVar, sessionArith } from '../../../session/state.ts'
+import { RegexError } from '../../../../rs/errors.ts'
+import { posixEscape, posixRegex } from '../../../../rs/regex.ts'
+import { randomReader, seedVar, sessionArith, visibleEnv } from '../../../session/state.ts'
+import { byteView, textView, utf8Locale } from '../../../../shell/bytes.ts'
 import type { ArithResult, ArithWrite } from '../../../../shell/types.ts'
 import { assignElement } from '../../../session/elements.ts'
 import { ArithError, ReadonlyError } from '../../../../shell/errors.ts'
@@ -25,24 +26,62 @@ import { applyFilePair, applyUnary } from './operators.ts'
 import { CondError } from './types.ts'
 import type { CondContext, CondNode } from './types.ts'
 
-/** Evaluate a structured [[ ]] expression tree. */
-export async function evalCond(ctx: CondContext, node: CondNode): Promise<boolean> {
+/**
+ * Evaluate a structured [[ ]] expression tree to its status.
+ *
+ * A test answers 0 or 1, and a regex that does not compile answers 2
+ * without a word. The expression answers what its last test did: `&&`
+ * stops at the first failure, `||` at the first success, and `!` turns
+ * any failure into 0.
+ */
+export async function evalCond(ctx: CondContext, node: CondNode): Promise<number> {
   if (node.kind === 'lazy') return evalCond(ctx, await node.expand())
   if (node.kind === 'and') {
-    return (await evalCond(ctx, node.left)) && (await evalCond(ctx, node.right))
+    const left = await evalCond(ctx, node.left)
+    return left !== 0 ? left : evalCond(ctx, node.right)
   }
   if (node.kind === 'or') {
-    return (await evalCond(ctx, node.left)) || (await evalCond(ctx, node.right))
+    const left = await evalCond(ctx, node.left)
+    return left === 0 ? 0 : evalCond(ctx, node.right)
   }
-  if (node.kind === 'not') return !(await evalCond(ctx, node.inner))
+  if (node.kind === 'not') return (await evalCond(ctx, node.inner)) !== 0 ? 0 : 1
   if (node.kind === 'unary') {
     if (!UNARY_OPS.has(node.op)) {
       throw new CondError('mirage: conditional unary operator expected')
     }
-    return applyUnary(ctx, node.op, node.operand)
+    return (await applyUnary(ctx, node.op, node.operand)) ? 0 : 1
   }
-  if (node.kind === 'binary') return evalCondBinary(ctx, node)
-  return node.value !== ''
+  if (node.kind === 'binary') {
+    if (node.op === '=~') return regexStatus(ctx, node)
+    return (await evalCondBinary(ctx, node)) ? 0 : 1
+  }
+  return node.value !== '' ? 0 : 1
+}
+
+/** Match [[ left =~ right ]], filling BASH_REMATCH on a match. */
+function regexStatus(ctx: CondContext, node: Extract<CondNode, { kind: 'binary' }>): number {
+  const pattern = node.rightLiteral ? posixEscape(node.right) : node.right
+  // The shell's own locale, which an unexported LC_ALL sets as well.
+  const utf8 = utf8Locale(visibleEnv(ctx.session))
+  const left = byteView(node.left, utf8)
+  // bash hands the pattern to regcomp(REG_EXTENDED): glibc's
+  // POSIX_EXTENDED syntax, where `\d` is a `d` and `(?` is refused.
+  let found
+  try {
+    found = posixRegex(byteView(pattern, utf8), true, 'posix', false, utf8).search(left)
+  } catch (err) {
+    if (!(err instanceof RegexError)) throw err
+    return 2
+  }
+  if (found === null) return 1
+  seedVar(
+    ctx.session,
+    'BASH_REMATCH',
+    makeArray(
+      found.map((span) => (span === null ? '' : textView(left.slice(span[0], span[1]), utf8))),
+    ),
+  )
+  return 0
 }
 
 async function evalCondBinary(
@@ -57,27 +96,6 @@ async function evalCondBinary(
   }
   if (node.op === '!=') {
     return !fnmatch(node.left, node.right, true)
-  }
-  if (node.op === '=~') {
-    const pattern = node.rightLiteral
-      ? node.right.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      : node.right
-    // bash hands the pattern to regcomp(REG_EXTENDED): glibc's
-    // POSIX_EXTENDED syntax, where `\d` is a `d` and `(?` is refused.
-    let match: RegExpExecArray | null
-    try {
-      match = compilePosixRegex(translateEre(pattern, PosixSyntax.EXTENDED)[0]).exec(node.left)
-    } catch (err) {
-      if (!(err instanceof BreError) && !(err instanceof SyntaxError)) throw err
-      throw new CondError('mirage: syntax error in conditional expression')
-    }
-    if (match === null) return false
-    seedVar(
-      ctx.session,
-      'BASH_REMATCH',
-      makeArray([match[0], ...match.slice(1).map((g: string | undefined) => g ?? '')]),
-    )
-    return true
   }
   if (node.op === '<') return node.left < node.right
   if (node.op === '>') return node.left > node.right

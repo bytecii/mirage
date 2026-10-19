@@ -10,6 +10,8 @@ from mirage.commands.builtin.grep_offsets import prefix_of
 from mirage.commands.builtin.grep_pattern import (
     NEVER_MATCH,
     compile_pattern,
+    line_pieces,
+    line_selected,
     matcher_syntax,
     pattern_warnings,
     resolve_pattern,
@@ -22,7 +24,6 @@ from mirage.commands.builtin.utils.constants import (
 )
 from mirage.commands.builtin.utils.links import LinkResolver
 from mirage.commands.builtin.utils.operands import normalized_read
-from mirage.commands.builtin.utils.pcre import match_start, match_text
 from mirage.commands.builtin.utils.stream import operand_label
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -133,9 +134,7 @@ async def zgrep_generic(
     multi = len(paths) > 1
     show_filename = f.force_filename or (multi and not f.suppress_filename)
     warnings = (
-        b""
-        if compiled is None or never_match or f.fixed
-        else pattern_warnings(pattern, f.syntax)
+        b"" if compiled is None or never_match else pattern_warnings(compiled)
     )
     result = IOResult(exit_code=1, stderr=warnings or None)
 
@@ -176,20 +175,21 @@ async def zgrep_generic(
                     ):
                         continue
                     line = byte_view(raw, utf8)
-                    selected: list[tuple[int, str]]
-                    if (
+                    # Whether the line is selected is its own question: an
+                    # empty match selects it and gives -o nothing to print.
+                    hit = line_selected(compiled, line) != f.invert
+                    selected: list[tuple[int, str]] = []
+                    if not hit:
+                        pass
+                    elif (
                         f.only_matching
                         and not f.invert
                         and not (f.files_only or f.files_without_match)
                     ):
-                        selected = [
-                            (match_start(m), match_text(m))
-                            for m in compiled.finditer(line)
-                        ]
+                        selected = line_pieces(compiled, line)
                     else:
-                        hit = bool(compiled.search(line)) != f.invert
-                        selected = [(0, line)] if hit else []
-                    if selected:
+                        selected = [(0, line)]
+                    if hit:
                         count += 1
                         any_match = True
                     for at, text in selected:

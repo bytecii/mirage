@@ -56,12 +56,12 @@ export async function handleTest(
     ...(view !== undefined ? { view } : {}),
     ...(links !== undefined ? { links } : {}),
   }
-  let result: boolean
+  let code: number
   try {
     if (Array.isArray(args)) {
-      result = await evalFlat(ctx, args)
+      code = (await evalFlat(ctx, args)) ? 0 : 1
     } else {
-      result = await evalCond(ctx, args)
+      code = await evalCond(ctx, args)
     }
   } catch (exc) {
     if (!(exc instanceof CondError)) throw exc
@@ -80,7 +80,6 @@ export async function handleTest(
       new ExecutionNode({ command: 'test', exitCode: exc.exitCode, stderr }),
     ]
   }
-  const code = result ? 0 : 1
   return [
     null,
     new IOResult({ exitCode: code }),

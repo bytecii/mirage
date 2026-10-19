@@ -407,6 +407,43 @@
         "stdout": " fe 0a 79 ff 0a\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "sed_text_ending_in_a_control_escape",
+      "seq": 9970032,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'x\\ny\\n' | sed 'a foo\\c' | od -An -c; printf 'x\\n' | sed 'i foo\\c'; printf 'x\\n' | sed 'c foo\\c'; printf 'x\\n' | sed -e 'a foo\\c' -e 'a bar'",
+      "expect": {
+        "exit": 0,
+        "stdout": "   x  \\n   f   o   o   J   y  \\n   f   o   o   J\nfoo\nx\nfoo\nx\nfooJbar\n",
+        "stderr": ""
+      },
+      "flags": [
+        "e"
+      ]
     }
   ]
 }

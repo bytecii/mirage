@@ -74,9 +74,9 @@ async def handle_test(
     )
     try:
         if isinstance(args, list):
-            result = await eval_flat(ctx, args)
+            code = 0 if await eval_flat(ctx, args) else 1
         else:
-            result = await eval_cond(ctx, args)
+            code = await eval_cond(ctx, args)
     except CondError as err:
         # The builtin's own diagnostic is in bash's voice; the program
         # (`find -exec test`) keeps its bare one.
@@ -95,7 +95,6 @@ async def handle_test(
                 command="test", exit_code=err.exit_code, stderr=stderr
             ),
         )
-    code = 0 if result else 1
     return (
         None,
         IOResult(exit_code=code),

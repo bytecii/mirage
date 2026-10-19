@@ -379,6 +379,44 @@
         "e",
         "f"
       ]
+    },
+    {
+      "id": "sed_label_ends_at_a_hash",
+      "seq": 9970019,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo x | sed -e 'b done#note' -e 's/x/y/' -e ':done'; printf '1\\n2\\n3\\n' | sed -n -e ':a#c' -e '$!{N;ba' -e '}' -e p",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\n1\n2\n3\n",
+        "stderr": ""
+      },
+      "flags": [
+        "e",
+        "n"
+      ]
     }
   ]
 }

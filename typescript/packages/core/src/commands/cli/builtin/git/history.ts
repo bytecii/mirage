@@ -13,7 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import git from 'isomorphic-git'
-import { BreError, PosixSyntax, searchBre, translateEre } from '../../../builtin/utils/bre.ts'
+import { RegexError } from '../../../../rs/errors.ts'
+import { byteView, utf8Locale } from '../../../../shell/bytes.ts'
+import { posixRegex, type PosixRegex } from '../../../../rs/regex.ts'
 import { GitError, PatternCompileError } from './errors.ts'
 import { HEAD, TEMPLATE_KINDS } from './constants.ts'
 
@@ -61,13 +63,16 @@ const U_SYNTAX = '^$\\.*+?()[]{}|/'
 const PERL_ANCHORS: Readonly<Record<string, string>> = { A: '^', z: '$', Z: '$' }
 
 /** The parsed shape of a `git log` invocation. */
+/** A `--grep`, `--author` or `--committer` pattern: `-P` in the host's engine, the rest POSIX. */
+export type LinePattern = RegExp | PosixRegex
+
 export interface LogFlags {
   /** `--author` patterns, any of which may match. */
-  readonly authors: readonly RegExp[]
+  readonly authors: readonly LinePattern[]
   /** `--grep` patterns, any of which may match a line of the message. */
-  readonly greps: readonly RegExp[]
+  readonly greps: readonly LinePattern[]
   /** `--committer` patterns, any of which may match. */
-  readonly committers: readonly RegExp[]
+  readonly committers: readonly LinePattern[]
   /** The worktree `.mailmap`, which `%aN`-style placeholders always read. */
   readonly mailmap: readonly MailmapEntry[]
   /**
@@ -93,9 +98,9 @@ export interface LogFlags {
   /** `--reverse`, oldest first. */
   readonly reverse: boolean
   /** `-S`, the pickaxe string, or its pattern under `--pickaxe-regex`. */
-  readonly search: string | RegExp | null
+  readonly search: string | PosixRegex | null
   /** `-G`, the pattern an added or removed line must match. */
-  readonly changed: RegExp | null
+  readonly changed: PosixRegex | null
   /** Search binary changed lines under `--text`. */
   readonly forceText: boolean
   /** `--since` as an epoch second. */
@@ -201,21 +206,31 @@ export function prettyFormat(fl: FlagView): LogFormat {
  * git words it; the reason after that is glibc's
  * for a basic expression and the host engine's otherwise.
  */
-function pattern(value: string, syntax: string, ignoreCase: boolean, origin: string): RegExp {
+function pattern(
+  value: string,
+  syntax: string,
+  ignoreCase: boolean,
+  origin: string,
+  utf8: boolean,
+): LinePattern {
   try {
     if (syntax === PERL_REGEXP) return perlRegex(value, ignoreCase)
-    const fold = ignoreCase ? 'i' : ''
-    if (syntax === FIXED_STRINGS)
+    if (syntax === FIXED_STRINGS) {
+      const fold = ignoreCase ? 'i' : ''
       return compilePosixRegex(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), fold)
-    if (syntax === EXTENDED_REGEXP) {
-      return compilePosixRegex(translateEre(value, PosixSyntax.EXTENDED)[0], fold)
     }
-    return searchBre(value, ignoreCase)
+    return posixRegex(byteView(value, utf8), syntax === EXTENDED_REGEXP, 'posix', ignoreCase, utf8)
   } catch (err) {
-    if (err instanceof BreError || err instanceof SyntaxError)
+    if (err instanceof RegexError || err instanceof SyntaxError)
       throw new PatternCompileError(origin, value, err.message)
     throw err
   }
+}
+
+/** Whether a `--grep`, `--author` or `--committer` pattern matches `text`. */
+function hits(pattern: LinePattern, text: string): boolean {
+  if (pattern instanceof RegExp) return pattern.test(text)
+  return pattern.search(byteView(text, pattern.utf8)) !== null
 }
 
 /**
@@ -293,16 +308,11 @@ function perlRegex(value: string, ignoreCase: boolean): RegExp {
  * and matched one line at a time (REG_NEWLINE). Linux regcomp keeps dot off
  * NUL, unlike Darwin.
  */
-function pickaxePattern(value: string, ignoreCase: boolean): RegExp {
+function pickaxePattern(value: string, ignoreCase: boolean, utf8: boolean): PosixRegex {
   try {
-    return compilePosixRegex(
-      translateEre(value, PosixSyntax.EXTENDED, false)[0],
-      ignoreCase ? 'i' : '',
-    )
+    return posixRegex(byteView(value, utf8), true, 'posix', ignoreCase, utf8, true)
   } catch (err) {
-    if (err instanceof BreError || err instanceof SyntaxError) {
-      throw new GitError(`invalid regex: ${err.message}`)
-    }
+    if (err instanceof RegexError) throw new GitError(`invalid regex: ${err.message}`)
     throw err
   }
 }
@@ -320,20 +330,23 @@ export function parseFlags(
     if (fl.asBool(name)) order = name === 'topo_order' ? 'topo' : 'date'
   }
   const ignoreCase = fl.asBool('regexp_ignore_case')
+  const utf8 = utf8Locale(env ?? undefined)
   let syntax = BASIC_REGEXP
   for (const [key] of fl.occurrences(...PATTERN_SYNTAXES)) syntax = key
   const committers = fl
     .asList('committer')
-    .map((value) => pattern(value, syntax, ignoreCase, HEADER_ORIGIN))
+    .map((value) => pattern(value, syntax, ignoreCase, HEADER_ORIGIN, utf8))
   const authors = fl
     .asList('author')
-    .map((value) => pattern(value, syntax, ignoreCase, HEADER_ORIGIN))
+    .map((value) => pattern(value, syntax, ignoreCase, HEADER_ORIGIN, utf8))
   const greps = fl
     .asList('grep')
     .flatMap((values) =>
-      values.split('\n').map((value) => pattern(value, syntax, ignoreCase, COMMAND_LINE_ORIGIN)),
+      values
+        .split('\n')
+        .map((value) => pattern(value, syntax, ignoreCase, COMMAND_LINE_ORIGIN, utf8)),
     )
-  let search: string | RegExp | null = fl.asStr('S') ?? null
+  let search: string | PosixRegex | null = fl.asStr('S') ?? null
   const changed = fl.asStr('G') ?? null
   for (const [option, value] of [
     ['-S', search],
@@ -345,7 +358,7 @@ export function parseFlags(
     throw new IncompatibleLogOptionsError('-G', '-S', '--find-object')
   }
   if (typeof search === 'string' && fl.asBool('pickaxe_regex')) {
-    search = pickaxePattern(search, ignoreCase)
+    search = pickaxePattern(search, ignoreCase, utf8)
   }
   const maxCount = fl.asInt('max_count') ?? null
   const clock = dateClock(env)
@@ -366,7 +379,7 @@ export function parseFlags(
     oneline,
     reverse: fl.asBool('reverse'),
     search,
-    changed: changed === null ? null : pickaxePattern(changed, ignoreCase),
+    changed: changed === null ? null : pickaxePattern(changed, ignoreCase, utf8),
     forceText: fl.asBool('text'),
     since: windowEnd(fl, ['after', 'since'], '--since', clock.now),
     until: windowEnd(fl, ['before', 'until'], '--until', clock.now),
@@ -768,9 +781,9 @@ function inWindow(commit: CommitFacts, flags: LogFlags): boolean {
  * line at a time, so `^` and `$` anchor to a line, and never the author or
  * committer header.
  */
-function messageMatches(message: string, greps: readonly RegExp[]): boolean {
+function messageMatches(message: string, greps: readonly LinePattern[]): boolean {
   const lines = message.split('\n')
-  return greps.some((pattern) => lines.some((line) => pattern.test(line)))
+  return greps.some((pattern) => lines.some((line) => hits(pattern, line)))
 }
 
 /**
@@ -780,15 +793,22 @@ function messageMatches(message: string, greps: readonly RegExp[]): boolean {
  */
 function filtersPass(commit: CommitFacts, flags: LogFlags): boolean {
   const mailmap = flags.useMailmap ? flags.mailmap : []
-  const idents: [string, readonly RegExp[]][] = [
-    [`${commit.authorName} <${commit.authorEmail}>`, flags.authors],
-    [`${commit.committerName} <${commit.committerEmail}>`, flags.committers],
+  // A commit whose text was not UTF-8 is matched as its bytes. The map is read
+  // as text, so the identity is looked up the same way; one it leaves alone is
+  // matched as its own bytes.
+  const bytes = commit.bytes
+  const idents: [string, string | undefined, readonly LinePattern[]][] = [
+    [`${commit.authorName} <${commit.authorEmail}>`, bytes?.author, flags.authors],
+    [`${commit.committerName} <${commit.committerEmail}>`, bytes?.committer, flags.committers],
   ]
-  for (const [ident, patterns] of idents) {
+  for (const [ident, exact, patterns] of idents) {
+    if (patterns.length === 0) continue
     const mapped = mappedIdentity(ident, mailmap)
-    if (patterns.length && !patterns.some((re) => re.test(mapped))) return false
+    const subject = mapped === ident ? (exact ?? ident) : mapped
+    if (!patterns.some((re) => hits(re, subject))) return false
   }
-  if (flags.greps.length && !messageMatches(commit.message, flags.greps)) return false
+  if (flags.greps.length && !messageMatches(bytes?.message ?? commit.message, flags.greps))
+    return false
   if (flags.minParents !== null && commit.parents.length < flags.minParents) return false
   return !(
     flags.maxParents !== null &&
