@@ -35,7 +35,14 @@ from mirage.policy import (
     VfsContext,
     VfsResultContext,
 )
-from mirage.types import FileType, HiddenPaths, Limit, MountMode, Visibility
+from mirage.types import (
+    FileType,
+    HiddenPaths,
+    Limit,
+    MountMode,
+    PathSpec,
+    Visibility,
+)
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.ram.store import RAMStore
@@ -1222,3 +1229,19 @@ async def test_a_call_to_another_workspace_is_on_that_workspaces_ledger():
     finally:
         await ws.close()
         await other.close()
+
+
+@pytest.mark.asyncio
+async def test_a_write_admission_check_takes_no_record():
+    # The check writes nothing, so a record of it would read as a write
+    # and drop the path's snapshot pin.
+    ws = Workspace({"/o/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        await ws.vfs.write("/o/f.txt", b"mine\n")
+        del ws.vfs.records[:]
+        await ws.vfs.dispatch(
+            "write", PathSpec.from_str_path("/o/f.txt"), admit_only=True
+        )
+        assert ws.vfs.records == []
+    finally:
+        await ws.close()

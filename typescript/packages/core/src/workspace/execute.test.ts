@@ -545,4 +545,19 @@ describe('the ledger a file call lands in', () => {
       await other.close()
     }
   })
+
+  // Twin of test_a_write_admission_check_takes_no_record: the check writes
+  // nothing, so a record of it would read as a write and drop the path's
+  // snapshot pin.
+  it('takes no record of a write admission check', async () => {
+    const ws = new Workspace({ '/o': new RAMVFS() }, { mode: MountMode.WRITE, shellParser: parser })
+    try {
+      await ws.vfs.write('/o/f.txt', 'mine\n')
+      ws.vfs.records.splice(0)
+      await ws.vfs.dispatch('write', '/o/f.txt', [], { admit_only: true })
+      expect(ws.vfs.records).toEqual([])
+    } finally {
+      await ws.close()
+    }
+  })
 })

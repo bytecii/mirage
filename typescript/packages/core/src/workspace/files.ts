@@ -541,19 +541,22 @@ export class Files {
       const explicit = this.caller === null ? undefined : { ...currentCaller(), ...this.caller }
       return dispatch(op, typed, args, kwargs, report, explicit)
     }
-    const settle = async (answer: unknown): Promise<void> => {
+    // `fallback` false hands over what was recorded below and makes no
+    // record of its own: an admission check wrote nothing, and a write
+    // record without a fingerprint would drop the path's snapshot pin.
+    const settle = async (answer: unknown, fallback = true): Promise<void> => {
       const ran = report.path ?? spelled
       const owner = this.ownerOf(ran)
       const source = owner === null ? null : (report.source ?? owner.kind)
       const bytes = report.bytes ?? payloadBytes(answer, args)
       if (!isolated) {
-        if (!report.completed || source === null) return
+        if (!fallback || !report.completed || source === null) return
         const rec = finishRecord(op, ran, source, bytes, timer)
         this.recorded.push(rec)
         if (this.sink !== null) await this.sink(rec, this.sessionFor(seen))
         return
       }
-      if (mine.length === 0 && report.completed && source !== null) {
+      if (fallback && mine.length === 0 && report.completed && source !== null) {
         callsAs(caller, record)(op, ran, source, bytes, timer)
       }
       enclosing?.push(...mine)
@@ -587,7 +590,7 @@ export class Files {
         await closeQuietly((args[0] ?? kwargs.data ?? null) as ByteSource | null)
     }
     if (op === 'write' && kwargs.admit_only === true) {
-      await settle(undefined)
+      await settle(undefined, false)
       return result
     }
     if (result !== null && typeof result === 'object' && Symbol.asyncIterator in result) {
