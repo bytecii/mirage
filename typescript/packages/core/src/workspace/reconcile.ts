@@ -18,7 +18,7 @@ import type { FileCache } from '../cache/file/mixin.ts'
 import { BaseVFS } from '../vfs/base.ts'
 import { callNames, declaredCalls } from '../vfs/call.ts'
 import { Effect, Target } from '../vfs/types.ts'
-import { FileStat, ListingVersion, PathSpec, ReadPolicy } from '../types.ts'
+import { FileStat, FileType, ListingVersion, PathSpec, ReadPolicy } from '../types.ts'
 import { enoent, isEnoent, isEnotdir, isMissingOp } from '../errors/fs.ts'
 import { mountKey } from '../utils/key_prefix.ts'
 import { rstripSlash } from '../utils/slash.ts'
@@ -317,6 +317,44 @@ export class Reconciler {
     ) {
       await this.onMissing(path)
     }
+  }
+
+  // Reconcile one path with what a fresh stat got from the backend (`row`,
+  // null when it reported the path gone), through the mount's cache manager
+  // so a read that began before the answer cannot stamp the cache after it.
+  // A path gone, or a listed folder now a file, is reported gone as a
+  // re-list's vanished child is: its bodies and overlays below go, nested
+  // mounts and links stay, and its listings are dropped. A row that disagrees
+  // with the stored one, or a held copy the fingerprint cannot vouch for, is
+  // invalidated as a write is, keeping the version a conditional write sends.
+  // A vouched copy whose row moved keeps its bytes. The dispatcher runs the
+  // stat and this under the path's writer hold, so no local write to the path
+  // lands between the answer and its reconcile.
+  async onFreshStat(mount: MountEntry, path: string, row: FileStat | null): Promise<void> {
+    const manager = mount.cacheManager
+    if (manager === null) return
+    const stored = (await mount.index.get(path)).entry ?? null
+    const folder = stored?.type === FileType.DIRECTORY || (await mount.index.holdsSubtree(path))
+    if (row === null || (folder && row.type !== FileType.DIRECTORY)) {
+      await mount.index.reportGone([{ path, folder }])
+      await manager.invalidateAfterRemove(path)
+      return
+    }
+    const held = await this.cache.exists(path)
+    const vouched =
+      held && row.fingerprint !== null && (await this.cache.isFresh(path, row.fingerprint))
+    const same =
+      stored !== null &&
+      JSON.stringify(stored.with({ name: row.name, extra: row.extra })) === JSON.stringify(row)
+    if (same && (vouched || !held)) return
+    if (vouched) {
+      await mount.index.invalidateEntry(path)
+      return
+    }
+    const spec = PathSpec.fromStrPath(path)
+    const version = await manager.readVersion(spec)
+    await manager.invalidateAfterWrite(spec)
+    if (version !== null) await manager.keepVersion(spec, version)
   }
 
   async onGone(gone: readonly Evicted[], excluded: readonly string[] = []): Promise<void> {

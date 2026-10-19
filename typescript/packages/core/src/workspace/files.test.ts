@@ -19,9 +19,12 @@ import type { Policy } from '../policy/base.ts'
 import { PolicyDenied, PolicyError } from '../policy/errors.ts'
 import type { Action, VfsContext, VfsResultContext } from '../policy/types.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
+import type { Handed } from '../vfs/types.ts'
+import type { PathSpec } from '../types.ts'
 import { stat as ramStat } from '../core/ram/stat.ts'
 import { DEFAULT_READ_TTL, FileStat, FileType, Limit, MountMode, ReadPolicy } from '../types.ts'
 import { eacces, enoent, enotdir } from '../errors/fs.ts'
+import { CommandTimeoutError } from '../errors/types.ts'
 import { Session, Workspace } from './workspace/workspace.ts'
 
 const DEC = new TextDecoder()
@@ -139,6 +142,458 @@ describe('Files', () => {
     expect(await ws.vfs.exists('/data/gone.txt')).toBe(true)
     await ws.vfs.unlink('/data/gone.txt')
     expect(await ws.vfs.exists('/data/gone.txt')).toBe(false)
+  })
+})
+
+class ListedRAM extends RAMVFS {
+  override readonly indexTtl: number = 600
+}
+
+class HeldRAM extends RAMVFS {
+  override readonly cachesReads = true
+  gate: Promise<void> | null = null
+  reading: () => void = () => undefined
+  readonly started = new Promise<void>((resolve) => {
+    this.reading = resolve
+  })
+
+  override async read(
+    path: PathSpec,
+    handed?: Handed,
+    offset = 0,
+    size: number | null = null,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    const data = await super.read(path, handed, offset, size, signal)
+    if (this.gate !== null) {
+      this.reading()
+      await this.gate
+    }
+    return data
+  }
+}
+
+class LateStatRAM extends RAMVFS {
+  gate: Promise<void> | null = null
+  asked: () => void = () => undefined
+  readonly started = new Promise<void>((resolve) => {
+    this.asked = resolve
+  })
+
+  override async stat(path: PathSpec): Promise<FileStat> {
+    const gate = this.gate
+    this.gate = null
+    try {
+      return await super.stat(path)
+    } finally {
+      if (gate !== null) {
+        this.asked()
+        await gate
+      }
+    }
+  }
+}
+
+class StuckWriteRAM extends RAMVFS {
+  stats = 0
+  release: () => void = () => undefined
+  private readonly stuck = new Promise<void>((resolve) => {
+    this.release = resolve
+  })
+  began: () => void = () => undefined
+  readonly writing = new Promise<void>((resolve) => {
+    this.began = resolve
+  })
+
+  override async write(path: PathSpec, data: Uint8Array, signal?: AbortSignal): Promise<void> {
+    this.began()
+    await this.stuck
+    await super.write(path, data, signal)
+  }
+
+  override stat(path: PathSpec): Promise<FileStat> {
+    this.stats++
+    return super.stat(path)
+  }
+}
+
+describe('fresh stat', () => {
+  it.each([false, true])('sees an externally created file with fresh=%s', async (fresh) => {
+    const vfs = new RAMVFS()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    const other = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.mount('/data').index.setDir('/data', [], new Date(Date.now() + 3_600_000))
+      await other.vfs.write('/data/new.txt', 'created')
+      const row = await ws.vfs.stat('/data/new.txt', undefined, { fresh })
+      expect(row.type).toBe(FileType.FILE)
+      expect(row.size).toBe(7)
+    } finally {
+      await other.close()
+      await ws.close()
+    }
+  })
+
+  it.each([false, true])('reports a directory with fresh=%s', async (fresh) => {
+    const ws = mkWorkspace()
+    try {
+      await ws.vfs.mkdir('/data/dir')
+      expect((await ws.vfs.stat('/data/dir', undefined, { fresh })).type).toBe(FileType.DIRECTORY)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  describe.each([
+    { change: 'replacement', replacement: 'grown\n' },
+    { change: 'deletion', replacement: null },
+  ])('after an external $change', ({ replacement }) => {
+    it.each([undefined, false, true])('fresh=%s', async (fresh) => {
+      const vfs = new RAMVFS()
+      const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+      const other = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+      try {
+        await ws.vfs.write('/data/f.txt', 'old')
+        const listed = await ws.vfs.stat('/data/f.txt')
+        await ws
+          .mount('/data')
+          .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
+        if (replacement === null) await other.vfs.unlink('/data/f.txt')
+        else await other.vfs.write('/data/f.txt', replacement)
+        const result =
+          fresh === undefined
+            ? ws.vfs.stat('/data/f.txt')
+            : ws.vfs.stat('/data/f.txt', undefined, { fresh })
+        if (fresh && replacement === null) {
+          await expect(result).rejects.toMatchObject({ code: 'ENOENT' })
+        } else {
+          const row = await result
+          expect(row.name).toBe('f.txt')
+          expect(row.type).toBe(FileType.FILE)
+          expect(row.size).toBe(fresh ? 6 : 3)
+          expect(row.fingerprint).toBeNull()
+          expect(row.revision).toBeNull()
+        }
+      } finally {
+        await other.close()
+        await ws.close()
+      }
+    })
+  })
+
+  it.each(['grown\n', null])('reconciles the index after replacement %j', async (replacement) => {
+    const vfs = new RAMVFS()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    const other = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
+      if (replacement === null) {
+        await other.vfs.unlink('/data/f.txt')
+        await expect(ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).rejects.toMatchObject({
+          code: 'ENOENT',
+        })
+        await expect(ws.vfs.stat('/data/f.txt')).rejects.toMatchObject({ code: 'ENOENT' })
+        expect(await ws.vfs.readdir('/data')).toEqual([])
+      } else {
+        await other.vfs.write('/data/f.txt', replacement)
+        expect((await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).size).toBe(6)
+        expect((await ws.vfs.stat('/data/f.txt')).size).toBe(6)
+      }
+    } finally {
+      await other.close()
+      await ws.close()
+    }
+  })
+
+  it('drops a cached copy it cannot vouch for', async () => {
+    const vfs = new RAMVFS()
+    ;(vfs as unknown as { cachesReads: boolean }).cachesReads = true
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('old')
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('old')
+      await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      expect(await ws.cache.exists('/data/f.txt')).toBe(false)
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('grown\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('drops a deleted folder listing', async () => {
+    const vfs = new ListedRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.mkdir('/data/d')
+      await ws.vfs.write('/data/d/k', 'k')
+      expect(await ws.vfs.readdir('/data/d')).toEqual(['/data/d/k'])
+      vfs.store.files.delete('/d/k')
+      vfs.store.dirs.delete('/d')
+      await expect(ws.vfs.stat('/data/d', undefined, { fresh: true })).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+      await expect(ws.vfs.readdir('/data/d')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('checks a trailing slash past the index', async () => {
+    const vfs = new ListedRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/x', 'file')
+      await ws.vfs.readdir('/data')
+      vfs.store.files.delete('/x')
+      vfs.store.dirs.add('/x')
+      vfs.store.files.set('/x/c', new TextEncoder().encode('c'))
+      const row = await ws.vfs.stat('/data/x/', undefined, { fresh: true })
+      expect(row.type).toBe(FileType.DIRECTORY)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('replaces a row that differs in mode', async () => {
+    const ws = mkWorkspace()
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir(
+          '/data',
+          [['f.txt', listed.with({ mode: 0o600 })]],
+          new Date(Date.now() + 3_600_000),
+        )
+      expect((await ws.vfs.stat('/data/f.txt')).mode).toBe(0o600)
+      expect((await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).mode).toBeNull()
+      expect((await ws.vfs.stat('/data/f.txt')).mode).toBeNull()
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('keeps the version a conditional write sends', async () => {
+    const ws = new Workspace({ '/data': cachingRam() }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.cache.remove('/data/f.txt')
+      await ws.cache.keepFingerprints({ '/data/f.txt': 'v1' })
+      await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      expect(await ws.cache.fingerprint('/data/f.txt')).toBe('v1')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('retires a read already in flight', async () => {
+    const vfs = new HeldRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.cache.remove('/data/f.txt')
+      let release: () => void = () => undefined
+      vfs.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const reading = ws.vfs.read('/data/f.txt')
+      await vfs.started
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      release()
+      expect(DEC.decode(await reading)).toBe('old')
+      vfs.gate = null
+      expect(DEC.decode(await ws.vfs.read('/data/f.txt'))).toBe('grown\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('makes a write wait for a fresh stat of its path', async () => {
+    const vfs = new LateStatRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.mkdir('/data/d')
+      let release: () => void = () => undefined
+      vfs.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const asking = ws.vfs.stat('/data/d/f.txt', undefined, { fresh: true })
+      asking.catch(() => undefined)
+      await vfs.started
+      let created = false
+      const creating = ws.vfs.write('/data/d/f.txt', 'new').then(() => {
+        created = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(created).toBe(false)
+      release()
+      await expect(asking).rejects.toMatchObject({ code: 'ENOENT' })
+      await creating
+      await ws.vfs.setxattr('/data/d/f.txt', 'user.k', new TextEncoder().encode('v'))
+      expect(DEC.decode(await ws.vfs.getxattr('/data/d/f.txt', 'user.k'))).toBe('v')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('does not skip the reconcile for a write elsewhere', async () => {
+    const vfs = new LateStatRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      let release: () => void = () => undefined
+      vfs.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const asking = ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      await vfs.started
+      await ws.vfs.write('/data/g.txt', 'g')
+      release()
+      expect((await asking).size).toBe(6)
+      expect((await ws.vfs.stat('/data/f.txt')).size).toBe(6)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('spares a nested mount when a folder becomes a file', async () => {
+    const outer = new ListedRAM()
+    Object.assign(outer, { cachesReads: true })
+    const ws = new Workspace(
+      { '/data': outer, '/data/d/inner': new RAMVFS() },
+      { mode: MountMode.WRITE },
+    )
+    try {
+      await ws.vfs.mkdir('/data/d')
+      await ws.vfs.write('/data/d/x', 'x')
+      await ws.vfs.readdir('/data/d')
+      await ws.cache.keepFingerprints({ '/data/d/inner/f.txt': 'v1' })
+      outer.store.files.delete('/d/x')
+      outer.store.dirs.delete('/d')
+      outer.store.files.set('/d', new TextEncoder().encode('file'))
+      const row = await ws.vfs.stat('/data/d', undefined, { fresh: true })
+      expect(row.type).toBe(FileType.FILE)
+      expect(await ws.cache.fingerprint('/data/d/inner/f.txt')).toBe('v1')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('counts a held path against the stat timeout', async () => {
+    const vfs = new StuckWriteRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      ws.mount('/data').commandLimits.set('stat', new Limit({ timeoutSeconds: 0.1 }))
+      const writing = ws.vfs.write('/data/f.txt', 'x')
+      await vfs.writing
+      const before = vfs.stats
+      await expect(ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).rejects.toBeInstanceOf(
+        CommandTimeoutError,
+      )
+      vfs.release()
+      await writing
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(vfs.stats).toBe(before)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('never lets the stat timeout cut a reconcile short', async () => {
+    const ws = new Workspace({ '/data': cachingRam() }, { mode: MountMode.WRITE })
+    try {
+      const mount = ws.mount('/data')
+      mount.commandLimits.set('stat', new Limit({ timeoutSeconds: 0.1 }))
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.cache.set('/data/f.txt', new TextEncoder().encode('old'), { fingerprint: 'v1' })
+      const manager = mount.cacheManager
+      if (manager === null) throw new Error('no cache manager')
+      const keep = manager.keepVersion.bind(manager)
+      manager.keepVersion = async (path, version) => {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        await keep(path, version)
+      }
+      const row = await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      expect(row.size).toBe(3)
+      expect(await ws.cache.fingerprint('/data/f.txt')).toBe('v1')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('follows a link to current metadata', async () => {
+    const vfs = new RAMVFS()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.vfs.symlink('/data/link', 'f.txt')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      expect((await ws.vfs.stat('/data/link')).size).toBe(3)
+      const row = await ws.vfs.stat('/data/link', undefined, { fresh: true })
+      expect(row.type).toBe(FileType.FILE)
+      expect(row.size).toBe(6)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it.each(['named', 'bound', 'active'])('preserves %s session visibility', async (binding) => {
+    const ws = mkWorkspace()
+    try {
+      await ws.vfs.write('/data/secret.txt', 'classified')
+      const blind = ws.createSession('blind', {
+        permissions: { paths: { hide: ['/data/secret.txt'] } },
+      })
+      ws.createSession('seeing', { permissions: {} })
+      let result: Promise<FileStat>
+      if (binding === 'named') {
+        result = ws.vfs.stat('/data/secret.txt', 'blind', { fresh: true })
+      } else if (binding === 'bound') {
+        result = new Session(ws, 'blind').vfs.stat('/data/secret.txt', undefined, { fresh: true })
+      } else {
+        result = runWithSession(blind, () =>
+          ws.vfs.stat('/data/secret.txt', 'seeing', { fresh: true }),
+        )
+      }
+      await expect(result).rejects.toMatchObject({ code: 'ENOENT' })
+      expect((await ws.vfs.stat('/data/secret.txt', undefined, { fresh: true })).size).toBe(10)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('preserves policy refusal', async () => {
+    const ws = mkWorkspace()
+    try {
+      await ws.vfs.write('/data/f.txt', 'body')
+      ws.policies.add({
+        preVfs(): Action {
+          return { kind: 'deny', reason: 'sealed' }
+        },
+      })
+      await expect(ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).rejects.toBeInstanceOf(
+        PolicyDenied,
+      )
+    } finally {
+      await ws.close()
+    }
   })
 })
 
@@ -713,14 +1168,19 @@ describe('Files rename is bounded by the mount', () => {
 })
 
 describe('Files.stat', () => {
-  it('reports a dangling link itself under nofollow', async () => {
-    const ws = mkWorkspace()
-    await ws.vfs.mkdir('/data/dir')
-    await ws.vfs.symlink('/data/dir/ghost', 'missing.txt')
-    await expect(ws.vfs.stat('/data/dir/ghost')).rejects.toMatchObject({ code: 'ENOENT' })
-    const row = await ws.vfs.stat('/data/dir/ghost', undefined, { nofollow: true })
-    expect(row.type).toBe(FileType.SYMLINK)
-  })
+  it.each([false, true])(
+    'reports a dangling link itself under nofollow with fresh=%s',
+    async (fresh) => {
+      const ws = mkWorkspace()
+      await ws.vfs.mkdir('/data/dir')
+      await ws.vfs.symlink('/data/dir/ghost', 'missing.txt')
+      await expect(ws.vfs.stat('/data/dir/ghost', undefined, { fresh })).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+      const row = await ws.vfs.stat('/data/dir/ghost', undefined, { nofollow: true, fresh })
+      expect(row.type).toBe(FileType.SYMLINK)
+    },
+  )
 })
 
 describe('Files.setattr', () => {

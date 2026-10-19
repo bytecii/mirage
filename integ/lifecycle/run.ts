@@ -91,13 +91,16 @@ interface Case {
 
 type Step = (
   | ({ op: 'mount'; path: string; mode?: MountMode } & ResourceConfig)
-  | { op: 'unmount' | 'read' | 'readdir' | 'stat' | 'cached' | 'stream_stats'; path: string }
+  | { op: 'unmount' | 'read' | 'readdir' | 'cached' | 'stream_stats'; path: string }
+  | { op: 'stat'; path: string; fresh?: boolean }
+  | { op: 'change'; mount: string; path: string; data?: string }
   | { op: 'write'; path: string; data: string }
   | {
       op: 'exec'
       command: string
       session?: string
       cancel_after_ms?: number
+      cancel_on_stall?: string
       sink_delay_ms?: number
       env?: Record<string, string>
       cwd?: string
@@ -250,15 +253,28 @@ const HOSTS: Host[] = [
 ]
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
+const STALL_DEADLINE_MS = 10_000
 
 class CachedRAMVFS extends RAMVFS {
   override readonly cachesReads = true
+}
+
+/** A local fixture keeping listings, changed behind them like a shared backend. */
+class ListedRAMVFS extends RAMVFS {
+  override readonly indexTtl: number = 600
+
+  /** Replace or remove a file without telling any workspace; no data removes it. */
+  change(key: string, data: string | undefined): void {
+    if (data === undefined) this.store.files.delete(key)
+    else this.store.files.set(key, ENC.encode(data))
+  }
 }
 
 /** A chunked source whose pull and close counts are shared corpus assertions. */
 class TrackedStreamVFS extends CachedRAMVFS {
   pulls = 0
   closed = 0
+  onStall: (() => void) | undefined
 
   constructor(
     private readonly chunkSize: number,
@@ -279,6 +295,7 @@ class TrackedStreamVFS extends CachedRAMVFS {
       for (let offset = 0; offset < data.byteLength; offset += this.chunkSize) {
         this.pulls++
         if (this.stallAfter !== undefined && offset / this.chunkSize >= this.stallAfter) {
+          if (this.onStall !== undefined) queueMicrotask(this.onStall)
           await sleep(Infinity, signal)
         }
         if (this.failAfter !== undefined && offset / this.chunkSize >= this.failAfter) {
@@ -353,6 +370,7 @@ for (const register of [registerNodeVfs, registerBrowserVfs]) {
     })
     return Promise.resolve(vfs)
   })
+  register('listed-ram', () => Promise.resolve(new ListedRAMVFS()))
   register('cached-ram', (config) => {
     const vfs = new CachedRAMVFS()
     const files = (config.files ?? {}) as Record<string, string>
@@ -452,6 +470,12 @@ async function action(
       if (!(vfs instanceof TrackedStreamVFS)) throw new Error('expected tracked stream')
       return { pulls: vfs.pulls, closed: vfs.closed }
     }
+    case 'change': {
+      const vfs = ws.mount(step.mount).vfs
+      if (!(vfs instanceof ListedRAMVFS)) throw new Error('change requires a listed-ram mount')
+      vfs.change(step.path, step.data)
+      return null
+    }
     case 'cached': {
       const value = await ws.cache.get(step.path)
       return value === null ? null : DEC.decode(value)
@@ -542,7 +566,7 @@ async function action(
     case 'readdir':
       return (await ws.vfs.readdir(step.path)).sort()
     case 'stat': {
-      const row = await ws.vfs.stat(step.path)
+      const row = await ws.vfs.stat(step.path, undefined, { fresh: step.fresh === true })
       return { type: row.type, size: row.size }
     }
     case 'drain_processes':
@@ -618,10 +642,22 @@ async function action(
     }
     case 'exec': {
       const abort = new AbortController()
+      const stalled =
+        step.cancel_on_stall === undefined ? undefined : ws.mount(step.cancel_on_stall).vfs
+      if (stalled !== undefined && !(stalled instanceof TrackedStreamVFS)) {
+        throw new Error('cancel_on_stall requires a tracked-stream mount')
+      }
+      if (stalled !== undefined) stalled.onStall = () => abort.abort()
+      let gaveUp = false
       const timer =
-        step.cancel_after_ms === undefined
-          ? undefined
-          : setTimeout(() => abort.abort(), step.cancel_after_ms)
+        step.cancel_after_ms !== undefined
+          ? setTimeout(() => abort.abort(), step.cancel_after_ms)
+          : stalled !== undefined
+            ? setTimeout(() => {
+                gaveUp = true
+                abort.abort()
+              }, STALL_DEADLINE_MS)
+            : undefined
       const sink = step.sink_delay_ms === undefined ? undefined : new SlowSink(step.sink_delay_ms)
       let result
       try {
@@ -633,10 +669,17 @@ async function action(
           signal: abort.signal,
         })
       } catch (error) {
-        if (abort.signal.aborted && error instanceof Error && error.name === 'AbortError')
+        if (abort.signal.aborted && error instanceof Error && error.name === 'AbortError') {
+          if (gaveUp) {
+            throw new Error(
+              `${String(step.cancel_on_stall)} did not stall within ${String(STALL_DEADLINE_MS / 1000)}s`,
+            )
+          }
           return { aborted: true }
+        }
         throw error
       } finally {
+        if (stalled !== undefined) stalled.onStall = undefined
         clearTimeout(timer)
       }
       return {

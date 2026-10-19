@@ -35,6 +35,7 @@ from mirage.cache.file import io as cache_io
 from mirage.cache.index.ram import ListingCheckStore
 from mirage.cache.lock import KeyLock
 from mirage.cache.manager import CacheManager
+from mirage.commands.builtin.utils.limit import run_with_timeout
 from mirage.commands.builtin.utils.paths import (
     dot_refusal,
     hidden_walk,
@@ -670,7 +671,9 @@ class _Call:
             served from it nor kept in it.
         fresh (bool): whether a stat asks the backend past the mount's
             index, through a throwaway store as a ``read: fresh`` probe
-            does, with the index's rows only as hints.
+            does, with the index's rows only as hints, and reconciles the
+            index and file cache with the answer; it runs under its path's
+            writer hold, so no write to the path lands between the two.
         walked (PathSpec | None): the path before a link at its final
             name was followed, the one a listing's names are spelled
             under; None when nothing was followed.
@@ -947,7 +950,9 @@ class Dispatcher:
             m.vfs.supports(name) for m in self._namespace.registry.mounts()
         ):
             return None, IOResult()
-        call = await self._walk(name, path, kwargs, rule_gate, report, caller)
+        call = await self._walk(
+            name, path, kwargs, rule_gate, report, caller, fresh
+        )
         call.stream = stream
         call.direct = direct
         call.fresh = fresh
@@ -1056,7 +1061,11 @@ class Dispatcher:
             or (call.write and name not in POLICY_WRITE_OPS)
         ) and name not in SERIAL_WRITE_OPS
         try:
-            ran = await self._call(call, mount, self._filler(call, mount))
+            ran = await (
+                self._fresh_call(call, mount)
+                if call.fresh
+                else self._call(call, mount, self._filler(call, mount))
+            )
         except BaseException:
             if settles:
                 await self._evict_failed_write(mount, name, call.path, kwargs)
@@ -1298,6 +1307,7 @@ class Dispatcher:
         rule_gate: EntryGate | None,
         report: OpReport | None,
         caller: Caller,
+        fresh: bool = False,
     ) -> _Call:
         """Walk the op's path, as the kernel does before a call sees it.
 
@@ -1322,6 +1332,8 @@ class Dispatcher:
             rule_gate (EntryGate | None): the running command's gate.
             report (OpReport | None): the caller's report.
             caller (Caller): who makes the op.
+            fresh (bool): whether the names the walk checks are asked of
+                the backend past the mount's index, as a fresh stat asks.
         """
         vis = caller.visibility
         links = self._namespace.symlink_targets()
@@ -1361,7 +1373,7 @@ class Dispatcher:
         refusal = hidden_walk(path, follow, visible)
         if refusal is None and isinstance(dst, PathSpec):
             refusal = hidden_walk(dst, follow, visible)
-        stat = functools.partial(self._walk_stat, caller)
+        stat = functools.partial(self._walk_stat, caller, fresh=fresh)
         if refusal is None:
             refusal = await dot_refusal(
                 stat, path, follow, name in ENTRY_CREATE_OPS
@@ -1895,6 +1907,10 @@ class Dispatcher:
                         **kwargs,
                     )
                 )
+                if call.fresh:
+                    await self._reconciler.on_fresh_stat(
+                        mount, call.path.virtual, result
+                    )
                 if call.name == "stat":
                     result = await _sized(mount, call.path, result)
         except (FileNotFoundError, NotADirectoryError):
@@ -1902,9 +1918,14 @@ class Dispatcher:
                 call.name, call.path.virtual, call.vis
             )
             if result is None:
-                await self._reconciler.on_enoent(
-                    mount, call.name, call.path.virtual
-                )
+                if call.fresh:
+                    await self._reconciler.on_fresh_stat(
+                        mount, call.path.virtual, None
+                    )
+                else:
+                    await self._reconciler.on_enoent(
+                        mount, call.name, call.path.virtual
+                    )
                 raise
             _memory_answered(call.report)
         except OSError as exc:
@@ -1927,6 +1948,30 @@ class Dispatcher:
         finally:
             scope.close()
         return result
+
+    async def _fresh_call(self, call: _Call, mount: MountEntry) -> Any:
+        """Run a fresh stat under its path's writer hold.
+
+        No local write to the path lands between the backend's answer and
+        its reconcile. The wait for the hold is bounded by the stat's own
+        timeout, since a write the clock gave up on may still hold the
+        path; once admitted, the backend call keeps its own timeout and
+        the reconcile runs to its end under the hold, so a deadline never
+        stops it between dropping a version and keeping it.
+
+        Args:
+            call (_Call): the admitted fresh stat.
+            mount (MountEntry): the mount serving its path.
+        """
+        prefix = mount.prefix.rstrip("/")
+        key = f"{id(mount.vfs)}:{mount_key(call.path.virtual, prefix)}"
+        async with AsyncExitStack() as held:
+            await run_with_timeout(
+                held.enter_async_context(self._writers.with_lock(key)),
+                mount.op_timeout("stat"),
+                "stat",
+            )
+            return await self._call(call, mount, self._filler(call, mount))
 
     async def _visible_files(
         self, mount: MountEntry, call: _Call
@@ -2704,7 +2749,9 @@ class Dispatcher:
             raise refusal
         await self._namespace.purge_under(path.virtual)
 
-    async def _walk_stat(self, caller: Caller, path: PathSpec) -> FileStat:
+    async def _walk_stat(
+        self, caller: Caller, path: PathSpec, fresh: bool = False
+    ) -> FileStat:
         """The dispatcher's own stat in the shape a chain walk reads.
 
         Raises when nothing is there, so a dot walk judges a name
@@ -2714,8 +2761,9 @@ class Dispatcher:
         Args:
             caller (Caller): who walks.
             path (PathSpec): the path to stat.
+            fresh (bool): ask the backend past the mount's index.
         """
-        row, _ = await self.dispatch("stat", path, caller=caller)
+        row, _ = await self.dispatch("stat", path, caller=caller, fresh=fresh)
         if row is None:
             raise enoent(path)
         return row

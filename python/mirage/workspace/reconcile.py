@@ -21,7 +21,13 @@ from mirage.cache.index.config import Evicted
 from mirage.cache.index.ram import ListingCheckStore
 from mirage.errors.fs import enoent
 from mirage.errors.types import OperationNotSupportedError
-from mirage.types import FileStat, ListingVersion, PathSpec, ReadPolicy
+from mirage.types import (
+    FileStat,
+    FileType,
+    ListingVersion,
+    PathSpec,
+    ReadPolicy,
+)
 from mirage.utils.path import ancestors
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.call import call_names, declared_calls
@@ -368,6 +374,64 @@ class Reconciler:
         """
         if mount.read.policy is ReadPolicy.FRESH and name in _REVALIDATE_OPS:
             await self.on_missing(path)
+
+    async def on_fresh_stat(
+        self, mount: MountEntry, path: str, row: FileStat | None
+    ) -> None:
+        """Reconcile one path with what a fresh stat got from the backend.
+
+        Through the mount's cache manager, so a read that began before the
+        answer cannot stamp the cache after it. A path gone, or a listed
+        folder now a file, is reported gone as a re-list's vanished child
+        is: its bodies and overlays below go, nested mounts and links stay,
+        and its listings are dropped. A row that disagrees with the stored
+        one, or a held copy the fingerprint cannot vouch for, is
+        invalidated as a write is, keeping the version a conditional write
+        sends. A vouched copy whose row moved keeps its bytes. The
+        dispatcher runs the stat and this under the path's writer hold, so
+        no local write to the path lands between the answer and its
+        reconcile.
+
+        Args:
+            mount (MountEntry): the mount that answered.
+            path (str): absolute virtual path the stat asked about.
+            row (FileStat | None): the backend's answer, None when it
+                reported the path gone.
+        """
+        manager = mount.cache_manager
+        if manager is None:
+            return
+        spec = PathSpec.from_str_path(path)
+        stored = (await mount.index.get(path)).entry
+        folder = (
+            stored is not None and stored.type is FileType.DIRECTORY
+        ) or await mount.index.holds_subtree(path)
+        if row is None or (folder and row.type is not FileType.DIRECTORY):
+            await mount.index.report_gone([Evicted(path, folder=folder)])
+            await manager.invalidate_after_remove(spec)
+            return
+        held = await self._cache.exists(path)
+        vouched = (
+            held
+            and row.fingerprint is not None
+            and await self._cache.is_fresh(path, row.fingerprint)
+        )
+        same = (
+            stored is not None
+            and stored.model_copy(
+                update={"name": row.name, "extra": row.extra}
+            )
+            == row
+        )
+        if same and (vouched or not held):
+            return
+        if vouched:
+            await mount.index.invalidate_entry(path)
+            return
+        version = await manager.read_version(spec)
+        await manager.invalidate_after_write(spec)
+        if version is not None:
+            await manager.keep_version(spec, version)
 
     async def on_gone(
         self, gone: list[Evicted], excluded: tuple[str, ...] = ()

@@ -15,6 +15,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { materialize } from '../io/types.ts'
+import { YIELD_INTERVAL } from '../io/yield_budget.ts'
 import { yieldBytes } from '../io/stream.ts'
 import { GZIP_CHUNK_SIZE, crc32, gunzipStream, gzip, gzipCompressStream } from './compress.ts'
 import { GzipDataError } from './compress.ts'
@@ -23,8 +24,13 @@ const ENC = new TextEncoder()
 const DEC = new TextDecoder()
 
 it('yields while draining expanded output and closes an interrupted source', async () => {
-  const size = 32 * 1024 * 1024
+  const size = GZIP_CHUNK_SIZE * 20
   const archive = await gzip(new Uint8Array(size).fill(120))
+  let now = 0
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+    now += YIELD_INTERVAL + 1
+    return now
+  })
   let closed = false
   const controller = new AbortController()
   let written = 0
@@ -35,12 +41,13 @@ it('yields while draining expanded output and closes an interrupted source', asy
       closed = true
     }
   }
-  const timer = setTimeout(() => {
-    controller.abort()
-  }, 1)
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
     for await (const data of gunzipStream(source())) {
       written += data.byteLength
+      timer ??= setTimeout(() => {
+        controller.abort()
+      }, 0)
       if (controller.signal.aborted) break
     }
     expect(written).toBeGreaterThan(0)
@@ -48,6 +55,7 @@ it('yields while draining expanded output and closes an interrupted source', asy
     expect(closed).toBe(true)
   } finally {
     clearTimeout(timer)
+    clock.mockRestore()
   }
 })
 // gzip -n of "hello\n": a fixed ten-byte header, the deflate body, trailer.

@@ -22,6 +22,7 @@ import asyncio
 import errno
 import json
 import sys
+from collections.abc import Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,7 @@ from mirage.workspace import Session, Workspace
 from mirage.workspace.snapshot import apply_state_dict, to_state_dict
 
 SUITE = Path(__file__).with_name("cases.json")
+STALL_DEADLINE = 10.0
 
 
 class CachedRAMVFS(RAMVFS):
@@ -88,6 +90,27 @@ class CachedRAMVFS(RAMVFS):
 
 
 register_vfs("cached-ram", CachedRAMVFS)
+
+
+class ListedRAMVFS(RAMVFS):
+    """A local fixture keeping listings, changed behind them like a shared backend."""
+
+    index_ttl = 600
+
+    def change(self, key: str, data: bytes | None) -> None:
+        """Replace or remove a file without telling any workspace.
+
+        Args:
+            key (str): the mount-relative path.
+            data (bytes | None): the new bytes, None to remove the file.
+        """
+        if data is None:
+            self._store.files.pop(key, None)
+        else:
+            self._store.files[key] = data
+
+
+register_vfs("listed-ram", ListedRAMVFS)
 
 
 class TrackedStreamVFS(CachedRAMVFS):
@@ -111,6 +134,7 @@ class TrackedStreamVFS(CachedRAMVFS):
         self.stall_after = stall_after
         self.pulls = 0
         self.closed = 0
+        self.on_stall: Callable[[], None] | None = None
 
     async def read_stream(self, path: PathSpec):
         data = await super().read(path)
@@ -121,6 +145,8 @@ class TrackedStreamVFS(CachedRAMVFS):
                     self.stall_after is not None
                     and offset // self.chunk_size >= self.stall_after
                 ):
+                    if self.on_stall is not None:
+                        asyncio.get_running_loop().call_soon(self.on_stall)
                     await asyncio.Event().wait()
                 if (
                     self.fail_after is not None
@@ -333,6 +359,12 @@ async def action(
         vfs = ws.mount(step["path"]).vfs
         assert isinstance(vfs, TrackedStreamVFS)
         return {"pulls": vfs.pulls, "closed": vfs.closed}
+    if op == "change":
+        vfs = ws.mount(step["mount"]).vfs
+        assert isinstance(vfs, ListedRAMVFS)
+        data = step.get("data")
+        vfs.change(step["path"], None if data is None else data.encode())
+        return None
     if op == "cached":
         value = await ws.cache.get(step["path"])
         return value.decode() if value is not None else None
@@ -426,7 +458,7 @@ async def action(
     elif op == "readdir":
         return sorted(await ws.vfs.readdir(step["path"]))
     elif op == "stat":
-        row = await ws.vfs.stat(step["path"])
+        row = await ws.vfs.stat(step["path"], fresh=step.get("fresh", False))
         return {"type": row.type.value, "size": row.size}
     elif op == "drain_processes":
         await ws.processes.drain()
@@ -492,19 +524,38 @@ async def action(
             **value,
         }
     elif op == "exec":
-        cancel = asyncio.Event() if "cancel_after_ms" in step else None
+        cancel = (
+            asyncio.Event()
+            if "cancel_after_ms" in step or "cancel_on_stall" in step
+            else None
+        )
+        stalled: TrackedStreamVFS | None = None
+        if "cancel_on_stall" in step:
+            vfs = ws.mount(step["cancel_on_stall"]).vfs
+            assert isinstance(vfs, TrackedStreamVFS)
+            assert cancel is not None
+            stalled = vfs
+            stalled.on_stall = cancel.set
         sink = (
             SlowSink(step["sink_delay_ms"] / 1000)
             if "sink_delay_ms" in step
             else None
         )
-        timer = (
-            asyncio.get_running_loop().call_later(
-                step["cancel_after_ms"] / 1000, cancel.set
-            )
-            if cancel is not None
-            else None
-        )
+        gave_up = asyncio.Event()
+
+        def give_up() -> None:
+            assert cancel is not None
+            gave_up.set()
+            cancel.set()
+
+        loop = asyncio.get_running_loop()
+        if "cancel_after_ms" in step:
+            assert cancel is not None
+            timer = loop.call_later(step["cancel_after_ms"] / 1000, cancel.set)
+        elif stalled is not None:
+            timer = loop.call_later(STALL_DEADLINE, give_up)
+        else:
+            timer = None
         try:
             result = await ws.shell(
                 step["command"],
@@ -515,8 +566,15 @@ async def action(
                 sink=sink,
             )
         except MirageAbortError:
+            if gave_up.is_set():
+                raise AssertionError(
+                    f"{step['cancel_on_stall']} did not stall within "
+                    f"{STALL_DEADLINE:g}s"
+                ) from None
             return {"aborted": True}
         finally:
+            if stalled is not None:
+                stalled.on_stall = None
             if timer is not None:
                 timer.cancel()
         value = {

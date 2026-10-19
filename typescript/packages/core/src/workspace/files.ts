@@ -656,13 +656,18 @@ export class Files {
   /**
    * One path's row. `nofollow` reports a trailing symlink itself rather
    * than its target (lstat), so a dangling link is a name that is there.
+   * `fresh` asks the backend past the mount's listing index and reconciles
+   * the index and file cache with its answer.
    */
   async stat(
     path: string | PathSpec,
     sessionId?: string,
-    opts: { nofollow?: boolean } = {},
+    opts: { nofollow?: boolean; fresh?: boolean } = {},
   ): Promise<FileStat> {
-    const kwargs = opts.nofollow === true ? { nofollow: true } : {}
+    const kwargs = {
+      ...(opts.nofollow === true ? { nofollow: true } : {}),
+      ...(opts.fresh === true ? { fresh: true } : {}),
+    }
     return (await this.through('stat', path, [], kwargs, sessionId)) as FileStat
   }
 

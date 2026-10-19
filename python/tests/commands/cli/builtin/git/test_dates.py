@@ -477,10 +477,11 @@ def test_a_padded_epoch_reads_a_named_host_zone_as_tzdata(monkeypatch):
     named = parse_date_mode(
         "format:%12s", date_clock({"TZ": "America/New_York"})
     )
+    zone = dates._session_zone(host)
+    assert isinstance(zone, ZoneInfo) and zone.key == "America/New_York"
+    monkeypatch.delitem(dates.STRETCHES, zone, raising=False)
     stamps = [1420070400 + i * 315619 for i in range(1000)]
     assert [show_date(stamp, 0, host) for stamp in stamps] == [
         show_date(stamp, 0, named) for stamp in stamps
     ]
-    zone = dates._session_zone(host)
-    assert isinstance(zone, ZoneInfo) and zone.key == "America/New_York"
     assert len(dates.STRETCHES[zone]) == 10

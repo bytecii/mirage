@@ -305,12 +305,24 @@ The file API, run as the session. Paths are absolute, bytes are `bytes`. A missi
 | --- | --- |
 | `read(path, offset=0, size=None)` | The bytes, whole or a range. |
 | `write(path, data)`, `append(path, data)` | `None` |
-| `stat(path, nofollow=False)` | A `FileStat`. |
+| `stat(path, nofollow=False, fresh=False)` | A `FileStat`. |
 | `readdir(path)` | The full path of each entry. |
 | `exists(path)` | `True` or `False`. |
 | `mkdir(path)`, `rmdir(path)`, `unlink(path)` | `None` |
 | `rename(src, dst)` | `None` |
 | `truncate(path, length)` | `None` |
+
+`stat` can reuse metadata from the mount's listing index. Set `fresh=True` to
+ask the backend past that index, for example after another client replaces or
+deletes a file. Later calls see the answer too: a changed or deleted file
+leaves the index, and a cached copy the backend cannot vouch for is dropped.
+Namespace attributes still apply. The result remains a `FileStat`, with `None`
+for backend version fields the backend does not provide. `nofollow=True` still reports a trailing symlink
+itself. Session visibility and access rules apply to both modes.
+
+```python
+current = await session.vfs.stat("/s3/report.csv", fresh=True)
+```
 
 <Expandable title="FileStat">
   <ResponseField name="name" type="str" />

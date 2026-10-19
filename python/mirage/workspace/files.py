@@ -629,6 +629,7 @@ class Files:
         path: str | PathSpec,
         *,
         nofollow: bool = False,
+        fresh: bool = False,
         session_id: str | None = None,
     ) -> FileStat:
         """One path's row.
@@ -638,11 +639,16 @@ class Files:
             nofollow (bool): Report a trailing symlink itself rather
                 than its target (lstat), which is how an exclusive open
                 learns a dangling link is a name that is there.
+            fresh (bool): Ask the backend past the mount's listing index
+                and reconcile the index and file cache with its answer.
             session_id (str | None): Session to run as outside a line.
         """
+        options = {}
         if nofollow:
-            return await self._call("stat", path, session_id, nofollow=True)
-        return await self._call("stat", path, session_id)
+            options["nofollow"] = True
+        if fresh:
+            options["fresh"] = True
+        return await self._call("stat", path, session_id, **options)
 
     async def readdir(
         self, path: str | PathSpec, *, session_id: str | None = None

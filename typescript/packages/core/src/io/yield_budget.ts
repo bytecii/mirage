@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-const YIELD_INTERVAL_MS = 10
+export const YIELD_INTERVAL = 10
 
 /**
  * A per-consumer time budget between opportunities for timers and
@@ -19,7 +19,7 @@ const YIELD_INTERVAL_MS = 10
  * carry.
  */
 export class YieldBudget {
-  private nextYield = performance.now() + YIELD_INTERVAL_MS
+  private nextYield = performance.now() + YIELD_INTERVAL
 
   constructor(
     private readonly signal?: AbortSignal,
@@ -36,7 +36,7 @@ export class YieldBudget {
   private async yield(): Promise<void> {
     // A task-queue turn, not Promise.resolve()'s microtask continuation.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    this.nextYield = performance.now() + YIELD_INTERVAL_MS
+    this.nextYield = performance.now() + YIELD_INTERVAL
     this.signal?.throwIfAborted()
     this.check?.()
   }

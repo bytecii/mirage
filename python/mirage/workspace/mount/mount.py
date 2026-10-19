@@ -2349,7 +2349,7 @@ class MountEntry:
             scope = self._scope(path)
             kwargs.setdefault("index", self.index)
             index = kwargs["index"]
-            op_timeout = self._op_timeout(name)
+            op_timeout = self.op_timeout(name)
             token = bind_caller(
                 dataclasses.replace(
                     self._on_mount(current_caller()),
@@ -2452,7 +2452,7 @@ class MountEntry:
             vfs_path=mount_key(virtual, prefix),
         )
 
-    def _op_timeout(self, name: str) -> float | None:
+    def op_timeout(self, name: str) -> float | None:
         """The op entry's timeout for ``name``, None for none.
 
         A file call is never cut: only the op entry's timeout applies,
@@ -2516,7 +2516,7 @@ class MountEntry:
                         self.vfs.copy_from(
                             source.vfs, source._scope(src), self._scope(dst)
                         ),
-                        self._op_timeout("copy"),
+                        self.op_timeout("copy"),
                         "copy",
                     )
             finally:
@@ -2548,7 +2548,7 @@ class MountEntry:
                         self.vfs.search_many(
                             [self._scope(p) for p in paths], query
                         ),
-                        self._op_timeout("search"),
+                        self.op_timeout("search"),
                         "search",
                     )
             finally:
@@ -2581,7 +2581,7 @@ class MountEntry:
                         self._read_many(
                             [self._scope(p) for p in paths], limit
                         ),
-                        self._op_timeout("read"),
+                        self.op_timeout("read"),
                         "read",
                     )
             finally:

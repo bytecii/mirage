@@ -51,7 +51,7 @@ import {
   noXattr,
   walkRefusal,
 } from '../../errors/fs.ts'
-import { type FsError } from '../../errors/types.ts'
+import { CommandTimeoutError, type FsError } from '../../errors/types.ts'
 import { Policies, PolicyDenied } from '../../policy/index.ts'
 import type { Decisions } from '../../policy/decisions.ts'
 import { Boundary } from '../../policy/boundary.ts'
@@ -479,7 +479,9 @@ interface Call {
   /**
    * Whether a stat asks the backend past the mount's index, through a
    * throwaway store as a `read: fresh` probe does, with the index's rows only
-   * as hints.
+   * as hints, and reconciles the index and file cache with the answer; it
+   * runs under its path's writer hold, so no write to the path lands between
+   * the two.
    */
   fresh: boolean
   /**
@@ -767,7 +769,16 @@ export class Dispatcher {
       (METADATA_OPS.has(name) && !admitOnly) || name === 'before_full_scan'
         ? null
         : (this.caller?.ruleGate ?? null)
-    const call = await this.walk(name, path, args, kwargs, gate, report, issuer)
+    const call = await this.walk(
+      name,
+      path,
+      args,
+      kwargs,
+      gate,
+      report,
+      issuer,
+      name === 'stat' && fresh === true,
+    )
     call.stream = name === 'read' && stream === true
     call.direct = name === 'read' && direct === true
     call.fresh = name === 'stat' && fresh === true
@@ -897,7 +908,9 @@ export class Dispatcher {
       !SERIAL_WRITE_OPS.has(name)
     let ran: Awaited<ReturnType<typeof this.callBackend>>
     try {
-      ran = await this.callBackend(call, mount, vfs, scope, mode)
+      ran = call.fresh
+        ? await this.freshCall(call, mount, vfs, scope, mode)
+        : await this.callBackend(call, mount, vfs, scope, mode)
     } catch (err) {
       if (settles) {
         await this.evictFailedWrite(
@@ -1158,6 +1171,7 @@ export class Dispatcher {
     ruleGate: EntryGate | null,
     report: OpReport | undefined,
     issuer: symbol | undefined,
+    fresh = false,
   ): Promise<Call> {
     const vis = sessionVisibility(this.access)
     const links = this.namespace.symlinkTargets()
@@ -1196,7 +1210,11 @@ export class Dispatcher {
     if (FILE_CREATE_OPS.has(name) && path.dotted?.endsWith('/') === true) throw eisdir(path)
     const renamed = dstArg instanceof PathSpec ? dstArg : null
     if (path.dotted !== null || (renamed !== null && renamed.dotted !== null)) {
-      const walkStat = dispatchStat(this.dispatch)
+      const walkStat = dispatchStat(
+        fresh
+          ? (op, p, a, k, r) => this.dispatch(op, p, a, { ...k, fresh: true }, r)
+          : this.dispatch,
+      )
       const follow = (virtual: string): string => this.namespace.follow(virtual)
       const visible = (virtual: string): boolean => pathVisible(vis, virtual)
       const refusal =
@@ -1686,6 +1704,51 @@ export class Dispatcher {
   }
 
   /**
+   * Run a fresh stat under its path's writer hold, so no local write to the
+   * path lands between the backend's answer and its reconcile. The wait for
+   * the hold is bounded by the stat's own timeout, since a write the clock
+   * gave up on keeps the path until its call settles; a waiter past it leaves
+   * the queue rather than running late. Once admitted, the backend call keeps
+   * its own timeout and the reconcile runs to its end under the hold. Mirrors
+   * Python's Dispatcher._fresh_call.
+   */
+  private async freshCall(
+    call: Call,
+    mount: MountEntry,
+    vfs: BaseVFS,
+    scope: PathSpec,
+    mode: MountMode,
+  ): Promise<[unknown, PathSpec | null, readonly unknown[]]> {
+    const key = `${String(this.storeId(vfs))}:${mountKey(call.path.virtual, rstripSlash(mount.prefix))}`
+    const seconds = mount.opTimeout('stat')
+    const expired = new AbortController()
+    let admitted = false
+    const timer =
+      seconds !== null && seconds > 0
+        ? setTimeout(() => {
+            if (!admitted) expired.abort()
+          }, seconds * 1000)
+        : undefined
+    try {
+      return await this.state.writers.withLock(
+        key,
+        () => {
+          admitted = true
+          return this.callBackend(call, mount, vfs, scope, mode)
+        },
+        expired.signal,
+      )
+    } catch (err) {
+      if (expired.signal.aborted && seconds !== null) {
+        throw new CommandTimeoutError('stat', seconds)
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
    * Run the op on its mount and stamp what it moved.
    *
    * Returns the op's answer with the rename destination and the arguments
@@ -1857,6 +1920,13 @@ export class Dispatcher {
       } else {
         const answered = probed(call, mount)
         result = answered ?? (await run(fullKwargs))
+        if (call.fresh) {
+          await this.reconciler.onFreshStat(
+            mount,
+            p.virtual,
+            result instanceof FileStat ? result : null,
+          )
+        }
         if (name === 'stat') result = await sized(mount, p, result)
       }
     } catch (err) {
@@ -1868,7 +1938,11 @@ export class Dispatcher {
         const fallback =
           isMissingPath(err) || isEnotdir(err) ? this.namespaceResult(name, p.virtual) : null
         if (fallback === null) {
-          await this.reconciler.onEnoent(mount, name, p.virtual, err)
+          if (call.fresh && (isMissingPath(err) || isEnotdir(err))) {
+            await this.reconciler.onFreshStat(mount, p.virtual, null)
+          } else {
+            await this.reconciler.onEnoent(mount, name, p.virtual, err)
+          }
           throw err
         }
         result = fallback

@@ -789,9 +789,9 @@ export class CacheManager {
 
   private async dropBelow(key: string): Promise<void> {
     if (this.cachesReads && this.fileCache !== null) {
-      await this.fileCache.evictPrefix(rstripSlash(key) + '/')
+      await this.fileCache.evictPrefix(rstripSlash(key) + '/', this.excludedPrefixes())
     }
-    if (this.index !== null) await this.index.invalidatePrefix(key)
+    if (this.index !== null) await this.index.invalidatePrefix(key, this.excludedPrefixes())
   }
 
   private async invalidateParent(key: string): Promise<void> {

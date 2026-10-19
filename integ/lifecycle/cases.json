@@ -4938,7 +4938,7 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
@@ -4948,7 +4948,7 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
@@ -4958,7 +4958,7 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
@@ -4968,12 +4968,12 @@
               "aborted": true
             }
           },
-          "cancel_after_ms": 100
+          "cancel_on_stall": "/data"
         },
         {
           "op": "exec",
           "command": "sed 's/first/yes/' /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -4983,7 +4983,7 @@
         {
           "op": "exec",
           "command": "fold /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -4993,7 +4993,7 @@
         {
           "op": "exec",
           "command": "expand /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5003,7 +5003,7 @@
         {
           "op": "exec",
           "command": "unexpand /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5013,7 +5013,7 @@
         {
           "op": "exec",
           "command": "strings /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5023,7 +5023,7 @@
         {
           "op": "exec",
           "command": "paste /data/log.txt /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5033,7 +5033,7 @@
         {
           "op": "exec",
           "command": "comm /data/log.txt /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -5043,7 +5043,7 @@
         {
           "op": "exec",
           "command": "join /data/log.txt /data/log.txt | cat",
-          "cancel_after_ms": 100,
+          "cancel_on_stall": "/data",
           "expect": {
             "value": {
               "aborted": true
@@ -6186,6 +6186,146 @@
               "exit_code": 0,
               "stdout": "ran\n",
               "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "fresh_stat_reconciles_a_listing_changed_behind_it",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "listed-ram"
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/data/f.txt",
+          "data": "old"
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/f.txt"
+            ]
+          }
+        },
+        {
+          "op": "change",
+          "mount": "/data",
+          "path": "/f.txt",
+          "data": "grown\n"
+        },
+        {
+          "op": "change",
+          "mount": "/data",
+          "path": "/g.txt",
+          "data": "g"
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 3
+            }
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/f.txt"
+            ]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "fresh": true,
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 6
+            }
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 6
+            }
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/f.txt",
+              "/data/g.txt"
+            ]
+          }
+        },
+        {
+          "op": "change",
+          "mount": "/data",
+          "path": "/f.txt"
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 6
+            }
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "fresh": true,
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/g.txt"
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /data",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "g.txt\n",
+              "stderr": "",
+              "refusal": null
             }
           }
         }
