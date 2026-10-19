@@ -71,7 +71,7 @@ Mirage. Set `mount_type` in Python or YAML, or `mountType` in TypeScript:
 
 - `ssh` shares the host workspace through guest `sshfs`.
 - `fuse` uses a Mirage workspace running inside the guest.
-- `both` keeps the guest's own mounts and shares the remaining host mounts.
+- `both` keeps the guest's own mounts and uses [ssh](#ssh) for the rest.
 - Unset leaves file access to you.
 
 ### ssh
@@ -79,7 +79,8 @@ Mirage. Set `mount_type` in Python or YAML, or `mountType` in TypeScript:
 Add `mount_type: ssh` to the config (`mountType: 'ssh'` in TypeScript).
 Install `mirage-ai[ssh]` on a Python host or `ssh2` on a Node host. The
 guest needs `sshfs` and access to `/dev/fuse`, but no Mirage installation,
-SSH keys or open port. Each runtime instance serves its first session only.
+SSH keys or open port. In `ssh` and `both`, each runtime instance serves
+its first session only.
 
 ### fuse
 

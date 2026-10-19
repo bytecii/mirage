@@ -16,6 +16,9 @@ msb create python:3.12-slim-bookworm --name mirage-e2e --memory 1G
 bash integ/runtime/microsandbox/setup-test-guest.sh mirage-e2e /tmp/mirage-wheels/mirage_ai-*.whl
 ```
 
+If `mirage-rs` is unavailable for the guest, pass a matching Linux wheel
+built from `rust/python` as the setup script's third argument.
+
 ## Run
 
 Run either command:
@@ -35,3 +38,16 @@ Remove the guest when finished:
 ```bash
 msb remove --force mirage-e2e
 ```
+
+## SDK tests
+
+The [Python tests](../../../python/tests/runtime/sandbox/microsandbox/) and
+[TypeScript tests](../../../typescript/packages/node/src/runtime/sandbox/microsandbox/)
+use these variables; unset variables skip the corresponding tests:
+
+- `MIRAGE_INTEG_MICROSANDBOX_SANDBOX`: running guest with `python3` and a
+  guest-owned FUSE mount at `/data`; `hello.txt` must contain
+  `hello from Mirage FUSE` followed by a newline.
+- `MIRAGE_INTEG_MICROSANDBOX_MOUNT_SANDBOX`: running guest with `python3`,
+  `sshfs` and a usable `/dev/fuse`.
+- `MIRAGE_INTEG_MICROSANDBOX_STOPPED_SANDBOX`: a stopped guest.
