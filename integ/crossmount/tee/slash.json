@@ -1,7 +1,7 @@
 {
   "cases": [
     {
-      "id": "xm_tee_slash_terminated_name_is_a_directory",
+      "id": "xm_tee_slash_terminated_names_answer_as_gnu",
       "seq": 15000099,
       "targets": [
         "ram",
@@ -31,7 +31,7 @@
       "expect": {
         "exit": 0,
         "stdout": "x rc=1\nx\n",
-        "stderr": "tee: /data2/xts/./: Is a directory\ntee: /data2/xtsn/: Is a directory\nls: cannot access '/data2/xts': No such file or directory\nls: cannot access '/data2/xtsn': No such file or directory\n"
+        "stderr": "tee: /data2/xts/./: No such file or directory\ntee: /data2/xtsn/: Is a directory\nls: cannot access '/data2/xts': No such file or directory\nls: cannot access '/data2/xtsn': No such file or directory\n"
       }
     }
   ]

@@ -60,7 +60,7 @@ import { METADATA_OPS } from '../../policy/constants.ts'
 import { PolicyError } from '../../policy/errors.ts'
 import { mountKey, underPath } from '../../utils/key_prefix.ts'
 import { normDir, ownerPrefix, rstripSlash } from '../../utils/slash.ts'
-import { CycleError, norm, parent, posixNormpath } from '../../utils/path.ts'
+import { CycleError, endsAtDot, norm, parent, posixNormpath } from '../../utils/path.ts'
 import type { Visibility } from '../../types.ts'
 import type { DryRun, EntryGate, VfsExplanation } from '../../policy/types.ts'
 import {
@@ -1345,15 +1345,17 @@ export class Dispatcher {
     // name in front of one has to be a directory: `virtual` simplified the
     // dots away and reaches `f` through a missing `nope/..`, the typed
     // spelling (`dotted`) does not. A trailing slash is part of that
-    // spelling: `x/` (or `x/./`, as typed) must be a directory, so a create
-    // of one is EISDIR before anything is looked up, as GNU tee and truncate
-    // answer `missing/`. Deliberate divergence: under a parent that is itself
-    // absent GNU reports the parent first (ENOENT); the spelling is refused
-    // here without a round trip, so that corner reads EISDIR too.
-    if (
+    // spelling: `x/` must be a directory, so a create of one is EISDIR before
+    // anything is looked up, as GNU tee and truncate answer `missing/` and
+    // `f/`. Behind a dot (`x/./`) the walk through the dot answers first,
+    // ENOENT or ENOTDIR, as GNU does. Deliberate divergence: under a parent
+    // that is itself absent GNU reports the parent first (ENOENT); the
+    // spelling is refused here without a round trip, so that corner reads
+    // EISDIR.
+    const slashed =
       FILE_CREATE_OPS.has(name) &&
       (path.dotted?.endsWith('/') === true || path.rawPath.endsWith('/'))
-    )
+    if (slashed && !endsAtDot(path.rawPath === '' ? (path.dotted ?? '') : path.rawPath))
       throw eisdir(path)
     const renamed = dstArg instanceof PathSpec ? dstArg : null
     if (path.dotted !== null || (renamed !== null && renamed.dotted !== null)) {
@@ -1371,6 +1373,7 @@ export class Dispatcher {
         (renamed !== null ? await dotRefusal(walkStat, renamed, follow) : null)
       if (refusal !== null) throw refusal
     }
+    if (slashed) throw eisdir(path)
     const [typed, typedDst] = [path, dstArg]
     path = this.walked(path, HIDDEN_CREATE_OPS.has(name))
     if (dstArg instanceof PathSpec) {

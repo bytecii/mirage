@@ -1656,14 +1656,22 @@ async def test_a_read_of_a_file_empty_or_not_is_answered(read):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "path", ["/m/missing/", "/m/d/f/", "/m/d/f/./", "/m/missing/./"]
+    ("path", "error"),
+    [
+        ("/m/missing/", IsADirectoryError),
+        ("/m/d/f/", IsADirectoryError),
+        ("/m/d/", IsADirectoryError),
+        ("/m/d/./", IsADirectoryError),
+        ("/m/d/f/./", NotADirectoryError),
+        ("/m/missing/./", FileNotFoundError),
+    ],
 )
 async def test_a_write_to_a_slash_terminated_name_is_refused_for_every_caller(
-    path,
+    path, error
 ):
     # `x/` names a directory, so ws.vfs refuses to create a file there
-    # before anything is looked up, as the shell's tee and truncate do,
-    # however the slash is spelled.
+    # before anything is looked up, as the shell's tee and truncate do.
+    # Behind a dot the walk through it answers first, as GNU's does.
     vfs = RAMVFS()
     vfs._store.dirs.update({"/", "/d"})
     vfs._store.files["/d/f"] = b"x"
@@ -1675,7 +1683,7 @@ async def test_a_write_to_a_slash_terminated_name_is_refused_for_every_caller(
             lambda: ws.vfs.pwrite(path, b"y", 0),
             lambda: ws.vfs.truncate(path, 0),
         ):
-            with pytest.raises(IsADirectoryError):
+            with pytest.raises(error):
                 await write()
         assert vfs._store.files == {"/d/f": b"x"}
     finally:

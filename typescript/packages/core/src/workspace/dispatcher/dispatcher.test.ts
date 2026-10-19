@@ -2823,32 +2823,36 @@ describe.each(WS_READS)('a %s read through ws.vfs', (_, read) => {
 })
 
 describe('a write to a slash-terminated name', () => {
-  it.each(['/m/missing/', '/m/d/f/', '/m/d/f/./', '/m/missing/./'])(
-    'is refused through ws.vfs for %s',
-    async (path) => {
-      // `x/` names a directory, so ws.vfs refuses to create a file there
-      // before anything is looked up, as the shell's tee and truncate do,
-      // however the slash is spelled.
-      const vfs = new RAMVFS()
-      vfs.store.dirs.add('/')
-      vfs.store.dirs.add('/d')
-      vfs.store.files.set('/d/f', ENC.encode('x'))
-      const ws = new Workspace({ '/m': vfs }, { mode: MountMode.WRITE })
-      try {
-        for (const write of [
-          () => ws.vfs.write(path, 'y'),
-          () => ws.vfs.append(path, ENC.encode('y')),
-          () => ws.vfs.pwrite(path, ENC.encode('y'), 0),
-          () => ws.vfs.truncate(path, 0),
-        ]) {
-          await expect(write()).rejects.toMatchObject({ code: 'EISDIR' })
-        }
-        expect([...vfs.store.files.keys()]).toEqual(['/d/f'])
-      } finally {
-        await ws.close()
+  it.each([
+    ['/m/missing/', 'EISDIR'],
+    ['/m/d/f/', 'EISDIR'],
+    ['/m/d/', 'EISDIR'],
+    ['/m/d/./', 'EISDIR'],
+    ['/m/d/f/./', 'ENOTDIR'],
+    ['/m/missing/./', 'ENOENT'],
+  ])('is refused through ws.vfs for %s', async (path, code) => {
+    // `x/` names a directory, so ws.vfs refuses to create a file there
+    // before anything is looked up, as the shell's tee and truncate do.
+    // Behind a dot the walk through it answers first, as GNU's does.
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/')
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/f', ENC.encode('x'))
+    const ws = new Workspace({ '/m': vfs }, { mode: MountMode.WRITE })
+    try {
+      for (const write of [
+        () => ws.vfs.write(path, 'y'),
+        () => ws.vfs.append(path, ENC.encode('y')),
+        () => ws.vfs.pwrite(path, ENC.encode('y'), 0),
+        () => ws.vfs.truncate(path, 0),
+      ]) {
+        await expect(write()).rejects.toMatchObject({ code })
       }
-    },
-  )
+      expect([...vfs.store.files.keys()]).toEqual(['/d/f'])
+    } finally {
+      await ws.close()
+    }
+  })
 })
 
 // A caching RAM mount that answers the read stand-ins itself.

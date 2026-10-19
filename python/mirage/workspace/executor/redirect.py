@@ -66,7 +66,7 @@ from mirage.shell.errors import ExitSignal
 from mirage.shell.helpers import get_text, literal_word
 from mirage.shell.types import Redirect, RedirectKind, TSNodeLike
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.path import owner_prefix
+from mirage.utils.path import ends_at_dot, owner_prefix
 from mirage.workspace.evaluation import EvaluationContext
 from mirage.workspace.executor.builtins import _to_scope
 from mirage.workspace.executor.builtins.exec.constants import (
@@ -1337,7 +1337,8 @@ async def _open_refusal(
         ) or isinstance(r.target, int):
             continue
         scope = _ensure_scope(r.target)
-        if scope.raw_path.endswith("/"):
+        # Behind a dot (`x/./`) the open's own walk answers instead.
+        if scope.raw_path.endswith("/") and not ends_at_dot(scope.raw_path):
             return _shell_failure(
                 encode_text(f"{scope.raw_path}: Is a directory\n")
             )

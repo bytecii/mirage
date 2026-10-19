@@ -113,7 +113,14 @@ from mirage.utils.hidden import (
     path_visible,
 )
 from mirage.utils.key_prefix import mount_key, under_path
-from mirage.utils.path import CycleError, norm, norm_dir, owner_prefix, parent
+from mirage.utils.path import (
+    CycleError,
+    ends_at_dot,
+    norm,
+    norm_dir,
+    owner_prefix,
+    parent,
+)
 from mirage.utils.ranges import slice_window
 from mirage.utils.remnants import remove_remnants, visible_below
 from mirage.utils.stat_view import ident
@@ -1514,15 +1521,17 @@ class Dispatcher:
         # every name in front of one has to be a directory: `virtual`
         # simplified the dots away and reaches `f` through a missing
         # `nope/..`, the typed spelling (`dotted`) does not. A trailing
-        # slash is part of that spelling: `x/` (or `x/./`, as typed) must
-        # be a directory, so a create of one is EISDIR before anything is
-        # looked up, as GNU tee and truncate answer `missing/`. Deliberate
-        # divergence: under a parent that is itself absent GNU reports
-        # the parent first (ENOENT); the spelling is refused here without
-        # a round trip, so that corner reads EISDIR too.
-        if name in FILE_CREATE_OPS and (
+        # slash is part of that spelling: `x/` must be a directory, so a
+        # create of one is EISDIR before anything is looked up, as GNU tee
+        # and truncate answer `missing/` and `f/`. Behind a dot (`x/./`)
+        # the walk through the dot answers first, ENOENT or ENOTDIR, as
+        # GNU does. Deliberate divergence: under a parent that is itself
+        # absent GNU reports the parent first (ENOENT); the spelling is
+        # refused here without a round trip, so that corner reads EISDIR.
+        slashed = name in FILE_CREATE_OPS and (
             (path.dotted or "").endswith("/") or path.raw_path.endswith("/")
-        ):
+        )
+        if slashed and not ends_at_dot(path.raw_path or path.dotted or ""):
             raise eisdir(path)
         follow = self._namespace.follow
         visible = functools.partial(path_visible, vis)
@@ -1538,6 +1547,8 @@ class Dispatcher:
             refusal = await dot_refusal(stat, dst, follow)
         if refusal is not None:
             raise refusal
+        if slashed:
+            raise eisdir(path)
         typed, typed_dst = path, dst
         path = self._walked(path, name in HIDDEN_CREATE_OPS, vis)
         if isinstance(dst, PathSpec):

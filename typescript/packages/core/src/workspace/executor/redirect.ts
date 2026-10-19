@@ -27,6 +27,7 @@ import {
 } from '../../context/session_context.ts'
 import { fsStrerror, isFsError, isMissingPath } from '../../errors/fs.ts'
 import { ownerPrefix, stripSlash } from '../../utils/slash.ts'
+import { endsAtDot } from '../../utils/path.ts'
 import { SharedInput, share } from '../../io/async_line_iterator.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { DeviceInput, IOResult, PipeStream, materialize } from '../../io/types.ts'
@@ -1056,7 +1057,8 @@ async function openRefusal(
       continue
     }
     const scope = ensureScope(r.target)
-    if (scope.rawPath.endsWith('/')) {
+    // Behind a dot (`x/./`) the open's own walk answers instead.
+    if (scope.rawPath.endsWith('/') && !endsAtDot(scope.rawPath)) {
       return shellFailure(encodeText(`${scope.rawPath}: Is a directory\n`))
     }
     let exists = false

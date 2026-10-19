@@ -20,6 +20,7 @@ from mirage.errors.types import FsCondition
 from mirage.io.types import ByteSource, IOResult
 from mirage.shell.bytes import encode_text
 from mirage.types import FileStat, PathSpec
+from mirage.utils.path import ends_at_dot
 from mirage.utils.quote import shell_quote_always
 from mirage.utils.stat_view import is_dir
 
@@ -215,7 +216,8 @@ async def _truncate_one(
         if why is not None:
             raise enoent(path) from exc
         current = 0
-    if directory or (path.raw_path.endswith("/") and not flags.no_create):
+    slashed = path.raw_path.endswith("/") and not ends_at_dot(path.raw_path)
+    if directory or (slashed and not flags.no_create):
         raise eisdir(path)
     size = parse_size(flags.size, current)
     try:
