@@ -18,7 +18,6 @@ import { OutputStream } from '../io/stream.ts'
 import type { ByteSource } from '../io/types.ts'
 import { FD_BOTH, FD_CLOSE } from './constants.ts'
 import { SharedInput } from '../io/async_line_iterator.ts'
-import { createAsyncContext } from '../utils/async_context.ts'
 import { type Channel, JobConsole, type OwnedStream, Terminal } from './console/index.ts'
 import type { PathSpec } from '../types.ts'
 import { ebadf } from '../errors/fs.ts'
@@ -192,27 +191,21 @@ export class Recorder extends JobConsole {
 }
 
 /**
- * The recorder of the innermost level running a command, for a level whose
- * output is a value (a substitution's) to send another level's stream bytes
- * toward it. Mirrors Python's ENCLOSING.
- */
-export const ENCLOSING = createAsyncContext<Recorder>()
-
-/**
  * Send bytes written to a stream another level owns toward it: up through
  * the sink, or the enclosing level's recorder when the level returns its
  * output as a value or writes to a terminal of its own (a line's, a
  * substitution's), which owns no stream above it. A console that keeps no
  * streams takes them on their channel. False when there is nowhere above.
- * Mirrors Python's deliver.
+ * `enclosing` is the enclosing level's recorder, its caller's. Mirrors
+ * Python's deliver.
  */
 export async function deliver(
   sink: JobConsole | null,
   stream: Inherited,
   data: ByteSource,
+  enclosing: JobConsole | null,
 ): Promise<boolean> {
-  const target =
-    sink !== null && !(sink instanceof Terminal) ? sink : (ENCLOSING.getStore() ?? null)
+  const target = sink !== null && !(sink instanceof Terminal) ? sink : enclosing
   if (target === null) return false
   for await (const part of chunks(data)) await target.emitTo(stream, part)
   return true

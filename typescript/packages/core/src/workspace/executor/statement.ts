@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { currentCaller, runWithCaller } from '../../context/session_context.ts'
 import { spooledPair } from '../../io/spool.ts'
 import { chunks } from '../../io/cooperative.ts'
 import { asyncChain, discardStreams } from '../../io/stream.ts'
@@ -25,7 +26,6 @@ import { formatFsError } from '../../errors/render.ts'
 import type { ExecutionNode, StatusWriter } from '../types.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
 import {
-  ENCLOSING,
   Inherited,
   type Recorder,
   type StreamOwner,
@@ -387,7 +387,7 @@ export async function recording<T>(
 ): Promise<T> {
   const leave = (session.jobOutput ?? session.tty.jobs).record(recorder)
   try {
-    return await ENCLOSING.run(recorder, run)
+    return await runWithCaller({ ...currentCaller(), enclosing: recorder }, run)
   } finally {
     leave()
   }
@@ -410,7 +410,7 @@ export async function statementOutput(
   const written: Written[] = []
   for (const [key, data] of await recorder.take()) {
     if (!(key instanceof Inherited)) written.push([key, data, false])
-    else if (key.owner === own || !(await deliver(sink, key, data)))
+    else if (key.owner === own || !(await deliver(sink, key, data, currentCaller().enclosing)))
       written.push([key.channel, data, true])
   }
   let out: ByteSource | null

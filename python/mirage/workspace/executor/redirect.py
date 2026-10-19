@@ -11,6 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
@@ -18,7 +19,13 @@ from enum import Enum, auto
 from functools import partial
 
 from mirage.context import reset_redirect_paths, set_redirect_paths
-from mirage.context.session_context import RedirectGuard, RedirectResult
+from mirage.context.session_context import (
+    RedirectGuard,
+    RedirectResult,
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.errors.constants import FS_ERRORS
 from mirage.errors.fs import fs_strerror
 from mirage.errors.posix import posix_phrase
@@ -44,7 +51,6 @@ from mirage.shell.constants import (
     OUTPUT_ONLY_BUILTINS,
 )
 from mirage.shell.descriptors import (
-    ENCLOSING,
     Descriptor,
     FileDescription,
     FileInput,
@@ -233,7 +239,9 @@ class PipeRecorder(Recorder):
             if stream.owner is self:
                 await self.sink.emit(stream.channel, data)
                 return
-            if await deliver(self.sink, stream, data):
+            if await deliver(
+                self.sink, stream, data, current_caller().enclosing
+            ):
                 return
         await super().emit_to(stream, data)
 
@@ -568,7 +576,9 @@ async def _handle_redirect(
                             dispatch, session, target, data
                         )
                 elif isinstance(target, Inherited):
-                    if not await deliver(sink, target, data):
+                    if not await deliver(
+                        sink, target, data, current_caller().enclosing
+                    ):
                         if target.channel == Channel.STDOUT:
                             stdout = data
                         else:
@@ -786,7 +796,9 @@ async def _handle_redirect(
     )
     leave = route.record(recorder)
     session.job_output = route
-    enclosing = ENCLOSING.set(recorder)
+    enclosing = bind_caller(
+        dataclasses.replace(current_caller(), enclosing=recorder)
+    )
     unbound = {
         field: value
         for fd, fields in EXEC_STREAM_UNBOUND.items()
@@ -860,7 +872,7 @@ async def _handle_redirect(
         await recorder.abort()
         for field, value in held.items():
             setattr(session, field, value)
-        ENCLOSING.reset(enclosing)
+        reset_caller(enclosing)
         leave()
         session.job_output = job_output
         for file in files:
@@ -975,7 +987,9 @@ async def _handle_redirect(
         kept: list[tuple[Channel, ByteSource]] = []
         for key, data in routed:
             if isinstance(key, Inherited):
-                if not await deliver(sink, key, data):
+                if not await deliver(
+                    sink, key, data, current_caller().enclosing
+                ):
                     kept.append((key.channel, data))
             elif sink is not None:
                 async with aclosing(byte_chunks(data)) as source:

@@ -14,9 +14,14 @@
 
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import aclosing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from mirage.commands.spec.usage import read_fail_exit_code
+from mirage.context.session_context import (
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.errors.render import format_fs_error
 from mirage.io import IOResult
 from mirage.io.async_line_iterator import SharedInput
@@ -29,7 +34,6 @@ from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.console import Channel, JobConsole
 from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
 from mirage.shell.descriptors import (
-    ENCLOSING,
     Inherited,
     Recorder,
     StreamOwner,
@@ -480,13 +484,13 @@ def recording(session: SessionState, recorder: Recorder) -> Iterator[None]:
         session (SessionState): the shell running it.
         recorder (Recorder): where it writes.
     """
-    enclosing = ENCLOSING.set(recorder)
+    enclosing = bind_caller(replace(current_caller(), enclosing=recorder))
     leave = (session.job_output or session.tty.jobs).record(recorder)
     try:
         yield
     finally:
         leave()
-        ENCLOSING.reset(enclosing)
+        reset_caller(enclosing)
 
 
 async def statement_output(
@@ -516,7 +520,9 @@ async def statement_output(
     for key, data in await recorder.take():
         if not isinstance(key, Inherited):
             written.append((key, data, False))
-        elif key.owner is own or not await deliver(sink, key, data):
+        elif key.owner is own or not await deliver(
+            sink, key, data, current_caller().enclosing
+        ):
             written.append((key.channel, data, True))
     try:
         out, err = await spooled_pair(stdout, io.stderr)
