@@ -27,12 +27,14 @@ import {
   sessionVisibility,
 } from '../context/session_context.ts'
 import { leadsHidden, pathVisible } from '../utils/hidden.ts'
-import { norm } from '../utils/path.ts'
-import { normDir, ownerPrefix } from '../utils/slash.ts'
+import { norm, posixNormpath } from '../utils/path.ts'
+import { normDir, ownerPrefix, rstripSlash } from '../utils/slash.ts'
+import { namespaceNames } from '../view/namespace_view.ts'
 import type { MountRow } from './types.ts'
 import { compareCodePoints } from '../utils/sort.ts'
 import type {
   FollowOperands,
+  MountView,
   NamespaceLinks,
   OpKwargs,
   SessionAccess,
@@ -75,11 +77,11 @@ export interface FilesOptions {
  *
  * The link table and the mount table as the workspace keeps them, hidden
  * entries included, so it is never a handler's: a handler asks `Files`
- * (`isVisible`, `mountOf`, `submounts`), which apply the session's hides.
- * The code that walks the namespace beside the dispatcher reads it: the
- * command helpers' link and mount views (globs, `find -L`, `cp -L`, `du`),
- * the mount core and the file tool mapping a path the way the dispatcher
- * does, the runtime's descriptors. Mirrors Python's `FilesNamespace`.
+ * (`isVisible`, `mountOf`, `submounts`), which apply the session's hides,
+ * and the command helpers read `FilesView`, which applies them. The code that
+ * walks the namespace beside the dispatcher reads it: the mount core and the
+ * file tool mapping a path the way the dispatcher does, the runtime's
+ * descriptors. Mirrors Python's `FilesNamespace`.
  */
 export interface FilesNamespace {
   /** The workspace link table, unfiltered by any session's hides. */
@@ -94,10 +96,45 @@ export interface FilesNamespace {
   readonly ownerOf: OwnerOf
 }
 
+/**
+ * What a session's files show of the namespace, the session's hides applied.
+ *
+ * The link and mount tables are read here, beside the dispatcher that answers
+ * from them, and filtered by the rule it refuses a call by (`isVisible`), so
+ * the command helpers that walk the namespace (`linksOf`, `mountsOf`, globs,
+ * `find -L`, `cp -L`, `du`) read no table and filter no hide of their own: a
+ * hidden link, or one that leads where the session cannot see, has no row and
+ * no target; a hidden mount is a boundary a walk stops at but is never named.
+ * Mirrors Python's `FilesView`.
+ */
+export interface FilesView {
+  /** Whether a link table stands behind the files. */
+  readonly linked: boolean
+  /** The link standing at a path, its own row; null where none stands or the
+   * session cannot see it. */
+  linkAt(path: string): FileStat | null
+  /** The links under a directory the session sees, with their rows. */
+  linksBelow(directory: string): [string, FileStat][]
+  /** Where a path the session sees leads, every link followed; a hidden one
+   * is left as typed. Throws CycleError where a link loop stands in the walk. */
+  resolve(path: string): string
+  /** Where the mount boundaries are, for a walk through the dispatcher
+   * (`crossing`) or one bound to a mount. */
+  mounts(crossing: boolean): MountView
+  /** The names a directory holds only as namespace structure: the mounts
+   * below it and its links, by their first segment under it. */
+  owed(directory: string): string[]
+  /** The visibility of the session an op would run as. */
+  vis(): Visibility | null
+  /** The line's operand resolution a command's globs give their matches. */
+  readonly follow: FollowOperands | null
+}
+
 // TypeScript has no package-private: the class assigns these from its static
-// block, where its private members are in reach, and `namespaceOf` and
-// `withCaller` are the doors through them.
+// block, where its private members are in reach, and `namespaceOf`, `viewOf`
+// and `withCaller` are the doors through them.
 let namespaceOfFiles: (files: Files) => FilesNamespace
+let viewOfFiles: (files: Files) => FilesView
 let callerFilesOf: (files: Files, changes: Partial<Caller>) => Files
 
 // The op's byte count for recording: the result first, else the input
@@ -171,6 +208,7 @@ async function* recorded(
 export class Files {
   static {
     namespaceOfFiles = (files) => files.namespace()
+    viewOfFiles = (files) => files.view()
     callerFilesOf = (files, changes) => files.forCaller(changes)
   }
 
@@ -317,6 +355,31 @@ export class Files {
    */
   private vis(): Visibility | null {
     return this.visibilityOf === null ? sessionVisibility() : this.visibilityOf(this.sessionId)
+  }
+
+  /** What `viewOf` hands the command helpers that walk the namespace. */
+  private view(): FilesView {
+    const table = this.links
+    return {
+      linked: table !== null,
+      linkAt: (path) => (table !== null && this.isVisible(path) ? table.linkStatAt(path) : null),
+      linksBelow: (directory) =>
+        table === null
+          ? []
+          : table.linkStatsBelow(directory).filter(([path]) => this.isVisible(path)),
+      resolve: (path) =>
+        table !== null && pathVisible(this.vis(), path) ? posixNormpath(table.follow(path)) : path,
+      mounts: (crossing) =>
+        mountView(
+          () => this.prefixes(),
+          () => this.vis(),
+          this.ownerOf,
+          crossing,
+        ),
+      owed: (directory) => namespaceNames(this.vis(), this.prefixes(), table, directory),
+      vis: () => this.vis(),
+      follow: this.follow,
+    }
   }
 
   /** What `namespaceOf` hands the code that walks the namespace. */
@@ -889,6 +952,55 @@ export class WorkspaceFiles extends Files {
  */
 export function namespaceOf(files: Files): FilesNamespace {
   return namespaceOfFiles(files)
+}
+
+/**
+ * The namespace a session's files show, its hides applied, for the command
+ * helpers that walk it (`FilesView`). Mirrors Python's `view_of`.
+ */
+export function viewOf(files: Files): FilesView {
+  return viewOfFiles(files)
+}
+
+/**
+ * Where the mount boundaries are, as the session the files run as sees them.
+ *
+ * Every mount below a path, hidden or not, is a boundary a backend's own walk
+ * stops at: a mount the session cannot see still shadows the parent backend's
+ * keys under its prefix. Only the visible ones are ever named. A walk through
+ * the dispatcher (`crossing`) descends into each mount itself, so it has no
+ * boundary to stop at: no mount below a path, and no mount root; and it takes
+ * no mount's shortcut, so no mount answers a function for it, caps its globs
+ * or narrows its search. Mirrors Python's `_mount_view`.
+ */
+function mountView(
+  prefixes: () => readonly string[],
+  vis: () => Visibility | null,
+  ownerOf: OwnerOf,
+  crossing: boolean,
+): MountView {
+  const below = (path: string): string[] => {
+    if (crossing) return []
+    const base = normDir(path)
+    return [...prefixes()]
+      .filter((prefix) => prefix !== base && prefix.startsWith(base))
+      .sort(compareCodePoints)
+      .map((prefix) => rstripSlash(prefix) || '/')
+  }
+  return {
+    descendants: below,
+    visibleDescendants: (path: string) => {
+      const seen = vis()
+      return below(path).filter((root) => pathVisible(seen, root))
+    },
+    isRoot: (path: string) => !crossing && prefixes().includes(normDir(path)),
+    rootOf: (path: string) => ownerPrefix(prefixes(), path) ?? '/',
+    maxDuEntries: (path: string) => ownerOf(path)?.maxDuEntries ?? null,
+    answers: (path: string, name: string) =>
+      !crossing && (ownerOf(path)?.calls?.has(name) ?? false),
+    maxGlobMatches: (path: string) => (crossing ? null : (ownerOf(path)?.maxGlobMatches ?? null)),
+    searchable: (path: string) => (crossing ? null : (ownerOf(path)?.searchable ?? null)),
+  }
 }
 
 /**

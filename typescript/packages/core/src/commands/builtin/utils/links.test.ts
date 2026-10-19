@@ -235,6 +235,37 @@ describe('linkView', () => {
   })
 })
 
+describe('a link the session cannot see', () => {
+  // A hidden link, and a visible one that leads where the session cannot
+  // see, have no row, no subtree entry, no owed name and no target;
+  // resolving a hidden path leaves it as typed.
+  it('is never answered', async () => {
+    const hidden: Visibility = {
+      ...DEFAULT_VISIBILITY,
+      paths: { paths: ['/data/secret'], patterns: [] },
+    }
+    const vfs = files(
+      ['/data/'],
+      table({
+        '/data/open': '/data/a',
+        '/data/door': '/data/secret',
+        '/data/secret/l': '/data/a',
+        '/ghost/deep/lnk': '/data/secret',
+      }),
+      hidden,
+    )
+    const view = linkView(vfs)
+    expect(view?.statAt('/data/open')).not.toBeNull()
+    expect(view?.statAt('/data/door')).toBeNull()
+    expect(view?.statAt('/data/secret/l')).toBeNull()
+    expect(view?.subtree('/data').map(([path]) => path)).toEqual(['/data/open'])
+    expect(view?.resolve('/data/secret/l')).toBe('/data/secret/l')
+    expect(await view?.targetStat('/data/door')).toBeNull()
+    expect(owedNames(vfs, '/data')).toEqual(['open'])
+    expect(owedNames(vfs, '/')).toEqual(['data'])
+  })
+})
+
 describe('mountView', () => {
   it('stops at a hidden mount but never names it', () => {
     const hidden: Visibility = {

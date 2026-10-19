@@ -269,6 +269,37 @@ def test_a_link_view_is_live_whenever_the_files_hold_a_table():
     assert link_view(None) is None
 
 
+@pytest.mark.asyncio
+async def test_a_link_the_session_cannot_see_is_never_answered():
+    # A hidden link, and a visible one that leads where the session
+    # cannot see, have no row, no subtree entry, no owed name and no
+    # target; resolving a hidden path leaves it as typed.
+    hidden = Visibility(paths=HiddenPaths(paths=("/data/secret",)))
+    files = Files(
+        _rows("/data/"),
+        _Dispatch(),
+        links=_Table(
+            {
+                "/data/open": "/data/a",
+                "/data/door": "/data/secret",
+                "/data/secret/l": "/data/a",
+                "/ghost/deep/lnk": "/data/secret",
+            }
+        ),
+        visibility=lambda _session: hidden,
+    )
+    view = link_view(files)
+    assert view is not None
+    assert view.stat_at("/data/open") is not None
+    assert view.stat_at("/data/door") is None
+    assert view.stat_at("/data/secret/l") is None
+    assert [path for path, _row in view.subtree("/data")] == ["/data/open"]
+    assert view.resolve("/data/secret/l") == "/data/secret/l"
+    assert await view.target_stat("/data/door") is None
+    assert owed_names(files, "/data") == ["open"]
+    assert owed_names(files, "/") == ["data"]
+
+
 def test_a_hidden_mount_is_a_boundary_but_never_named():
     hidden = Visibility(paths=HiddenPaths(paths=("/data/secret",)))
     files = Files(

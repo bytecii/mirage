@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-import posixpath
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
@@ -25,17 +24,9 @@ from mirage.io.cooperative import chunks
 from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, PathSpec, Visibility
-from mirage.utils.hidden import path_visible
-from mirage.utils.path import (
-    CycleError,
-    norm_dir,
-    owner_prefix,
-    resolve_path,
-)
-from mirage.view.namespace_view import namespace_names
+from mirage.utils.path import CycleError, resolve_path
 from mirage.view.types import FollowOperands, LinkView, MountView
-from mirage.workspace.files import Files, namespace_of
-from mirage.workspace.types import MountRow
+from mirage.workspace.files import Files, view_of
 
 logger = logging.getLogger(__name__)
 
@@ -275,62 +266,43 @@ def link_view(files: Files | None) -> LinkView | None:
     """The symlink facts a walk goes by, read off the session's files, or
     None outside a workspace.
 
-    Filtered by the hides of the session the files run as, as the
-    dispatcher's own answers are: a hidden link, or one that leads where
-    the session cannot see, has no row, no listing entry and no target.
-    Resolving a hidden path leaves it as typed, for the dispatcher to
-    refuse; a visible one resolves, so a walker judges where it lands.
+    The files apply the session's hides (``FilesView``): a hidden link,
+    or one that leads where the session cannot see, has no row, no
+    listing entry and no target. Resolving a hidden path leaves it as
+    typed, for the dispatcher to refuse; a visible one resolves, so a
+    walker judges where it lands.
 
     Args:
         files (Files | None): the session's files.
     """
     if files is None:
         return None
-    namespace = namespace_of(files)
-    table = namespace.links
-    if table is None:
+    seen = view_of(files)
+    if not seen.linked:
         return None
-    seen, links = files, table
-
-    def stat_at(virtual: str) -> FileStat | None:
-        return (
-            links.link_stat_at(virtual) if seen.is_visible(virtual) else None
-        )
-
-    def subtree(directory: str) -> list[tuple[str, FileStat]]:
-        return [
-            (path, row)
-            for path, row in links.link_stats_below(directory)
-            if seen.is_visible(path)
-        ]
-
-    def resolve(virtual: str) -> str:
-        if not path_visible(namespace.vis(), virtual):
-            return virtual
-        return posixpath.normpath(links.follow(virtual))
 
     async def exists(virtual: str) -> bool:
         spec = PathSpec.from_str_path(virtual, cwd="/")
         try:
-            return await resolve_path_stat(seen.dispatch, spec) is not None
+            return await resolve_path_stat(files.dispatch, spec) is not None
         except (OSError, ValueError) as exc:
             logger.debug("link probe at %s failed: %s", virtual, exc)
             return False
 
     async def target_stat(virtual: str | PathSpec) -> FileStat | None:
         path = virtual.virtual if isinstance(virtual, PathSpec) else virtual
-        if not seen.is_visible(path):
+        if not files.is_visible(path):
             return None
         try:
-            return await seen.stat(posixpath.normpath(links.follow(path)))
+            return await files.stat(seen.resolve(path))
         except (CycleError, *_MISSES) as exc:
             logger.debug("link target of %s has no row: %s", path, exc)
             return None
 
     return LinkView(
-        stat_at=stat_at,
-        subtree=subtree,
-        resolve=resolve,
+        stat_at=seen.link_at,
+        subtree=seen.links_below,
+        resolve=seen.resolve,
         exists=exists,
         target_stat=target_stat,
     )
@@ -343,13 +315,9 @@ def mount_view(
     None outside a workspace.
 
     Every mount below a path, hidden or not, is a boundary a backend's
-    own walk stops at: a mount the session cannot see still shadows the
-    parent backend's keys under its prefix. Only the visible ones are
-    ever named. A walk through the dispatcher (``crossing``) descends
-    into each mount itself, so it has no boundary to stop at: no mount
-    below a path, and no mount root; and it takes no mount's shortcut,
-    so no mount answers a function for it, caps its globs or narrows
-    its search.
+    own walk stops at; only the visible ones are ever named. A walk
+    through the dispatcher (``crossing``) has no boundary to stop at
+    (``FilesView.mounts``).
 
     Args:
         files (Files | None): the session's files.
@@ -357,62 +325,7 @@ def mount_view(
     """
     if files is None:
         return None
-    namespace = namespace_of(files)
-
-    def below(virtual: str) -> list[str]:
-        if crossing:
-            return []
-        base = norm_dir(virtual)
-        return [
-            m.prefix.rstrip("/") or "/"
-            for m in sorted(namespace.mounts(), key=lambda m: m.prefix)
-            if m.prefix != base and m.prefix.startswith(base)
-        ]
-
-    def visible_below(virtual: str) -> list[str]:
-        vis = namespace.vis()
-        return [root for root in below(virtual) if path_visible(vis, root)]
-
-    def owner(virtual: str) -> MountRow | None:
-        served = namespace.mounts()
-        found = owner_prefix([m.prefix for m in served], virtual)
-        return next((m for m in served if m.prefix == found), None)
-
-    def is_root(virtual: str) -> bool:
-        if crossing:
-            return False
-        return any(m.prefix == norm_dir(virtual) for m in namespace.mounts())
-
-    def root_of(virtual: str) -> str:
-        row = owner(virtual)
-        return row.prefix if row is not None else "/"
-
-    def max_du_entries(virtual: str) -> int | None:
-        row = owner(virtual)
-        return row.max_du_entries if row is not None else None
-
-    def answers(virtual: str, name: str) -> bool:
-        row = None if crossing else owner(virtual)
-        return row is not None and name in row.calls
-
-    def max_glob_matches(virtual: str) -> int | None:
-        row = None if crossing else owner(virtual)
-        return row.max_glob_matches if row is not None else None
-
-    def searchable(virtual: str) -> tuple[str, ...] | None:
-        row = None if crossing else owner(virtual)
-        return row.searchable if row is not None else None
-
-    return MountView(
-        descendants=below,
-        visible_descendants=visible_below,
-        is_root=is_root,
-        root_of=root_of,
-        max_du_entries=max_du_entries,
-        answers=answers,
-        max_glob_matches=max_glob_matches,
-        searchable=searchable,
-    )
+    return view_of(files).mounts(crossing)
 
 
 def owed_names(files: Files | None, directory: str) -> list[str]:
@@ -432,13 +345,7 @@ def owed_names(files: Files | None, directory: str) -> list[str]:
     """
     if files is None:
         return []
-    namespace = namespace_of(files)
-    return namespace_names(
-        namespace.vis(),
-        [m.prefix for m in namespace.mounts()],
-        namespace.links,
-        directory,
-    )
+    return view_of(files).owed(directory)
 
 
 def links_of(ctx: Context) -> LinkView | None:
@@ -498,7 +405,7 @@ def visibility_of(files: Files | None) -> Visibility | None:
     Args:
         files (Files | None): the session's files.
     """
-    return namespace_of(files).vis() if files is not None else None
+    return view_of(files).vis() if files is not None else None
 
 
 def link_resolver(ctx: Context) -> LinkResolver | None:
@@ -530,7 +437,7 @@ def follow_of(ctx: Context) -> FollowOperands | None:
     Args:
         ctx (Context): the invocation's context.
     """
-    return namespace_of(ctx.vfs).follow if ctx.vfs is not None else None
+    return view_of(ctx.vfs).follow if ctx.vfs is not None else None
 
 
 __all__ = [
