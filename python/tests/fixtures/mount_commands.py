@@ -12,8 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import importlib
+import pkgutil
 from collections.abc import Mapping, Sequence
 
+import mirage.commands.builtin as builtin
 from mirage.commands.builtin.generic_bind.factory import GENERIC_COMMANDS
 from mirage.commands.config import Command, Context
 from mirage.commands.spec.types import FlagValue
@@ -74,3 +77,31 @@ async def run_on_mount(
         name, list(paths), list(texts), dict(flags or {}), ctx
     )
     return await materialize(stdout) or b"", io
+
+
+def registered_commands() -> tuple[list[Command], list[str]]:
+    """Every registered builtin command, plus modules that would not import.
+
+    The failures are returned rather than skipped for the reason
+    ``scripts/gen_specs.py`` states: a module that will not import
+    registers nothing, so a command missing its delegation would pass
+    this check by being absent rather than by being correct.
+    """
+    found: list[Command] = []
+    failed: list[str] = []
+    seen: set[int] = set()
+    for info in pkgutil.walk_packages(
+        builtin.__path__, builtin.__name__ + "."
+    ):
+        try:
+            module = importlib.import_module(info.name)
+        except ImportError as exc:
+            failed.append(f"{info.name}: {exc}")
+            continue
+        for value in vars(module).values():
+            cmds = getattr(value, "registered_commands_commands", None)
+            if cmds is None or id(value) in seen:
+                continue
+            seen.add(id(value))
+            found.extend(cmds)
+    return found, failed

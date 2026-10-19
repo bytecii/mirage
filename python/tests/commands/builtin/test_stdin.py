@@ -17,6 +17,7 @@ import asyncio
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.commands.builtin.conftest import run_raw as _run_raw
 from tests.fixtures.driver_ops import ops
 
 
@@ -31,12 +32,6 @@ def _ws() -> Workspace:
         {"/data": (mem, MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
-
-
-def _run_raw(ws, cmd, cwd="/", stdin=None):
-    ws._cwd = cwd
-    io = asyncio.run(ws.shell(cmd, stdin=stdin))
-    return io.stdout, io
 
 
 async def _drain_async(stream):

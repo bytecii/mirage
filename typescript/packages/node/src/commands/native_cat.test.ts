@@ -18,24 +18,31 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native cat (%s backend)', (kind) => {
-  it('cat basic file matches native /bin/sh cat', async () => {
+  it.each([
+    {
+      name: 'cat basic file matches native /bin/sh cat',
+      input: 'hello world\n',
+      command: 'cat /data/f.txt',
+      nativeCommand: 'cat f.txt',
+    },
+    {
+      name: 'cat -n matches native',
+      input: 'hello\nworld\n',
+      command: 'cat -n /data/f.txt',
+      nativeCommand: 'cat -n f.txt',
+    },
+    {
+      name: 'cat multiline matches native',
+      input: 'line1\nline2\nline3\n',
+      command: 'cat /data/f.txt',
+      nativeCommand: 'cat f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('hello world\n'))
-      const m = await env.mirage('cat /data/f.txt')
-      const n = await env.native('cat f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('cat -n matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nworld\n'))
-      const m = await env.mirage('cat -n /data/f.txt')
-      const n = await env.native('cat -n f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -48,18 +55,6 @@ describe.each(NATIVE_BACKENDS)('native cat (%s backend)', (kind) => {
       const data = ENC.encode('from stdin\n')
       const m = await env.mirage('cat', data)
       const n = await env.native('cat', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('cat multiline matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('line1\nline2\nline3\n'))
-      const m = await env.mirage('cat /data/f.txt')
-      const n = await env.native('cat f.txt')
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

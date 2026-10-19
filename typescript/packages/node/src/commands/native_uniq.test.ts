@@ -18,12 +18,31 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native uniq (%s backend)', (kind) => {
-  it('uniq default matches native', async () => {
+  it.each([
+    {
+      name: 'uniq default matches native',
+      input: 'a\na\nb\nc\nc\n',
+      command: 'uniq /data/f.txt',
+      nativeCommand: 'uniq f.txt',
+    },
+    {
+      name: 'uniq -d matches native',
+      input: 'a\na\nb\nc\nc\n',
+      command: 'uniq -d /data/f.txt',
+      nativeCommand: 'uniq -d f.txt',
+    },
+    {
+      name: 'uniq -u matches native',
+      input: 'a\na\nb\nc\nc\n',
+      command: 'uniq -u /data/f.txt',
+      nativeCommand: 'uniq -u f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a\na\nb\nc\nc\n'))
-      const m = await env.mirage('uniq /data/f.txt')
-      const n = await env.native('uniq f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -56,60 +75,37 @@ describe.each(NATIVE_BACKENDS)('native uniq (%s backend)', (kind) => {
     }
   })
 
-  it('uniq -d matches native', async () => {
+  it.each([
+    {
+      name: 'uniq stdin matches native',
+      input: 'a\na\nb\n',
+      command: 'uniq',
+      nativeCommand: 'uniq',
+    },
+    {
+      name: 'uniq -i matches native',
+      input: 'Hello\nhello\nWorld\n',
+      command: 'uniq -i',
+      nativeCommand: 'uniq -i',
+    },
+    {
+      name: 'uniq -f matches native',
+      input: 'a 1\nb 1\nc 2\n',
+      command: 'uniq -f 1',
+      nativeCommand: 'uniq -f 1',
+    },
+    {
+      name: 'uniq -s matches native',
+      input: 'xxhello\nyyhello\nzzworld\n',
+      command: 'uniq -s 2',
+      nativeCommand: 'uniq -s 2',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a\na\nb\nc\nc\n'))
-      const m = await env.mirage('uniq -d /data/f.txt')
-      const n = await env.native('uniq -d f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('uniq -u matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\na\nb\nc\nc\n'))
-      const m = await env.mirage('uniq -u /data/f.txt')
-      const n = await env.native('uniq -u f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('uniq stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('a\na\nb\n')
-      const m = await env.mirage('uniq', data)
-      const n = await env.native('uniq', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('uniq -i matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('Hello\nhello\nWorld\n')
-      const m = await env.mirage('uniq -i', data)
-      const n = await env.native('uniq -i', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('uniq -f matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('a 1\nb 1\nc 2\n')
-      const m = await env.mirage('uniq -f 1', data)
-      const n = await env.native('uniq -f 1', data)
+      const data = ENC.encode(input)
+      const m = await env.mirage(command, data)
+      const n = await env.native(nativeCommand, data)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -122,18 +118,6 @@ describe.each(NATIVE_BACKENDS)('native uniq (%s backend)', (kind) => {
       const data = ENC.encode('abc\nabd\nxyz\n')
       const m = await env.mirage('uniq -w 2', data)
       expect(m).toBe('abc\nxyz\n')
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('uniq -s matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('xxhello\nyyhello\nzzworld\n')
-      const m = await env.mirage('uniq -s 2', data)
-      const n = await env.native('uniq -s 2', data)
-      expect(m).toBe(n)
     } finally {
       await env.cleanup()
     }

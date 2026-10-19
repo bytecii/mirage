@@ -8,6 +8,7 @@ from mirage.errors.fs import eacces, efbig
 from mirage.io.stream import close_quietly
 from mirage.io.types import materialize
 from mirage.types import FileStat, FileType, PathSpec
+from tests.commands.builtin.conftest import TrackedSource as _Tracked
 
 
 async def _drain(gen):
@@ -77,25 +78,6 @@ async def test_head_lets_a_cancel_into_ready_input(n, piece):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert loop.time() - start < 1
-
-
-class _Tracked:
-    """A source that remembers being closed; collection never closes it."""
-
-    def __init__(self, *chunks: bytes) -> None:
-        self.chunks = list(chunks)
-        self.closed = False
-
-    def __aiter__(self) -> "_Tracked":
-        return self
-
-    async def __anext__(self) -> bytes:
-        if not self.chunks:
-            raise StopAsyncIteration
-        return self.chunks.pop(0)
-
-    async def aclose(self) -> None:
-        self.closed = True
 
 
 @pytest.mark.asyncio

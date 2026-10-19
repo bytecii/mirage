@@ -16,88 +16,52 @@ import { describe, expect, it } from 'vitest'
 import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts'
 
 describe.each(NATIVE_BACKENDS)('native echo (%s backend)', (kind) => {
-  it('echo basic matches native', async () => {
+  it.each([
+    {
+      name: 'echo basic matches native',
+      command: 'echo hello world',
+      nativeCommand: 'echo hello world',
+    },
+    {
+      name: 'echo -n matches native',
+      command: 'echo -n hello',
+      nativeCommand: '/bin/echo -n hello',
+    },
+    {
+      name: 'echo -e newline matches native printf',
+      command: String.raw`echo -e 'hello\nworld'`,
+      nativeCommand: String.raw`printf '%s\n' 'hello' 'world'`,
+    },
+    {
+      name: 'echo -e tab matches native printf',
+      command: String.raw`echo -e 'col1\tcol2'`,
+      nativeCommand: String.raw`printf 'col1\tcol2\n'`,
+    },
+    {
+      name: 'echo -e backslash matches native printf',
+      command: String.raw`echo -e 'a\\b'`,
+      nativeCommand: String.raw`printf 'a\\b\n'`,
+    },
+    {
+      name: 'echo -e carriage return matches native printf',
+      command: String.raw`echo -e 'hello\rbye'`,
+      nativeCommand: String.raw`printf 'hello\rbye\n'`,
+    },
+    {
+      name: 'echo -e mixed matches native printf',
+      command: String.raw`echo -e 'a\tb\nc'`,
+      nativeCommand: String.raw`printf 'a\tb\nc\n'`,
+    },
+    {
+      name: 'echo -e without escapes matches native printf',
+      command: 'echo -e hello',
+      nativeCommand: String.raw`printf 'hello\n'`,
+    },
+  ])('$name', async ({ command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      const m = await env.mirage('echo hello world')
-      const n = await env.native('echo hello world')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -n matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage('echo -n hello')
-      const n = await env.native('/bin/echo -n hello')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -e newline matches native printf', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage(String.raw`echo -e 'hello\nworld'`)
-      const n = await env.native(String.raw`printf '%s\n' 'hello' 'world'`)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -e tab matches native printf', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage(String.raw`echo -e 'col1\tcol2'`)
-      const n = await env.native(String.raw`printf 'col1\tcol2\n'`)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -e backslash matches native printf', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage(String.raw`echo -e 'a\\b'`)
-      const n = await env.native(String.raw`printf 'a\\b\n'`)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -e carriage return matches native printf', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage(String.raw`echo -e 'hello\rbye'`)
-      const n = await env.native(String.raw`printf 'hello\rbye\n'`)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -e mixed matches native printf', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage(String.raw`echo -e 'a\tb\nc'`)
-      const n = await env.native(String.raw`printf 'a\tb\nc\n'`)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('echo -e without escapes matches native printf', async () => {
-    const env = makeEnv(kind)
-    try {
-      const m = await env.mirage('echo -e hello')
-      const n = await env.native(String.raw`printf 'hello\n'`)
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

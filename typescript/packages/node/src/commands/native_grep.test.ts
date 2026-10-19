@@ -18,336 +18,200 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native grep (%s backend)', (kind) => {
-  it('grep basic matches native', async () => {
+  it.each([
+    {
+      name: 'grep basic matches native',
+      input: 'hello world\nfoo bar\nhello again\n',
+      command: 'grep hello /data/f.txt',
+      nativeCommand: 'grep hello f.txt',
+    },
+    {
+      name: 'grep -i (case insensitive) matches native',
+      input: 'Hello\nworld\nHELLO\n',
+      command: 'grep -i hello /data/f.txt',
+      nativeCommand: 'grep -i hello f.txt',
+    },
+    {
+      name: 'grep -v (invert match) matches native',
+      input: 'hello\nworld\nfoo\n',
+      command: 'grep -v hello /data/f.txt',
+      nativeCommand: 'grep -v hello f.txt',
+    },
+    {
+      name: 'grep -n (line numbers) matches native',
+      input: 'hello\nworld\nhello\n',
+      command: 'grep -n hello /data/f.txt',
+      nativeCommand: 'grep -n hello f.txt',
+    },
+    {
+      name: 'grep -c (count) matches native',
+      input: 'hello\nworld\nhello\n',
+      command: 'grep -c hello /data/f.txt',
+      nativeCommand: 'grep -c hello f.txt',
+    },
+    {
+      name: 'grep -w (word) matches native',
+      input: 'hello\nhelloworld\nhello there\n',
+      command: 'grep -w hello /data/f.txt',
+      nativeCommand: 'grep -w hello f.txt',
+    },
+    {
+      name: 'grep -F (fixed string) matches native',
+      input: 'a.b\na*b\naXb\n',
+      command: "grep -F 'a.b' /data/f.txt",
+      nativeCommand: "grep -F 'a.b' f.txt",
+    },
+    {
+      name: 'grep -o (only matching) matches native',
+      input: 'hello world\nfoo hello\n',
+      command: 'grep -o hello /data/f.txt',
+      nativeCommand: 'grep -o hello f.txt',
+    },
+    {
+      name: 'grep -m (max count) matches native',
+      input: 'a\na\na\na\n',
+      command: 'grep -m 2 a /data/f.txt',
+      nativeCommand: 'grep -m 2 a f.txt',
+    },
+    {
+      name: 'grep -iv (combined) matches native',
+      input: 'Hello\nworld\nHELLO\nfoo\n',
+      command: 'grep -iv hello /data/f.txt',
+      nativeCommand: 'grep -iv hello f.txt',
+    },
+    {
+      name: 'grep -nw (combined) matches native',
+      input: 'hello\nhelloworld\nhello there\n',
+      command: 'grep -nw hello /data/f.txt',
+      nativeCommand: 'grep -nw hello f.txt',
+    },
+    {
+      name: 'grep -Fc (combined) matches native',
+      input: 'a.b\na.b\naXb\n',
+      command: "grep -Fc 'a.b' /data/f.txt",
+      nativeCommand: "grep -Fc 'a.b' f.txt",
+    },
+    {
+      name: 'grep no match matches native',
+      input: 'hello\nworld\n',
+      command: 'grep zzz /data/f.txt',
+      nativeCommand: 'grep zzz f.txt',
+    },
+    {
+      name: 'grep -A (after context) matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'grep -A 1 c /data/f.txt',
+      nativeCommand: 'grep -A 1 c f.txt',
+    },
+    {
+      name: 'grep -B (before context) matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'grep -B 1 c /data/f.txt',
+      nativeCommand: 'grep -B 1 c f.txt',
+    },
+    {
+      name: 'grep -C (context) matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'grep -C 1 c /data/f.txt',
+      nativeCommand: 'grep -C 1 c f.txt',
+    },
+    {
+      name: 'grep -A multiple matches matches native',
+      input: 'x\na\nb\nc\na\nd\ne\n',
+      command: 'grep -A 1 a /data/f.txt',
+      nativeCommand: 'grep -A 1 a f.txt',
+    },
+    {
+      name: 'grep -B multiple matches matches native',
+      input: 'x\ny\na\nb\nc\na\n',
+      command: 'grep -B 1 a /data/f.txt',
+      nativeCommand: 'grep -B 1 a f.txt',
+    },
+    {
+      name: 'grep -C multiple matches matches native',
+      input: 'w\nx\na\ny\nz\na\nb\n',
+      command: 'grep -C 1 a /data/f.txt',
+      nativeCommand: 'grep -C 1 a f.txt',
+    },
+    {
+      name: 'grep -A overlapping matches native',
+      input: 'a\nb\na\nc\nd\n',
+      command: 'grep -A 2 a /data/f.txt',
+      nativeCommand: 'grep -A 2 a f.txt',
+    },
+    {
+      name: 'grep -n -A combined matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'grep -n -A 1 c /data/f.txt',
+      nativeCommand: 'grep -n -A 1 c f.txt',
+    },
+    {
+      name: 'grep -C -i combined matches native',
+      input: 'aaa\nbbb\nAAA\nccc\n',
+      command: 'grep -C 1 -i aaa /data/f.txt',
+      nativeCommand: 'grep -C 1 -i aaa f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('hello world\nfoo bar\nhello again\n'))
-      const m = await env.mirage('grep hello /data/f.txt')
-      const n = await env.native('grep hello f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
     }
   })
 
-  it('grep -i (case insensitive) matches native', async () => {
+  it.each([
+    {
+      name: 'grep stdin matches native',
+      input: 'hello world\nfoo bar\nhello again\n',
+      command: 'grep hello',
+      nativeCommand: 'grep hello',
+    },
+    {
+      name: 'grep stdin -i matches native',
+      input: 'Hello\nworld\nHELLO\n',
+      command: 'grep -i hello',
+      nativeCommand: 'grep -i hello',
+    },
+    {
+      name: 'grep stdin -c matches native',
+      input: 'a\nb\na\n',
+      command: 'grep -c a',
+      nativeCommand: 'grep -c a',
+    },
+    {
+      name: 'grep -e stdin matches native',
+      input: 'hello\nworld\nfoo\n',
+      command: 'grep -e hello',
+      nativeCommand: 'grep -e hello',
+    },
+    {
+      name: 'grep -A stdin matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'grep -A 1 c',
+      nativeCommand: 'grep -A 1 c',
+    },
+    {
+      name: 'grep -C stdin matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'grep -C 1 c',
+      nativeCommand: 'grep -C 1 c',
+    },
+    {
+      name: 'grep -E extended regex matches native',
+      input: 'foo\nbar\nbaz\n',
+      command: "grep -E 'foo|bar'",
+      nativeCommand: "grep -E 'foo|bar'",
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('Hello\nworld\nHELLO\n'))
-      const m = await env.mirage('grep -i hello /data/f.txt')
-      const n = await env.native('grep -i hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -v (invert match) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nworld\nfoo\n'))
-      const m = await env.mirage('grep -v hello /data/f.txt')
-      const n = await env.native('grep -v hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -n (line numbers) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nworld\nhello\n'))
-      const m = await env.mirage('grep -n hello /data/f.txt')
-      const n = await env.native('grep -n hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -c (count) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nworld\nhello\n'))
-      const m = await env.mirage('grep -c hello /data/f.txt')
-      const n = await env.native('grep -c hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -w (word) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nhelloworld\nhello there\n'))
-      const m = await env.mirage('grep -w hello /data/f.txt')
-      const n = await env.native('grep -w hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -F (fixed string) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a.b\na*b\naXb\n'))
-      const m = await env.mirage("grep -F 'a.b' /data/f.txt")
-      const n = await env.native("grep -F 'a.b' f.txt")
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -o (only matching) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello world\nfoo hello\n'))
-      const m = await env.mirage('grep -o hello /data/f.txt')
-      const n = await env.native('grep -o hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -m (max count) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\na\na\na\n'))
-      const m = await env.mirage('grep -m 2 a /data/f.txt')
-      const n = await env.native('grep -m 2 a f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -iv (combined) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('Hello\nworld\nHELLO\nfoo\n'))
-      const m = await env.mirage('grep -iv hello /data/f.txt')
-      const n = await env.native('grep -iv hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -nw (combined) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nhelloworld\nhello there\n'))
-      const m = await env.mirage('grep -nw hello /data/f.txt')
-      const n = await env.native('grep -nw hello f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -Fc (combined) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a.b\na.b\naXb\n'))
-      const m = await env.mirage("grep -Fc 'a.b' /data/f.txt")
-      const n = await env.native("grep -Fc 'a.b' f.txt")
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep no match matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\nworld\n'))
-      const m = await env.mirage('grep zzz /data/f.txt')
-      const n = await env.native('grep zzz f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('hello world\nfoo bar\nhello again\n')
-      const m = await env.mirage('grep hello', data)
-      const n = await env.native('grep hello', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep stdin -i matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('Hello\nworld\nHELLO\n')
-      const m = await env.mirage('grep -i hello', data)
-      const n = await env.native('grep -i hello', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep stdin -c matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('a\nb\na\n')
-      const m = await env.mirage('grep -c a', data)
-      const n = await env.native('grep -c a', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -A (after context) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\n'))
-      const m = await env.mirage('grep -A 1 c /data/f.txt')
-      const n = await env.native('grep -A 1 c f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -B (before context) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\n'))
-      const m = await env.mirage('grep -B 1 c /data/f.txt')
-      const n = await env.native('grep -B 1 c f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -C (context) matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\n'))
-      const m = await env.mirage('grep -C 1 c /data/f.txt')
-      const n = await env.native('grep -C 1 c f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -A multiple matches matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('x\na\nb\nc\na\nd\ne\n'))
-      const m = await env.mirage('grep -A 1 a /data/f.txt')
-      const n = await env.native('grep -A 1 a f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -B multiple matches matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('x\ny\na\nb\nc\na\n'))
-      const m = await env.mirage('grep -B 1 a /data/f.txt')
-      const n = await env.native('grep -B 1 a f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -C multiple matches matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('w\nx\na\ny\nz\na\nb\n'))
-      const m = await env.mirage('grep -C 1 a /data/f.txt')
-      const n = await env.native('grep -C 1 a f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -A overlapping matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\na\nc\nd\n'))
-      const m = await env.mirage('grep -A 2 a /data/f.txt')
-      const n = await env.native('grep -A 2 a f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -e stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('hello\nworld\nfoo\n')
-      const m = await env.mirage('grep -e hello', data)
-      const n = await env.native('grep -e hello', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -n -A combined matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\n'))
-      const m = await env.mirage('grep -n -A 1 c /data/f.txt')
-      const n = await env.native('grep -n -A 1 c f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -C -i combined matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('aaa\nbbb\nAAA\nccc\n'))
-      const m = await env.mirage('grep -C 1 -i aaa /data/f.txt')
-      const n = await env.native('grep -C 1 -i aaa f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -A stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('a\nb\nc\nd\ne\n')
-      const m = await env.mirage('grep -A 1 c', data)
-      const n = await env.native('grep -A 1 c', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -C stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('a\nb\nc\nd\ne\n')
-      const m = await env.mirage('grep -C 1 c', data)
-      const n = await env.native('grep -C 1 c', data)
+      const data = ENC.encode(input)
+      const m = await env.mirage(command, data)
+      const n = await env.native(nativeCommand, data)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -371,18 +235,6 @@ describe.each(NATIVE_BACKENDS)('native grep (%s backend)', (kind) => {
       env.createFile('a.txt', ENC.encode('hello\n'))
       const result = await env.mirage('grep -r -l hello /data')
       expect(result).toContain('a.txt')
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('grep -E extended regex matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('foo\nbar\nbaz\n')
-      const m = await env.mirage("grep -E 'foo|bar'", data)
-      const n = await env.native("grep -E 'foo|bar'", data)
-      expect(m).toBe(n)
     } finally {
       await env.cleanup()
     }

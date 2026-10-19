@@ -18,36 +18,31 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native cut (%s backend)', (kind) => {
-  it('cut -f -d matches native', async () => {
+  it.each([
+    {
+      name: 'cut -f -d matches native',
+      input: 'a:b:c\nd:e:f\n',
+      command: 'cut -f 1 -d : /data/f.txt',
+      nativeCommand: 'cut -f 1 -d : f.txt',
+    },
+    {
+      name: 'cut -f with tab default matches native',
+      input: 'a\tb\tc\n',
+      command: 'cut -f 2 /data/f.txt',
+      nativeCommand: 'cut -f 2 f.txt',
+    },
+    {
+      name: 'cut -c character range matches native',
+      input: 'hello world\n',
+      command: 'cut -c 1-5 /data/f.txt',
+      nativeCommand: 'cut -c 1-5 f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a:b:c\nd:e:f\n'))
-      const m = await env.mirage('cut -f 1 -d : /data/f.txt')
-      const n = await env.native('cut -f 1 -d : f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('cut -f with tab default matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\tb\tc\n'))
-      const m = await env.mirage('cut -f 2 /data/f.txt')
-      const n = await env.native('cut -f 2 f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('cut -c character range matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello world\n'))
-      const m = await env.mirage('cut -c 1-5 /data/f.txt')
-      const n = await env.native('cut -c 1-5 f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

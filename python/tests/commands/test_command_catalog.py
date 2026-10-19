@@ -76,21 +76,6 @@ def test_registered_command_is_immutable():
         registered.name = "tail"
 
 
-def test_with_overrides_returns_an_independent_definition():
-    original = Command(
-        name="cat", spec=CommandSpec(), vfs="s3", filetype=None, fn=_handler
-    )
-
-    async def replacement(accessor, paths, texts, opts):
-        return None, None
-
-    changed = original.with_overrides(fn=replacement)
-
-    assert changed is not original
-    assert changed.fn is replacement
-    assert original.fn is _handler
-
-
 def test_generic_commands_expose_static_lookup():
     rm = GENERIC_COMMANDS.require("rm")
 

@@ -14,98 +14,19 @@ from mirage.commands.config import Context
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.types import (
-    ContentType,
-    FileStat,
-    FileType,
     MountMode,
     PathSpec,
     WalkErrno,
 )
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.fixtures.answers import memory_tree as _make_backend
 
 
 def _spec(path: str) -> PathSpec:
     return PathSpec(
         vfs_path=(path).strip("/"), virtual=path, directory=path, resolved=True
     )
-
-
-def _make_backend(files: dict[str, bytes], dirs: set[str] | None = None):
-    inferred_dirs = set(dirs) if dirs is not None else set()
-    for f in files:
-        parts = f.split("/")
-        for i in range(1, len(parts)):
-            d = "/".join(parts[:i]) or "/"
-            inferred_dirs.add(d)
-    inferred_dirs.add("/")
-
-    async def readdir(path):
-        spec = (
-            path
-            if isinstance(path, PathSpec)
-            else PathSpec(
-                vfs_path=(path).strip("/"), virtual=path, directory=path
-            )
-        )
-        p = spec.virtual.rstrip("/") or "/"
-        if p not in inferred_dirs:
-            raise FileNotFoundError(p)
-        prefix = p + "/" if p != "/" else "/"
-        children: set[str] = set()
-        for f in files:
-            if f.startswith(prefix):
-                rest = f[len(prefix) :]
-                child = rest.split("/")[0]
-                children.add(prefix + child)
-        for d in inferred_dirs:
-            if d == p:
-                continue
-            if d.startswith(prefix):
-                rest = d[len(prefix) :]
-                child = rest.split("/")[0]
-                children.add(prefix + child)
-        return sorted(children)
-
-    async def stat(path):
-        spec = (
-            path
-            if isinstance(path, PathSpec)
-            else PathSpec(
-                vfs_path=(path).strip("/"), virtual=path, directory=path
-            )
-        )
-        p = spec.virtual
-        if p in files:
-            return FileStat(
-                name=p.rsplit("/", 1)[-1] or p,
-                size=len(files[p]),
-                type=FileType.FILE,
-                content=ContentType.TEXT,
-            )
-        if p.rstrip("/") in inferred_dirs or p in inferred_dirs:
-            return FileStat(
-                name=p.rsplit("/", 1)[-1] or "/", type=FileType.DIRECTORY
-            )
-        raise FileNotFoundError(p)
-
-    async def read_bytes(path):
-        spec = (
-            path
-            if isinstance(path, PathSpec)
-            else PathSpec(
-                vfs_path=(path).strip("/"), virtual=path, directory=path
-            )
-        )
-        if spec.virtual not in files:
-            raise FileNotFoundError(spec.virtual)
-        return files[spec.virtual]
-
-    async def read_stream(path):
-        data = await read_bytes(path)
-        yield data
-
-    return readdir, stat, read_bytes, read_stream
 
 
 async def _drain_async(stdout):

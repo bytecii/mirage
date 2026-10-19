@@ -3,41 +3,16 @@ import sys
 import pytest
 
 from mirage.types import MountMode, PathSpec
-from mirage.vfs.base import BaseVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
-
-
-class _OverlayRAMVFS(RAMVFS):
-    """RAM VFS without a native setattr, standing in for an API backend
-    that has no attribute slot."""
-
-    setattr = BaseVFS.setattr
-
-
-def _make_overlay_ws(
-    files: dict[str, bytes],
-) -> tuple[Workspace, _OverlayRAMVFS]:
-    vfs = _OverlayRAMVFS()
-    vfs._store.files.update(files)
-    ws = Workspace({"/data/": (vfs, MountMode.WRITE)}, mode=MountMode.WRITE)
-    return ws, vfs
+from tests.fixtures.vfs_io import metadata_workspace as _make_ws
+from tests.fixtures.vfs_io import overlay_workspace as _make_overlay_ws
+from tests.fixtures.vfs_io import run_text as _run
 
 
 async def _stat_mode(ws: Workspace, path: str) -> int | None:
     st, _ = await ws.dispatch("stat", PathSpec.from_str_path(path))
     return st.mode
-
-
-def _make_ws(mode: MountMode = MountMode.WRITE) -> Workspace:
-    vfs = RAMVFS()
-    vfs._store.files["/f.txt"] = b"hello"
-    return Workspace({"/data/": (vfs, mode)}, mode=MountMode.WRITE)
-
-
-async def _run(ws: Workspace, cmd: str) -> tuple[int, str, str]:
-    r = await ws.shell(cmd)
-    return r.exit_code, await r.stdout_str(), await r.stderr_str()
 
 
 @pytest.mark.asyncio

@@ -32,24 +32,31 @@ describe.each(NATIVE_BACKENDS)('native tail (%s backend)', (kind) => {
     }
   })
 
-  it('tail -n 3 matches native', async () => {
+  it.each([
+    {
+      name: 'tail -n 3 matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'tail -n 3 /data/f.txt',
+      nativeCommand: 'tail -n 3 f.txt',
+    },
+    {
+      name: 'tail -c 5 matches native',
+      input: 'hello world\n',
+      command: 'tail -c 5 /data/f.txt',
+      nativeCommand: 'tail -c 5 f.txt',
+    },
+    {
+      name: 'tail -n +N matches native',
+      input: 'a\nb\nc\nd\ne\n',
+      command: 'tail -n +3 /data/f.txt',
+      nativeCommand: 'tail -n +3 f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\n'))
-      const m = await env.mirage('tail -n 3 /data/f.txt')
-      const n = await env.native('tail -n 3 f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('tail -c 5 matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello world\n'))
-      const m = await env.mirage('tail -c 5 /data/f.txt')
-      const n = await env.native('tail -c 5 f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -62,18 +69,6 @@ describe.each(NATIVE_BACKENDS)('native tail (%s backend)', (kind) => {
       const data = ENC.encode('a\nb\nc\nd\ne\n')
       const m = await env.mirage('tail -n 3', data)
       const n = await env.native('tail -n 3', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('tail -n +N matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\nd\ne\n'))
-      const m = await env.mirage('tail -n +3 /data/f.txt')
-      const n = await env.native('tail -n +3 f.txt')
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

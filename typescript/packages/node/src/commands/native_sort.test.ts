@@ -18,180 +18,116 @@ import { makeEnv, NATIVE_BACKENDS } from '../../tests/commands/native_fixture.ts
 const ENC = new TextEncoder()
 
 describe.each(NATIVE_BACKENDS)('native sort (%s backend)', (kind) => {
-  it('sort default matches native', async () => {
+  it.each([
+    {
+      name: 'sort default matches native',
+      input: 'cherry\napple\nbanana\n',
+      command: 'sort /data/f.txt',
+      nativeCommand: 'sort f.txt',
+    },
+    {
+      name: 'sort -r reverse matches native',
+      input: 'a\nb\nc\n',
+      command: 'sort -r /data/f.txt',
+      nativeCommand: 'sort -r f.txt',
+    },
+    {
+      name: 'sort -n numeric matches native',
+      input: '10\n2\n1\n20\n',
+      command: 'sort -n /data/f.txt',
+      nativeCommand: 'sort -n f.txt',
+    },
+    {
+      name: 'sort -u unique matches native',
+      input: 'a\nb\na\nc\nb\n',
+      command: 'sort -u /data/f.txt',
+      nativeCommand: 'sort -u f.txt',
+    },
+    {
+      name: 'sort -nr matches native',
+      input: '10\n2\n1\n20\n',
+      command: 'sort -nr /data/f.txt',
+      nativeCommand: 'sort -nr f.txt',
+    },
+    {
+      name: 'sort -t -k -n matches native',
+      input: 'b,3\na,1\nc,2\n',
+      command: 'sort -t , -k 2 -n /data/f.txt',
+      nativeCommand: 'sort -t , -k 2 -n f.txt',
+    },
+    {
+      name: 'sort -h human numeric matches native',
+      input: '10K\n1M\n5G\n100\n2K\n',
+      command: 'sort -h /data/f.txt',
+      nativeCommand: 'sort -h f.txt',
+    },
+    {
+      name: 'sort -hr matches native',
+      input: '10K\n1M\n5G\n100\n2K\n',
+      command: 'sort -hr /data/f.txt',
+      nativeCommand: 'sort -hr f.txt',
+    },
+    {
+      name: 'sort -V version matches native',
+      input: 'v1.10\nv1.2\nv1.1\nv2.0\n',
+      command: 'sort -V /data/f.txt',
+      nativeCommand: 'sort -V f.txt',
+    },
+    {
+      name: 'sort -Vr matches native',
+      input: 'v1.10\nv1.2\nv1.1\nv2.0\n',
+      command: 'sort -Vr /data/f.txt',
+      nativeCommand: 'sort -Vr f.txt',
+    },
+    {
+      name: 'sort -s stable matches native',
+      input: 'b 2\na 1\nc 1\na 2\n',
+      command: "sort -s -k 2 -t ' ' /data/f.txt",
+      nativeCommand: "sort -s -k 2 -t ' ' f.txt",
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('cherry\napple\nbanana\n'))
-      const m = await env.mirage('sort /data/f.txt')
-      const n = await env.native('sort f.txt')
+      env.createFile('f.txt', ENC.encode(input))
+      const m = await env.mirage(command)
+      const n = await env.native(nativeCommand)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
     }
   })
 
-  it('sort -r reverse matches native', async () => {
+  it.each([
+    {
+      name: 'sort stdin matches native',
+      input: 'cherry\napple\nbanana\n',
+      command: 'sort',
+      nativeCommand: 'sort',
+    },
+    {
+      name: 'sort -h stdin matches native',
+      input: '1G\n500M\n2T\n100K\n',
+      command: 'sort -h',
+      nativeCommand: 'sort -h',
+    },
+    {
+      name: 'sort -V stdin matches native',
+      input: 'lib-2.1\nlib-1.10\nlib-1.2\nlib-3.0\n',
+      command: 'sort -V',
+      nativeCommand: 'sort -V',
+    },
+    {
+      name: 'sort -s stdin matches native',
+      input: 'b 2\na 1\nc 1\na 2\n',
+      command: "sort -s -k 2 -t ' '",
+      nativeCommand: "sort -s -k 2 -t ' '",
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\n'))
-      const m = await env.mirage('sort -r /data/f.txt')
-      const n = await env.native('sort -r f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -n numeric matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('10\n2\n1\n20\n'))
-      const m = await env.mirage('sort -n /data/f.txt')
-      const n = await env.native('sort -n f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -u unique matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('a\nb\na\nc\nb\n'))
-      const m = await env.mirage('sort -u /data/f.txt')
-      const n = await env.native('sort -u f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -nr matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('10\n2\n1\n20\n'))
-      const m = await env.mirage('sort -nr /data/f.txt')
-      const n = await env.native('sort -nr f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -t -k -n matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('b,3\na,1\nc,2\n'))
-      const m = await env.mirage('sort -t , -k 2 -n /data/f.txt')
-      const n = await env.native('sort -t , -k 2 -n f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('cherry\napple\nbanana\n')
-      const m = await env.mirage('sort', data)
-      const n = await env.native('sort', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -h human numeric matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('10K\n1M\n5G\n100\n2K\n'))
-      const m = await env.mirage('sort -h /data/f.txt')
-      const n = await env.native('sort -h f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -hr matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('10K\n1M\n5G\n100\n2K\n'))
-      const m = await env.mirage('sort -hr /data/f.txt')
-      const n = await env.native('sort -hr f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -h stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('1G\n500M\n2T\n100K\n')
-      const m = await env.mirage('sort -h', data)
-      const n = await env.native('sort -h', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -V version matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('v1.10\nv1.2\nv1.1\nv2.0\n'))
-      const m = await env.mirage('sort -V /data/f.txt')
-      const n = await env.native('sort -V f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -Vr matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('v1.10\nv1.2\nv1.1\nv2.0\n'))
-      const m = await env.mirage('sort -Vr /data/f.txt')
-      const n = await env.native('sort -Vr f.txt')
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -V stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('lib-2.1\nlib-1.10\nlib-1.2\nlib-3.0\n')
-      const m = await env.mirage('sort -V', data)
-      const n = await env.native('sort -V', data)
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -s stable matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('b 2\na 1\nc 1\na 2\n'))
-      const m = await env.mirage("sort -s -k 2 -t ' ' /data/f.txt")
-      const n = await env.native("sort -s -k 2 -t ' ' f.txt")
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('sort -s stdin matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      const data = ENC.encode('b 2\na 1\nc 1\na 2\n')
-      const m = await env.mirage("sort -s -k 2 -t ' '", data)
-      const n = await env.native("sort -s -k 2 -t ' '", data)
+      const data = ENC.encode(input)
+      const m = await env.mirage(command, data)
+      const n = await env.native(nativeCommand, data)
       expect(m).toBe(n)
     } finally {
       await env.cleanup()

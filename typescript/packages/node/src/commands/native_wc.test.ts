@@ -22,36 +22,55 @@ function firstField(s: string): string {
 }
 
 describe.each(NATIVE_BACKENDS)('native wc (%s backend)', (kind) => {
-  it('wc -l matches native', async () => {
+  it.each([
+    {
+      name: 'wc -l matches native',
+      input: 'a\nb\nc\n',
+      command: 'wc -l /data/f.txt',
+      nativeCommand: 'wc -l f.txt',
+    },
+    {
+      name: 'wc -w matches native',
+      input: 'hello world\nfoo\n',
+      command: 'wc -w /data/f.txt',
+      nativeCommand: 'wc -w f.txt',
+    },
+    {
+      name: 'wc -c matches native',
+      input: 'hello\n',
+      command: 'wc -c /data/f.txt',
+      nativeCommand: 'wc -c f.txt',
+    },
+    {
+      name: 'wc -L matches native',
+      input: 'short\na much longer line\nmed\n',
+      command: 'wc -L /data/f.txt',
+      nativeCommand: 'wc -L f.txt',
+    },
+    {
+      name: 'wc -L empty matches native',
+      input: '',
+      command: 'wc -L /data/f.txt',
+      nativeCommand: 'wc -L f.txt',
+    },
+    {
+      name: 'wc -L single line matches native',
+      input: 'hello world\n',
+      command: 'wc -L /data/f.txt',
+      nativeCommand: 'wc -L f.txt',
+    },
+    {
+      name: 'wc -m matches native',
+      input: 'hello\n',
+      command: 'wc -m /data/f.txt',
+      nativeCommand: 'wc -m f.txt',
+    },
+  ])('$name', async ({ input, command, nativeCommand }) => {
     const env = makeEnv(kind)
     try {
-      env.createFile('f.txt', ENC.encode('a\nb\nc\n'))
-      const m = firstField(await env.mirage('wc -l /data/f.txt'))
-      const n = firstField(await env.native('wc -l f.txt'))
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('wc -w matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello world\nfoo\n'))
-      const m = firstField(await env.mirage('wc -w /data/f.txt'))
-      const n = firstField(await env.native('wc -w f.txt'))
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('wc -c matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\n'))
-      const m = firstField(await env.mirage('wc -c /data/f.txt'))
-      const n = firstField(await env.native('wc -c f.txt'))
+      env.createFile('f.txt', ENC.encode(input))
+      const m = firstField(await env.mirage(command))
+      const n = firstField(await env.native(nativeCommand))
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
@@ -82,60 +101,12 @@ describe.each(NATIVE_BACKENDS)('native wc (%s backend)', (kind) => {
     }
   })
 
-  it('wc -L matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('short\na much longer line\nmed\n'))
-      const m = firstField(await env.mirage('wc -L /data/f.txt'))
-      const n = firstField(await env.native('wc -L f.txt'))
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
   it('wc -L stdin matches native', async () => {
     const env = makeEnv(kind)
     try {
       const data = ENC.encode('short\na much longer line\nmed\n')
       const m = (await env.mirage('wc -L', data)).trim()
       const n = (await env.native('wc -L', data)).trim()
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('wc -L empty matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode(''))
-      const m = firstField(await env.mirage('wc -L /data/f.txt'))
-      const n = firstField(await env.native('wc -L f.txt'))
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('wc -L single line matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello world\n'))
-      const m = firstField(await env.mirage('wc -L /data/f.txt'))
-      const n = firstField(await env.native('wc -L f.txt'))
-      expect(m).toBe(n)
-    } finally {
-      await env.cleanup()
-    }
-  })
-
-  it('wc -m matches native', async () => {
-    const env = makeEnv(kind)
-    try {
-      env.createFile('f.txt', ENC.encode('hello\n'))
-      const m = firstField(await env.mirage('wc -m /data/f.txt'))
-      const n = firstField(await env.native('wc -m f.txt'))
       expect(m).toBe(n)
     } finally {
       await env.cleanup()
