@@ -269,6 +269,10 @@ async def test_dropped_connection_reconnects_before_next_command(monkeypatch):
     await runtime.close()
 
 
+async def _fake_connect(**kwargs):
+    return FakeConn()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "profile",
@@ -281,10 +285,7 @@ async def test_dropped_connection_reconnects_before_next_command(monkeypatch):
 async def test_a_session_restriction_refuses_a_line_with_no_mount_type(
     monkeypatch, profile
 ):
-    async def fake_connect(**kwargs):
-        return FakeConn()
-
-    monkeypatch.setattr(sdk, "connect", fake_connect)
+    monkeypatch.setattr(sdk, "connect", _fake_connect)
     runtime = FakeSSHRuntime(config={"host": "box"})
     ws = Workspace(
         {"/data": SSHVFS(SSHConfig(host="box"))},

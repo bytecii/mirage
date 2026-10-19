@@ -2780,6 +2780,14 @@ async function drained(stream: AsyncIterable<Uint8Array>): Promise<string> {
   return text
 }
 
+/** The code a read is refused with, null when it answers. */
+function refusalCode(read: Promise<unknown>): Promise<string | null | undefined> {
+  return read.then(
+    () => null,
+    (err: unknown) => (err as { code?: string }).code,
+  )
+}
+
 const WS_READS: [string, (ws: Workspace, path: string) => Promise<string>][] = [
   ['whole', async (ws, path) => DEC.decode(await ws.vfs.read(path))],
   ['ranged', async (ws, path) => DEC.decode(await ws.vfs.read(path, { offset: 0, size: 4 }))],
@@ -2802,16 +2810,11 @@ describe('a read of a hidden link', () => {
       await ws.shell('ln -s /m/sub /m/alias')
       ws.createSession('agent', { profile: { paths: { hide: ['/m/alias'] } } })
       const agent = ws.vfs.forSession('agent')
-      const code = (read: Promise<unknown>) =>
-        read.then(
-          () => null,
-          (err: unknown) => (err as { code?: string }).code,
-        )
-      expect(await code(agent.read('/m/alias'))).toBe('ENOENT')
-      expect(await code(agent.readStream('/m/alias').then(drained))).toBe('ENOENT')
+      expect(await refusalCode(agent.read('/m/alias'))).toBe('ENOENT')
+      expect(await refusalCode(agent.readStream('/m/alias').then(drained))).toBe('ENOENT')
       const io = await ws.shell('cat /m/alias', { sessionId: 'agent' })
       expect(DEC.decode(io.stderr)).toBe('cat: /m/alias: No such file or directory\n')
-      expect(await code(ws.vfs.read('/m/alias'))).toBe('EISDIR')
+      expect(await refusalCode(ws.vfs.read('/m/alias'))).toBe('EISDIR')
     } finally {
       await ws.close()
     }

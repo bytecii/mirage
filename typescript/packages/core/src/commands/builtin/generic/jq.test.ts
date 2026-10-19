@@ -103,10 +103,6 @@ function parsedFlags(...words: string[]): Context['flags'] {
   return parseToKwargs(parseCommand(specOf('jq'), words, '/', 'jq'))
 }
 
-function toSpec(value: string): PathSpec {
-  return PathSpec.fromStrPath(value)
-}
-
 async function unread(path: PathSpec): Promise<Uint8Array> {
   await Promise.resolve()
   throw new Error(`${path.virtual} should not be read`)
@@ -126,7 +122,7 @@ async function walkLine(
   const parsed = parseCommand(specOf('jq'), [...words], '/', 'jq')
   const flags = parseToKwargs(parsed)
   const fl = new FlagView(flags, specOf('jq'))
-  return readOptions(fl, parsed.texts(), 'from_file' in flags, toSpec, reader)
+  return readOptions(fl, parsed.texts(), 'from_file' in flags, reader)
 }
 
 /** The options a jq line reads to, its flag files read with `reader`. */
@@ -146,7 +142,7 @@ async function options(...words: string[]): Promise<JqOptions> {
 async function bound(
   flags: Record<string, string | boolean | number | string[]>,
 ): Promise<ReadonlyMap<string, string>> {
-  return asOptions(await readOptions(view(flags), [], false, toSpec, unread)).namedArgs
+  return asOptions(await readOptions(view(flags), [], false, unread)).namedArgs
 }
 
 /** How jq lays an output out under these options. */
@@ -206,7 +202,7 @@ describe('indentWidth', () => {
 
 describe('readOptions', () => {
   it('reads --indent -1 as tab indentation', async () => {
-    const opts = asOptions(await readOptions(view({ indent: '-1' }), [], false, toSpec, unread))
+    const opts = asOptions(await readOptions(view({ indent: '-1' }), [], false, unread))
     expect(opts.tab).toBe(true)
     expect(opts.indent).toBe(2)
   })
@@ -443,7 +439,7 @@ describe('readOptions over --args and --jsonargs', () => {
   ] as const)(
     'files the operands of a record with no tape after every option: %j',
     async (flags, hasProgramFile, texts, positional) => {
-      const opts = asOptions(await readOptions(view(flags), texts, hasProgramFile, toSpec, unread))
+      const opts = asOptions(await readOptions(view(flags), texts, hasProgramFile, unread))
       expect(opts.positionalArgs).toEqual(positional)
     },
   )
