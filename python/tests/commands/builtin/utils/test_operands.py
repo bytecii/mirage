@@ -21,7 +21,6 @@ from mirage.commands.builtin.utils.operands import (
     merge_split_errors,
     normalized_read,
     operands_io,
-    read_operands,
     split_readable,
 )
 from mirage.io.stream import close_quietly
@@ -44,15 +43,6 @@ def _stat_over(files: dict[str, bytes], dirs: set[str] | None = None):
         )
 
     return stat
-
-
-def _read_over(files: dict[str, bytes]):
-    async def read(path):
-        if path.virtual not in files:
-            raise FileNotFoundError(path.virtual)
-        yield files[path.virtual]
-
-    return read
 
 
 @pytest.mark.asyncio
@@ -128,32 +118,6 @@ async def test_split_readable_propagates_non_fs_errors():
 
     with pytest.raises(RuntimeError):
         await split_readable([PathSpec.from_str_path("/f.txt")], stat, "cat")
-
-
-@pytest.mark.asyncio
-async def test_read_operands_reports_and_continues():
-    files = {"/a.txt": b"aa", "/c.txt": b"cc"}
-    paths = [
-        PathSpec.from_str_path("/a.txt"),
-        PathSpec.from_str_path("/b.txt"),
-        PathSpec.from_str_path("/c.txt"),
-    ]
-    ok, err = await read_operands(paths, _read_over(files), "md5sum")
-    assert [(o.path.virtual, o.data) for o in ok] == [
-        ("/a.txt", b"aa"),
-        ("/c.txt", b"cc"),
-    ]
-    assert err == b"md5sum: /b.txt: No such file or directory\n"
-
-
-@pytest.mark.asyncio
-async def test_read_operands_propagates_non_fs_errors():
-    async def read(path):
-        raise RuntimeError("boom")
-        yield b""
-
-    with pytest.raises(RuntimeError):
-        await read_operands([PathSpec.from_str_path("/f")], read, "wc")
 
 
 def test_operands_io_exit_codes():

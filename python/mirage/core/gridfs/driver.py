@@ -98,18 +98,6 @@ async def _list_children(
             yield ChildEntry(key=pfx + relative[:slash], kind="d")
 
 
-async def _list_tree(
-    conn: GridFSAccessor, pfx: str
-) -> AsyncIterator[TreeEntry]:
-    async for doc in iter_latest(conn, prefix_query(pfx)):
-        upload = doc.get("uploadDate")
-        yield TreeEntry(
-            key=doc["filename"],
-            size=doc["length"],
-            modified=to_iso_z(upload) if upload else "",
-        )
-
-
 async def _list_subtree(
     conn: GridFSAccessor, stem: str
 ) -> AsyncIterator[TreeEntry]:
@@ -285,7 +273,6 @@ DRIVER: ObjectStoreDriver[GridFSAccessor, GridFSAccessor] = ObjectStoreDriver(
     key_prefix_of=_key_prefix_of,
     connect=_connect,
     list_children=_list_children,
-    list_tree=_list_tree,
     list_subtree=_list_subtree,
     head=_head,
     get=_get,

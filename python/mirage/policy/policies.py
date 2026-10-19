@@ -28,10 +28,7 @@ from mirage.context import (
 )
 from mirage.context.session_context import (
     Caller,
-    CallerToken,
-    bind_caller,
     current_caller,
-    reset_caller,
 )
 from mirage.errors.fs import eacces, erofs
 from mirage.errors.posix import posix_errno, posix_phrase
@@ -1050,28 +1047,6 @@ class Policies:
         """
         action, limit, _ = await self._fire("post_execute", ctx)
         return action, limit
-
-
-def set_op_policies(policies: Policies) -> CallerToken:
-    """Bind the workspace's admission policies to the current async
-    context, for the run of one command.
-
-    Set by command dispatch around routing, the same window the
-    admission gate binds in, so the command tier's policy guard can
-    fire ``pre_vfs`` for the backend I/O a handler performs. Read at
-    call time by the command tier's operation guards; unset outside a
-    dispatched command (a generic invoked directly in a test), where
-    the guard is inert.
-
-    Args:
-        policies (Policies): the workspace's admission policies.
-    """
-    return bind_caller(replace(current_caller(), policies=policies))
-
-
-def reset_op_policies(token: CallerToken) -> None:
-    """Restore the previous policies binding."""
-    reset_caller(token)
 
 
 def get_op_policies() -> Policies | None:

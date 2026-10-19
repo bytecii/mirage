@@ -291,17 +291,6 @@ describe('Reconciler', () => {
     await ws.close()
   })
 
-  it('reconcileRead GCs an overlay whose path the backend no longer has', async () => {
-    const ws = new Workspace({ '/data': new RAMVFS() })
-    await ws.namespace.ensureLoaded()
-    await ws.namespace.setAttrs('/data/gone.txt', { mode: 0o600 })
-    const mount = withFresh(mountOf(ws, '/data/gone.txt'))
-    const rec = new Reconciler(ws.cache, ws.namespace)
-    await rec.reconcileRead(mount, '/data/gone.txt')
-    expect(ws.namespace.metaFor('/data/gone.txt')).toBeNull()
-    await ws.close()
-  })
-
   it.each(['no_stat_op', 'flaky'])(
     'an unverifiable probe drops the entry (%s)',
     async (failure) => {

@@ -441,13 +441,6 @@ async def test_keyword_operands_come_after_every_option(
     assert ctx.positional_args == positional
 
 
-async def _flagged(
-    paths: list[str], program: str, **flags: FlagValue
-) -> tuple[bytes, bytes, int]:
-    out, io = await _run(paths, program, **flags)
-    return out, await materialize(io.stderr), io.exit_code
-
-
 @pytest.mark.asyncio
 async def test_a_parse_error_closes_the_input_it_stopped_in():
     opened = []

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { evalPredicate, treeHasAction } from '../../core/generic/find_eval.ts'
+import { evaluate, treeHasAction } from '../../core/generic/find_eval.ts'
 import { FindParseError } from '../errors.ts'
 import { parseFindExpression } from './find_parse.ts'
 
@@ -77,8 +77,20 @@ describe('parseFindExpression', () => {
     const e = parseFindExpression(['-maxdepth', '2', '-mindepth', '1', '-name', 'x'])
     expect(e.maxDepth).toBe(2)
     expect(e.minDepth).toBe(1)
-    expect(evalPredicate(e.tree, { key: '/x', name: 'x', kind: 'f', depth: 1 })).toBe(true)
-    expect(evalPredicate(e.tree, { key: '/y', name: 'y', kind: 'f', depth: 1 })).toBe(false)
+    expect(
+      evaluate(
+        e.tree,
+        { key: '/x', name: 'x', kind: 'f', depth: 1 },
+        { acted: false, pruned: false, deferred: [] },
+      ),
+    ).toBe(true)
+    expect(
+      evaluate(
+        e.tree,
+        { key: '/y', name: 'y', kind: 'f', depth: 1 },
+        { acted: false, pruned: false, deferred: [] },
+      ),
+    ).toBe(false)
   })
 
   it('depthFirst is -depth or -delete', () => {

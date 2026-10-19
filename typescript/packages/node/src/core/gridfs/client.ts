@@ -53,14 +53,6 @@ export function gridfsKey(path: string, config: GridFSConfig): string {
   return kp.apply(config.keyPrefix ?? '', path)
 }
 
-export function gridfsPrefix(path: string, config: GridFSConfig): string {
-  return kp.applyDir(config.keyPrefix ?? '', path)
-}
-
-export function stripKeyPrefix(key: string, config: GridFSConfig): string {
-  return kp.strip(config.keyPrefix ?? '', key)
-}
-
 function bucketName(config: GridFSConfig): string {
   return config.bucket ?? 'fs'
 }

@@ -273,7 +273,6 @@ describe('the head commit a tree response names', () => {
     const listing = await readdir(accessor, root('/gh'))
     const head = await gh.head()
     expect(listing.version).toBe(head)
-    expect(accessor.treeVersion).toBe(head)
     const index = new RAMIndexCacheStore()
     await keepListing(index, '/gh', listing)
     for (const folder of ['/gh', '/gh/d1', '/gh/d1/sub']) {
@@ -292,6 +291,5 @@ describe('the head commit a tree response names', () => {
     const accessor = servedAccessor()
     const listing = await readdir(accessor, root('/gh'))
     expect(listing.version).toBeNull()
-    expect(accessor.treeVersion).toBeNull()
   })
 })

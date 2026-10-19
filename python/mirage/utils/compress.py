@@ -194,30 +194,6 @@ async def _codec_stream(
         raise ValueError(exc.message) from exc
 
 
-def gzip_compress(data: bytes, level: int = -1, name: str = "") -> bytes:
-    """Encode one gzip member.
-
-    Args:
-        data (bytes): uncompressed bytes.
-        level (int): compression level.
-        name (str): original basename.
-    """
-    stream = open_stream(
-        "compress",
-        {
-            "operation": "encode",
-            "format": "gzip",
-            "level": level,
-            "name": name,
-        },
-    )
-    parts = list(_push(stream, data))
-    parts.append(stream.finish())
-    while stream.busy():
-        parts.append(stream.drain())
-    return b"".join(parts)
-
-
 async def gzip_compress_stream(
     source: AsyncIterator[bytes], level: int, name: str = ""
 ) -> AsyncIterator[bytes]:
@@ -268,25 +244,6 @@ async def gunzip_stream(
                 yield part
     finally:
         await close_quietly(source)
-
-
-def gunzip_partial(
-    data: bytes, passthrough: bool = False
-) -> tuple[bytes, GzipDataError | None]:
-    """Return bytes decoded before a gzip failure, plus its reason.
-
-    Args:
-        data (bytes): compressed input.
-        passthrough (bool): whether non-gzip boundary bytes are copied.
-    """
-    decoder = GzipDecoder(passthrough=passthrough)
-    parts: list[bytes] = []
-    try:
-        parts.extend(decoder.feed(data))
-        parts.extend(decoder.finish())
-    except GzipDataError as exc:
-        return b"".join(parts), exc
-    return b"".join(parts), None
 
 
 async def deflate_raw_stream(

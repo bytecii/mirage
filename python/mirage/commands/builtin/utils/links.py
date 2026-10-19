@@ -28,7 +28,6 @@ from mirage.types import FileStat, PathSpec, Visibility
 from mirage.utils.hidden import path_visible
 from mirage.utils.path import (
     CycleError,
-    gnu_basename,
     norm_dir,
     owner_prefix,
     resolve_path,
@@ -237,11 +236,6 @@ def _or_eloop(resolve: Callable[[str], str], virtual: str) -> str:
         return resolve(virtual)
     except CycleError:
         raise eloop(virtual) from None
-
-
-def _named(row: FileStat, virtual: str) -> FileStat:
-    name = gnu_basename(virtual)
-    return row if row.name == name else row.model_copy(update={"name": name})
 
 
 def serves(mounts: MountView | None, prefix: str, virtual: str) -> bool:

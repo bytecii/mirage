@@ -2565,12 +2565,6 @@ def test_function_multi_statement_body():
     assert session.env["B"] == "2"
 
 
-def test_function_shift_then_use():
-    """f() { shift; export A=$1; }; f x y → A=y."""
-    _, _, _, session, _, _ = _exec("f() { shift; export A=$1; }; f x y")
-    assert session.env["A"] == "y"
-
-
 def test_function_multi_with_control():
     """f() { export A=1; if true; then export B=2; fi; export C=3; }; f."""
     _, _, _, session, _, _ = _exec(

@@ -79,7 +79,6 @@ class VFSStateKey(StrEnum):
     FILES = "files"
     DIRS = "dirs"
     MODIFIED = "modified"
-    KEY_PREFIX = "key_prefix"
 
 
 # The four below name sub-shapes that typescript spells as literals at

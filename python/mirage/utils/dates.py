@@ -1250,12 +1250,6 @@ def in_mtime_window(
     return True
 
 
-def matches_mtime(
-    value: str | None, mtime_min: float | None, mtime_max: float | None
-) -> bool:
-    return in_mtime_window(iso_timestamp(value), mtime_min, mtime_max)
-
-
 def to_iso_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 

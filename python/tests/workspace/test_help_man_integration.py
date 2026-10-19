@@ -63,14 +63,6 @@ def _out(io):
     )
 
 
-def _err(io):
-    return (
-        io.stderr.decode()
-        if isinstance(io.stderr, bytes)
-        else _run(_materialize(io.stderr))
-    )
-
-
 def test_help_flag_renders_help_through_executor():
     ws = _ws()
     io = _exec(ws, "cat --help")

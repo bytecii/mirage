@@ -154,15 +154,6 @@ def chroma_accessor(chroma_collection) -> SimpleNamespace:
 
 
 @pytest.fixture
-def knowledge_root() -> PathSpec:
-    return PathSpec(
-        vfs_path=mount_key("/knowledge", "/knowledge"),
-        virtual="/knowledge",
-        directory="/knowledge",
-    )
-
-
-@pytest.fixture
 def quickstart_path() -> PathSpec:
     return PathSpec.from_str_path(
         "/knowledge/guides/quickstart",

@@ -13,13 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mirage.cache.context import push_write_context
 from mirage.cache.types import WriteCondition
+from mirage.context.session_context import (
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.core.box.api import (
     SEARCH_FIELDS,
     absent_on_404,
@@ -333,12 +338,14 @@ async def _refuse(
     exc: BoxApiError, sent: str | None
 ) -> tuple[KeptVersions, StaleWriteError | None]:
     store = KeptVersions("box")
-    prev = push_write_context(store.context())
+    prev = bind_caller(
+        replace(current_caller(), write_context=store.context())
+    )
     try:
         path = PathSpec(virtual="/box/f", directory="/box/", vfs_path="/f")
         got = await refused(path, exc, WriteCondition("s1"), sent)
     finally:
-        push_write_context(prev)
+        reset_caller(prev)
     return store, got
 
 

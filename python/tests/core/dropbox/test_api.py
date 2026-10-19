@@ -13,13 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mirage.cache.context import push_write_context
 from mirage.cache.types import WriteCondition
+from mirage.context.session_context import (
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.core.dropbox import api
 from mirage.core.dropbox.api import (
     continue_folder,
@@ -222,12 +227,14 @@ async def _refuse(
     exc: DropboxApiError, sent: str | None
 ) -> tuple[KeptVersions, StaleWriteError | None]:
     store = KeptVersions("dropbox")
-    prev = push_write_context(store.context())
+    prev = bind_caller(
+        replace(current_caller(), write_context=store.context())
+    )
     try:
         path = PathSpec(virtual="/dbx/f", directory="/dbx/", vfs_path="/f")
         got = await api.refused(path, exc, WriteCondition("s1"), sent)
     finally:
-        push_write_context(prev)
+        reset_caller(prev)
     return store, got
 
 

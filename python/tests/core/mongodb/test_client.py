@@ -196,19 +196,6 @@ async def test_get_validator_returns_none_when_collection_missing():
     assert await get_validator(client, "db1", "ghost") is None
 
 
-def _build_indexstats_client(rows):
-    cursor = MagicMock()
-    cursor.close = AsyncMock()
-    cursor.__aiter__ = lambda self: _AsyncIter(rows).__aiter__()
-    col = MagicMock()
-    col.aggregate = AsyncMock(return_value=cursor)
-    db = MagicMock()
-    db.__getitem__.return_value = col
-    client = MagicMock()
-    client.__getitem__.return_value = db
-    return client, col
-
-
 @pytest.mark.asyncio
 async def test_get_indexes_returns_empty_for_view_without_listing():
     client, col, db = _build_indexes_client(

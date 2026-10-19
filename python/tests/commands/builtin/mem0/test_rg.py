@@ -1,11 +1,9 @@
 import pytest
 from pydantic import SecretStr
 
-from mirage.commands.builtin.generic_bind import generic
 from mirage.vfs.mem0 import Mem0Config
 from mirage.vfs.mem0.mem0 import Mem0VFS
 from mirage.workspace import Workspace
-from mirage.workspace.mount.backends import commands_for
 
 
 class FakeClient:
@@ -32,21 +30,6 @@ def _res():
     res = Mem0VFS(Mem0Config(api_key=SecretStr("k"), user_id="alex"))
     res.accessor._client = FakeClient()
     return res
-
-
-def _command(vfs: Mem0VFS, name: str):
-    own = [
-        command.fn
-        for command in commands_for(vfs)
-        if command.name == name and command.filetype is None
-    ]
-    return own[-1] if own else generic(name).fn
-
-
-async def _bytes(source):
-    if isinstance(source, bytes):
-        return source
-    return b"".join([chunk async for chunk in source])
 
 
 @pytest.mark.asyncio

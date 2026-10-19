@@ -1,9 +1,8 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from mirage.cache.context import push_cache_manager
 from mirage.commands.builtin.generic.find import (
     apply_mount_prefix,
     parse_find_args,
@@ -13,6 +12,11 @@ from mirage.commands.builtin.generic.find import (
 )
 from mirage.commands.config import Context
 from mirage.commands.errors import FindParseError
+from mirage.context.session_context import (
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.core.generic.find import walk_find
 from mirage.core.generic.find_eval import FindArgs, Name, Not, Or
 from mirage.errors.types import CommandTimeoutError
@@ -555,7 +559,11 @@ async def test_find_directory_start_does_not_probe_cached_bytes():
     try:
         get = AsyncMock(wraps=ws.cache.get)
         ws.cache.get = get
-        previous = push_cache_manager(ws.mount("/mnt").cache_manager)
+        previous = bind_caller(
+            replace(
+                current_caller(), cache_manager=ws.mount("/mnt").cache_manager
+            )
+        )
         try:
             stdout, io = await _walk(
                 [_file_spec(virtual="/mnt/logs", key="logs")],
@@ -565,7 +573,7 @@ async def test_find_directory_start_does_not_probe_cached_bytes():
                 readdir=AsyncMock(return_value=[]),
             )
         finally:
-            push_cache_manager(previous)
+            reset_caller(previous)
         assert io.exit_code == 0
         assert stdout == b"/mnt/logs\n"
         assert get.call_args_list == []

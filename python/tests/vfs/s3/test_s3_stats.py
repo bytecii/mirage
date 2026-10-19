@@ -18,7 +18,7 @@ import pytest
 
 from mirage.accessor.s3 import S3Accessor
 from mirage.types import PathSpec
-from mirage.vfs.s3 import S3VFS, S3Config
+from mirage.vfs.s3 import S3Config
 
 
 @pytest.fixture
@@ -29,11 +29,6 @@ def s3_config():
 @pytest.fixture
 def s3_accessor(s3_config):
     return S3Accessor(s3_config)
-
-
-@pytest.fixture
-def s3_backend(s3_config):
-    return S3VFS(s3_config)
 
 
 @pytest.mark.asyncio

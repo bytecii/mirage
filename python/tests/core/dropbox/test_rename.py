@@ -154,11 +154,3 @@ async def test_rename_conflict_probe_is_bounded_to_one_entry(dropbox_accessor):
     assert rpc.list_limits == [1]
     assert rpc.list_requests == 1
     assert rpc.deleted == []
-
-
-_CONFLICT_FOLDER = DropboxApiError("conflict", 409, "to/conflict/folder/...")
-_CONFLICT_OTHER = DropboxApiError("conflict", 409, "to/conflict/other/...")
-_CONFLICT_FILE = DropboxApiError("conflict", 409, "to/conflict/file/...")
-
-
-_FILE = {".tag": "file", "name": "b"}

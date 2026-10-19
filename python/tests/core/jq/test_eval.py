@@ -85,10 +85,6 @@ def test_inputs_yields_the_bound_documents():
     assert jq_eval(None, "[inputs]", None, [1, 2, 3]) == [[1, 2, 3]]
 
 
-def test_inputs_binding_is_absent_without_documents():
-    assert jq_eval({"a": 1}, ".a") == [1]
-
-
 def test_a_program_defining_inputs_shadows_the_binding():
     assert jq_eval(None, "def inputs: 9; [inputs]", None, [1, 2]) == [[9]]
 

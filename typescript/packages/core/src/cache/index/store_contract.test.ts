@@ -577,6 +577,7 @@ for (const backend of ['ram', 'redis']) {
         try {
           expect(short.ttl).toBe(1)
           await short.setDir('/dir', [['a', entry()]])
+          expect((await short.listDir('/dir')).entries).toEqual(['/dir/a'])
           const got = (await short.get('/dir/a')).entry
           await new Promise((resolve) => setTimeout(resolve, 1100))
           expect((await short.listDir('/dir')).status).toBe(LookupStatus.EXPIRED)
@@ -675,18 +676,24 @@ for (const backend of ['ram', 'redis']) {
         expect((await store.listDir('/')).status).toBe(LookupStatus.NOT_FOUND)
       })
 
-      it('invalidates literal prefixes with path boundaries', async () => {
+      it.each([
+        ['/chan/day', '/chan/daytime'],
+        ['/a[1]', '/a1'],
+      ])('invalidates literal prefix %s with path boundaries', async (root, lookalike) => {
         const future = new Date(Date.now() + 3600000)
-        for (const path of ['/a[1]', '/a[1]/nested', '/a1', '/a[1]-other']) {
+        const removed = [root, root + '/nested']
+        const retained = [lookalike, root + '-other']
+        for (const path of [...removed, ...retained]) {
           await store.setDir(path, [['a', entry()]], future)
         }
-        await store.invalidatePrefix('/a[1]')
-        for (const path of ['/a[1]', '/a[1]/nested']) {
+        await store.invalidatePrefix(root)
+        for (const path of removed) {
           expect((await store.listDir(path)).status).toBe(LookupStatus.NOT_FOUND)
           expect((await store.get(path + '/a')).status).toBe(LookupStatus.NOT_FOUND)
         }
-        for (const path of ['/a1', '/a[1]-other']) {
+        for (const path of retained) {
           expect((await store.listDir(path)).entries).toEqual([path + '/a'])
+          expect((await store.get(path + '/a')).entry).toEqual(entry())
         }
       })
 

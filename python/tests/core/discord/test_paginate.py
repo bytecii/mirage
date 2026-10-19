@@ -3,12 +3,6 @@ import pytest
 from mirage.core.discord.paginate import after_id_pages
 
 
-class _Recorder:
-    def __init__(self, pages):
-        self.pages = pages
-        self.afters = []
-
-
 @pytest.mark.asyncio
 async def test_after_id_pages_advances_with_newest_id_on_newest_first(
     monkeypatch,

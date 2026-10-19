@@ -17,10 +17,9 @@ import { asyncChain } from '../../../io/stream.ts'
 import type { LinkView, MountView, StatPath } from '../../../view/types.ts'
 import type { FileStat, PathSpec } from '../../../types.ts'
 import { FileType } from '../../../types.ts'
-import { eisdir, isDotWalkError, isEisdir, isFsError } from '../../../errors/fs.ts'
+import { eisdir, isDotWalkError, isFsError } from '../../../errors/fs.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
 import { READ_FAILURES } from '../../../errors/constants.ts'
-import { readFailExitCode } from '../../spec/usage.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
 import { encodeText } from '../../../shell/bytes.ts'
@@ -168,68 +167,9 @@ export async function splitOpened(
   return [opened, unread, err]
 }
 
-export interface ReadOperand {
-  path: PathSpec
-  data: Uint8Array
-}
-
-// Read every operand eagerly, skipping the ones whose read fails with a
-// filesystem error: each failed operand becomes one GNU stderr line and the
-// remaining operands still process (the read-family rule). Lives inside the
-// generics so every wrapper — factory builders and bespoke backend commands
-// alike — inherits the behavior. Non-filesystem errors keep propagating.
-// readOperands, plus the exit code the failures add up to. The code is the
-// gzip family's, which is the only reason this variant exists: gzip reports a
-// directory as a warning (2) and a missing file as an error (1), where every
-// other command in the family answers the same number whichever failure is
-// asked, so readOperands just drops this one.
-//
-// Its rule is not "the last failure wins". An error is recorded outright
-// while a warning is recorded only when nothing has failed yet, so the error
-// outranks the warning in either order: `zcat nope dir` and `zcat dir nope`
-// are both 1, and only an invocation with no error at all (`zcat dir ok.gz`)
-// is 2. That is gzip's own code: `progerror` assigns `exit_code = ERROR`
-// unconditionally while the `WARN` macro assigns only `if (exit_code == OK)`
-// (gzip 1.13, pinned on debian:stable-slim). A command whose rule is
-// different again has to own its own loop: GNU sed takes the most severe
-// code, and sedGeneric does that itself. The python twin is
-// `split_readable_coded`, which sits on the stat-based split because python's
-// zcat partitions there rather than on the read.
-export async function readOperandsCoded(
-  paths: readonly PathSpec[],
-  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
-  cmdName: string,
-): Promise<[ReadOperand[], string, number]> {
-  const ok: ReadOperand[] = []
-  let err = ''
-  let code = 0
-  for (const p of paths) {
-    try {
-      ok.push({ path: p, data: await materialize(stream(p)) })
-    } catch (e) {
-      if (!isFsError(e)) throw e
-      err += fsErrorLine(cmdName, p, e)
-      // A directory is gzip's warning and everything else its error, so the
-      // directory yields to a code already recorded.
-      if (code === 0 || !isEisdir(e)) code = readFailExitCode(cmdName, e)
-    }
-  }
-  return [ok, err, code]
-}
-
-export async function readOperands(
-  paths: readonly PathSpec[],
-  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
-  cmdName: string,
-): Promise<[ReadOperand[], string]> {
-  const [ok, err] = await readOperandsCoded(paths, stream, cmdName)
-  return [ok, err]
-}
-
-// IOResult carrying the readOperands stderr lines: exit `exitCode` when any
-// operand failed, exit 0 otherwise. The default is 1, which is every GNU
-// command in this family except the gzip one, whose code depends on the errno
-// and which passes the number readOperandsCoded reports.
+// IOResult carrying operand-split stderr lines: exit `exitCode` when any
+// operand failed, exit 0 otherwise. Callers can override the default failure
+// code of 1 for commands with a different error policy.
 export function operandsIo(err: string, init?: { exitCode?: number }): IOResult {
   return new IOResult({
     exitCode: err === '' ? 0 : (init?.exitCode ?? 1),

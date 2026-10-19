@@ -68,21 +68,6 @@ async def get_data_source(
     return await notion_get(accessor, f"/data_sources/{data_source_id}")
 
 
-async def query_data_source(
-    accessor: NotionAccessor,
-    data_source_id: str,
-    page_size: int = 100,
-    body: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    async with aclosing(
-        query_data_source_pages(accessor, data_source_id, page_size, body)
-    ) as pages:
-        async for page in pages:
-            rows.extend(page)
-    return rows
-
-
 async def query_data_source_pages(
     accessor: NotionAccessor,
     data_source_id: str,

@@ -101,20 +101,16 @@ export function treeListing(
 }
 
 /**
- * Replace the accessor's tree with one response, and its version. A
- * truncated tree is not the whole listing at that head, so it is versioned
- * by nothing.
+ * Replace the accessor's tree with one response.
  */
 export function reseatTree(
   accessor: GitHubAccessor,
   tree: GitHubTreeItem[],
   truncated: boolean,
-  head: string | null,
 ): Record<string, TreeEntry> {
   const current = buildTreeMap(tree)
   accessor.truncated = truncated
   accessor.tree = current
-  accessor.treeVersion = truncated ? null : head
   return current
 }
 
@@ -138,7 +134,7 @@ export async function refreshTree(
     accessor.repo,
     accessor.ref,
   )
-  const current = reseatTree(accessor, tree, truncated, sha)
+  const current = reseatTree(accessor, tree, truncated)
   return truncated ? null : { tree: current, version: sha }
 }
 

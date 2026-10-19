@@ -23,10 +23,6 @@ export function s3Key(path: string, config: S3Config): string {
   return kp.apply(config.keyPrefix ?? '', path)
 }
 
-export function stripKeyPrefix(key: string, config: S3Config): string {
-  return kp.strip(config.keyPrefix ?? '', key)
-}
-
 export async function withClient<T>(
   config: S3Config,
   fn: (client: S3SendClient) => Promise<T>,

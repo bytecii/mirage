@@ -64,6 +64,92 @@ def entry(name="a"):
 
 
 @pytest.mark.asyncio
+async def test_put_and_get(store):
+    row = FileStat(
+        name="Test File",
+        type=FileType.FILE,
+        modified="2026-04-01T00:00:00.000Z",
+        fingerprint="file1",
+    )
+    await store.put("/folder/test_file.txt", row)
+    result = await store.get("/folder/test_file.txt")
+    assert result.entry == row
+
+
+@pytest.mark.asyncio
+async def test_get_not_found(store):
+    result = await store.get("/nonexistent/file.txt")
+    assert result.status == LookupStatus.NOT_FOUND
+    assert result.entry is None
+
+
+@pytest.mark.asyncio
+async def test_list_dir_not_found(store):
+    result = await store.list_dir("/some_dir")
+    assert result.status == LookupStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_set_dir_and_list(store):
+    entries = [
+        (
+            "a.txt",
+            FileStat(name="A", type=FileType.FILE, fingerprint="a"),
+        ),
+        (
+            "b.txt",
+            FileStat(name="B", type=FileType.FILE, fingerprint="b"),
+        ),
+    ]
+    await store.set_dir("/mydir", entries)
+    result = await store.list_dir("/mydir")
+    assert result.status is None
+    assert sorted(result.entries) == ["/mydir/a.txt", "/mydir/b.txt"]
+
+
+@pytest.mark.asyncio
+async def test_set_dir_root(store):
+    entries = [
+        (
+            "top.txt",
+            FileStat(name="T", type=FileType.FILE, fingerprint="t"),
+        ),
+    ]
+    await store.set_dir("/", entries)
+    result = await store.list_dir("/")
+    assert result.status is None
+    assert result.entries == ["/top.txt"]
+
+
+@pytest.mark.asyncio
+async def test_list_dir_fresh(store):
+    entries = [
+        (
+            "file.txt",
+            FileStat(name="F", type=FileType.FILE, fingerprint="f"),
+        ),
+    ]
+    future = datetime.now(timezone.utc) + timedelta(seconds=3600)
+    await store.set_dir("/dir", entries, expired_at=future)
+    result = await store.list_dir("/dir")
+    assert result.status is None
+    assert result.entries == ["/dir/file.txt"]
+
+
+@pytest.mark.asyncio
+async def test_clear(store):
+    row = entry()
+    await store.put("/folder/test.txt", row)
+    await store.set_dir("/folder", [("test.txt", row)])
+
+    await store.clear()
+    result = await store.get("/folder/test.txt")
+    assert result.status == LookupStatus.NOT_FOUND
+    result = await store.list_dir("/folder")
+    assert result.status == LookupStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
 async def test_listing_lifecycle(store):
     assert (await store.list_dir("/dir")).status == LookupStatus.NOT_FOUND
     await store.set_dir("/dir", [])
@@ -127,16 +213,26 @@ async def test_clear_discards_pending_seeds(store):
 
 
 @pytest.mark.asyncio
-async def test_prefix_invalidation_is_literal_and_scoped(store):
+@pytest.mark.parametrize(
+    "root, lookalike",
+    [("/chan/day", "/chan/daytime"), ("/a[1]", "/a1")],
+    ids=["plain", "glob-metacharacters"],
+)
+async def test_prefix_invalidation_is_literal_and_scoped(
+    store, root, lookalike
+):
     future = datetime.now(timezone.utc) + timedelta(hours=1)
-    for path in ["/a[1]", "/a[1]/nested", "/a1", "/a[1]-other"]:
+    removed = [root, root + "/nested"]
+    retained = [lookalike, root + "-other"]
+    for path in removed + retained:
         await store.set_dir(path, [("a", entry())], future)
-    await store.invalidate_prefix("/a[1]")
-    for path in ["/a[1]", "/a[1]/nested"]:
+    await store.invalidate_prefix(root)
+    for path in removed:
         assert (await store.list_dir(path)).status == LookupStatus.NOT_FOUND
         assert (await store.get(path + "/a")).status == LookupStatus.NOT_FOUND
-    for path in ["/a1", "/a[1]-other"]:
+    for path in retained:
         assert (await store.list_dir(path)).entries == [path + "/a"]
+        assert (await store.get(path + "/a")).entry == entry()
 
 
 @pytest.mark.asyncio

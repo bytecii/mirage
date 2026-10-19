@@ -12,11 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from typing import Protocol, TypeVar
 
 from mirage.accessor.base import Accessor
-from mirage.types import DirListing, FileStat, FileType, PathSpec
+from mirage.types import DirListing, FileStat, PathSpec
 from mirage.utils.key_prefix import mount_key, mount_prefix_of, mounted_path
 
 A = TypeVar("A", bound=Accessor)
@@ -56,48 +56,6 @@ def rows_of(listed: list[FileStat] | DirListing) -> list[FileStat]:
         listed (list[FileStat] | DirListing): a readdir's answer.
     """
     return listed.entries if isinstance(listed, DirListing) else listed
-
-
-def is_directory(row: FileStat) -> bool:
-    """Whether a listed row is a directory to walk into.
-
-    Args:
-        row (FileStat): the row.
-    """
-    return row.type is FileType.DIRECTORY
-
-
-async def rows_under(
-    readdir: ReaddirFn[A],
-    accessor: A,
-    directory: PathSpec,
-    entry: FileStat | None,
-    parent: FileStat | None = None,
-    is_dir: Callable[[FileStat], bool] = is_directory,
-) -> list[tuple[PathSpec, FileStat]]:
-    """Every row below ``directory``, walked through the backend's own
-    listings, each directory handed the row its parent's listing named.
-
-    Args:
-        readdir (ReaddirFn): the backend's readdir.
-        accessor (Accessor): backend accessor.
-        directory (PathSpec): the directory walked.
-        entry (FileStat | None): what is at ``directory``.
-        parent (FileStat | None): what is at its parent.
-        is_dir (Callable[[FileStat], bool]): whether a row is a directory
-            to walk into.
-    """
-    found: list[tuple[PathSpec, FileStat]] = []
-    pending = [(directory, entry, parent)]
-    while pending:
-        current, row, above = pending.pop()
-        base = current.mount_path.rstrip("/")
-        for child in rows_of(await readdir(accessor, current, row, above)):
-            path = mounted_path(current, f"{base}/{child.name}")
-            found.append((path, child))
-            if is_dir(child):
-                pending.append((path, child, row))
-    return found
 
 
 async def row_at(

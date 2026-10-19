@@ -64,10 +64,6 @@ export class GitHubAccessor extends Accessor {
   // listing, so it is as fresh as the last one.
   truncated: boolean
   tree: Record<string, TreeEntry>
-  // The head commit that tree was fetched at, as the response named it, or
-  // null when it is not known (a truncated or sha-less response). Every
-  // listing out of the tree carries it as its version.
-  treeVersion: string | null
 
   constructor(opts: {
     account: GitHubAccount
@@ -77,7 +73,6 @@ export class GitHubAccessor extends Accessor {
     defaultBranch: string
     truncated?: boolean
     tree?: Record<string, TreeEntry>
-    treeVersion?: string | null
   }) {
     super()
     this.account = opts.account
@@ -87,7 +82,6 @@ export class GitHubAccessor extends Accessor {
     this.defaultBranch = opts.defaultBranch
     this.truncated = opts.truncated ?? false
     this.tree = opts.tree ?? {}
-    this.treeVersion = opts.treeVersion ?? null
   }
 
   get isDefaultBranch(): boolean {

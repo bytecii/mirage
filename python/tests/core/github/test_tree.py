@@ -431,12 +431,3 @@ async def test_a_listing_with_no_whole_head_names_no_version(
         accessor = _served_accessor(gh)
         listing = await readdir(accessor, _root("/gh"))
         assert listing.version is None
-        assert accessor.tree_version is None
-
-
-@pytest.mark.asyncio
-async def test_a_bare_tree_fetch_stamps_the_head_it_answered():
-    with serve(FakeGitHub(files={"top.txt": b"t"})) as gh:
-        accessor = _served_accessor(gh)
-        await ensure_tree(accessor)
-        assert accessor.tree_version == gh.head()

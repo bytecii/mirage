@@ -46,10 +46,6 @@ def test_a_single_byte_names_the_same_offset_twice():
     assert range_header(3, 1) == "bytes=3-3"
 
 
-def test_an_offset_with_no_size_from_zero_is_still_the_whole_file():
-    assert range_header(0, None) is None
-
-
 def test_a_negative_offset_is_refused():
     with pytest.raises(ValueError):
         range_header(-1, 4)

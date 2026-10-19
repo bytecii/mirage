@@ -1817,9 +1817,6 @@ class _RefusingGate:
         if virtual == self.refused:
             raise PermissionError(errno.EACCES, "sealed", virtual)
 
-    def refuses(self, virtual: str) -> bool:
-        return virtual == self.refused
-
 
 async def _linked_ws() -> Workspace:
     ws = Workspace(

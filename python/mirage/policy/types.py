@@ -1157,12 +1157,3 @@ class EntryGate(Protocol):
             virtual (str): absolute virtual path of the entry.
         """
         ...
-
-    def refuses(self, virtual: str) -> bool:
-        """True exactly where ``check`` would raise, for an entry point that
-        declines instead (the read cache).
-
-        Args:
-            virtual (str): absolute virtual path of the entry.
-        """
-        ...

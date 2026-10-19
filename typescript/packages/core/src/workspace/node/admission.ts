@@ -197,12 +197,6 @@ export class Admitted implements EntryGate {
     return ioReach(this.rules, this.ctx.tokens ?? [], virtual)
   }
 
-  // Whether a rule in force refuses this entry for the running command,
-  // without throwing.
-  refuses(virtual: string): boolean {
-    return this.refusal(virtual) !== null
-  }
-
   // The reason a rule in force refuses this entry, null when the line was
   // admitted on it or nothing refuses it.
   private refusal(virtual: string): string | null {

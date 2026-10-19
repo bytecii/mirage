@@ -12,13 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from mirage.accessor.dropbox import DropboxAccessor
-from mirage.cache.context import capture_read, push_write_context
+from mirage.cache.context import capture_read
 from mirage.cache.types import WriteContext
+from mirage.context.session_context import (
+    bind_caller,
+    current_caller,
+    reset_caller,
+)
 from mirage.core.dropbox.client import DropboxApiError, DropboxTokenManager
 from mirage.core.dropbox.read import read, read_stream
 from mirage.core.dropbox.readdir import readdir
@@ -314,7 +320,11 @@ async def test_a_whole_read_publishes_its_token_on_a_conditional_mount(
         drop=_ignore,
         keep=_ignore,
     )
-    prev = push_write_context(context if conditional else None)
+    prev = bind_caller(
+        replace(
+            current_caller(), write_context=context if conditional else None
+        )
+    )
     with serve(FakeDropbox(files={"/a.txt": DATA})) as fake:
         accessor = served_accessor(fake.url)
         try:
@@ -325,6 +335,6 @@ async def test_a_whole_read_publishes_its_token_on_a_conditional_mount(
                 ),
             )
         finally:
-            push_write_context(prev)
+            reset_caller(prev)
             await accessor.close()
     assert tokens == published

@@ -332,22 +332,17 @@ def reseat_tree(
     accessor: GitHubAccessor,
     tree: dict[str, TreeEntry],
     truncated: bool,
-    head: str | None,
 ) -> None:
-    """Replace the accessor's tree with one response, and its version.
+    """Replace the accessor's tree with one response.
 
     Args:
         accessor (GitHubAccessor): the mount's accessor.
         tree (dict[str, TreeEntry]): the recursive tree just fetched.
         truncated (bool): whether GitHub truncated it.
-        head (str | None): the head commit the response named.
     """
     accessor.truncated = truncated
     accessor.tree = tree
     accessor.tree_loaded = True
-    # A truncated tree is not the whole listing at that head, so it is
-    # versioned by nothing.
-    accessor.tree_version = None if truncated else head
 
 
 async def refresh_tree(
@@ -369,7 +364,7 @@ async def refresh_tree(
     tree, truncated, head = await fetch_tree(
         accessor.account, accessor.owner, accessor.repo, ref
     )
-    reseat_tree(accessor, tree, truncated, head)
+    reseat_tree(accessor, tree, truncated)
     return None if truncated else (tree, head)
 
 

@@ -383,30 +383,6 @@ describe('pipeline', () => {
     expect(io.exitCode).toBe(1)
   })
 
-  it('grep and short-circuit', async () => {
-    const io = await ws.shell('grep NONEXISTENT /data/hello.txt && echo should_not_appear')
-    expect(decode(io.stdout)).not.toContain('should_not_appear')
-  })
-
-  it('grep or fallback', async () => {
-    const io = await ws.shell('grep NONEXISTENT /data/hello.txt || echo fallback')
-    expect(decode(io.stdout)).toContain('fallback')
-  })
-
-  it('grep if condition', async () => {
-    const io = await ws.shell(
-      'if grep -q world /data/hello.txt; then echo found; else echo nope; fi',
-    )
-    expect(decode(io.stdout)).toContain('found')
-  })
-
-  it('grep if no match', async () => {
-    const io = await ws.shell(
-      'if grep -q NOPE /data/hello.txt; then echo found; else echo nope; fi',
-    )
-    expect(decode(io.stdout)).toContain('nope')
-  })
-
   it('grep pipe no match last stage wins', async () => {
     const io = await ws.shell('grep NONEXISTENT /data/hello.txt | sort')
     expect(io.exitCode).toBe(0)

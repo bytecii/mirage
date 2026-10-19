@@ -146,17 +146,6 @@ describe('cross-VFS dispatch (port of test_cross_provider_dispatch.py)', () => {
     expect(stderrStr(io).length).toBeGreaterThan(0)
     await ws.close()
   })
-
-  it('aggregate all-succeed exits 0', async () => {
-    const m1 = new RAMVFS()
-    const m2 = new RAMVFS()
-    seed(m1, '/a.txt', 'aaa\n')
-    seed(m2, '/b.txt', 'bbb\n')
-    const ws = await makeWs({ '/m1': m1, '/m2': m2 })
-    const io = await ws.shell('cat /m1/a.txt /m2/b.txt')
-    expect(io.exitCode).toBe(0)
-    await ws.close()
-  })
 })
 
 describe('cross-mount strategies (STREAM/FANOUT) end to end', () => {

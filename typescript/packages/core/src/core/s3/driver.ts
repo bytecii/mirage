@@ -112,15 +112,6 @@ async function* listChildren(conn: S3Conn, pfx: string): AsyncIterable<ChildEntr
   }
 }
 
-async function* listTree(conn: S3Conn, pfx: string): AsyncIterable<TreeEntry> {
-  for await (const page of listPages(conn, { Bucket: conn.config.bucket, Prefix: pfx })) {
-    for (const obj of page.Contents ?? []) {
-      if (obj.Key === undefined) continue
-      yield { key: obj.Key, size: obj.Size ?? 0, modified: isoOf(obj.LastModified) }
-    }
-  }
-}
-
 async function* listSubtree(conn: S3Conn, stem: string): AsyncIterable<TreeEntry> {
   // The prefix listing also matches sibling keys sharing the stem as a
   // name prefix ("data-old" under stem "data"), so each key is checked
@@ -812,7 +803,6 @@ export const DRIVER: ObjectStoreDriver<S3Accessor, S3Conn> = {
   keyPrefixOf,
   connect,
   listChildren,
-  listTree,
   listSubtree,
   head,
   get,

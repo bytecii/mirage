@@ -130,28 +130,6 @@ async def test_list_children_stat_fills_a_missing_size():
 
 
 @pytest.mark.asyncio
-async def test_list_tree_yields_every_file_under_the_prefix():
-    op = _op(
-        FakeAsyncOperator(
-            files={
-                "data/a.json": b"12345",
-                "data/sub/b.json": b"67",
-                "other.txt": b"x",
-            }
-        )
-    )
-    got = [(t.key, t.size) async for t in DRIVER.list_tree(op, "data/")]
-    assert sorted(got) == [("data/a.json", 5), ("data/sub/b.json", 2)]
-
-
-@pytest.mark.asyncio
-async def test_list_tree_translates_the_scanned_dir_to_the_prefix():
-    op = _op(_SelfListingOperator(files={"data/a.json": b"1"}))
-    got = [(t.key, t.size) async for t in DRIVER.list_tree(op, "data/")]
-    assert got == [("data/", 0), ("data/a.json", 1)]
-
-
-@pytest.mark.asyncio
 async def test_list_subtree_of_a_file_stem_yields_only_itself():
     op = _op(FakeAsyncOperator(files={"a/b.txt": b"123", "a/b.txt.bak": b"x"}))
     got = [(t.key, t.size) async for t in DRIVER.list_subtree(op, "a/b.txt")]
@@ -258,23 +236,16 @@ def test_is_not_found_matches_only_opendal_not_found():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "method,path",
-    [
-        ("list_tree", "data/"),
-        ("list_subtree", "data"),
-        ("list_subtree", "data/a.txt"),
-    ],
+    "path",
+    ["data", "data/a.txt"],
 )
 @pytest.mark.parametrize(
     "modified", [datetime(2025, 1, 1, tzinfo=timezone.utc), None]
 )
-async def test_recursive_rows_preserve_modification_time(
-    method, path, modified
-):
+async def test_recursive_rows_preserve_modification_time(path, modified):
     fake = FakeAsyncOperator(files={"data/a.txt": b"old"})
     if modified is not None:
         fake.modified["data/a.txt"] = modified
-    scan = DRIVER.list_tree if method == "list_tree" else DRIVER.list_subtree
-    rows = [row async for row in scan(_op(fake), path)]
+    rows = [row async for row in DRIVER.list_subtree(_op(fake), path)]
     assert len(rows) == 1
     assert rows[0].modified == (modified.isoformat() if modified else "")

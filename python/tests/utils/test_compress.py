@@ -18,6 +18,7 @@ import zlib
 
 import pytest
 
+from mirage.io.stream import yield_bytes
 from mirage.io.types import materialize
 from mirage.utils.compress import (
     GZIP_CHUNK_SIZE,
@@ -25,11 +26,23 @@ from mirage.utils.compress import (
     GZIP_LENGTH,
     GzipDataError,
     GzipDecoder,
-    gunzip_partial,
     gunzip_stream,
-    gzip_compress,
     gzip_compress_stream,
 )
+
+
+def gunzip_partial(
+    data: bytes, passthrough: bool = False
+) -> tuple[bytes, GzipDataError | None]:
+    decoder = GzipDecoder(passthrough=passthrough)
+    parts: list[bytes] = []
+    try:
+        parts.extend(decoder.feed(data))
+        parts.extend(decoder.finish())
+    except GzipDataError as exc:
+        return b"".join(parts), exc
+    return b"".join(parts), None
+
 
 HELLO = gzip.compress(b"hello\n", mtime=0)
 HCRC_HEAD = HELLO[:3] + b"\x02" + HELLO[4:10]
@@ -334,15 +347,20 @@ def test_long_header_fields_use_bounded_memory(flag, terminated):
             list(decoder.finish())
 
 
-def test_named_gzip_header_moves_the_truncation_boundary():
-    named = gzip_compress(b"hello\nworld\n", name="a.txt")
+@pytest.mark.asyncio
+async def test_named_gzip_header_moves_the_truncation_boundary():
+    named = await materialize(
+        gzip_compress_stream(yield_bytes(b"hello\nworld\n"), -1, name="a.txt")
+    )
     assert named[3] & 8
     assert named[10:16] == b"a.txt\0"
     data, failure = gunzip_partial(named[:20])
     assert data == b"hel"
     assert failure is not None
     assert gunzip_partial(named) == (b"hello\nworld\n", None)
-    unnamed = gzip_compress(b"hello\nworld\n")
+    unnamed = await materialize(
+        gzip_compress_stream(yield_bytes(b"hello\nworld\n"), -1)
+    )
     assert gunzip_partial(unnamed[:20])[0] == b"hello\nwor"
 
 

@@ -14,7 +14,6 @@
 
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
 from functools import partial
 
 from mirage.commands.spec.usage import read_fail_exit_code
@@ -266,56 +265,6 @@ async def split_opened(
             unread.add(p.virtual)
         opened.append(p)
     return opened, frozenset(unread), err
-
-
-@dataclass(frozen=True, slots=True)
-class ReadOperand:
-    """One successfully read operand.
-
-    Args:
-        path (PathSpec): The operand that was read.
-        data (bytes): Its materialized content.
-    """
-
-    path: PathSpec
-    data: bytes
-
-
-async def read_operands(
-    paths: list[PathSpec],
-    read: PolymorphicReadFn,
-    cmd_name: str,
-) -> tuple[list[ReadOperand], bytes]:
-    """Read every operand eagerly, turning failures into GNU stderr lines.
-
-    Each operand whose read fails with a filesystem error becomes one
-    ``<cmd>: <path>: <strerror>`` line and the remaining operands still
-    process (the read-family rule). Non-filesystem errors keep
-    propagating. Mirrors ``readOperands`` in operands.ts.
-
-    Args:
-        paths (list[PathSpec]): Glob-resolved operands in command order.
-        read (PolymorphicReadFn): Bound reader called as ``read(path)``;
-            may return bytes, an awaitable of bytes, or a byte stream.
-        cmd_name (str): Command name for the stderr prefix.
-
-    Returns:
-        tuple[list[ReadOperand], bytes]: The operands read in order, and
-        the concatenated stderr lines for the failed ones.
-    """
-    ok: list[ReadOperand] = []
-    err = b""
-    for p in paths:
-        try:
-            source = read(p)
-            if inspect.isawaitable(source):
-                source = await source
-            data = await materialize(source)
-        except FS_ERRORS as exc:
-            err += encode_text(fs_error_line(cmd_name, p, exc))
-            continue
-        ok.append(ReadOperand(p, data))
-    return ok, err
 
 
 def operands_io(err: bytes, exit_code: int = 1) -> IOResult:

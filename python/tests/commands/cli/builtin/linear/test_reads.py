@@ -24,8 +24,6 @@ from mirage.io.types import materialize
 
 ACCESSOR = LinearAccessor(LinearConfig(api_key="lin_api_test"))
 
-TEAM = {"id": "team-1", "key": "ENG", "name": "Engineering"}
-
 
 async def _json(out):
     return json.loads(await materialize(out))

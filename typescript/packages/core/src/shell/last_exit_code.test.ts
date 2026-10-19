@@ -43,79 +43,25 @@ async function assertParity(cmd: string): Promise<void> {
 }
 
 describe('shell $? parity with /bin/sh (port of tests/shell/test_last_exit_code.py)', () => {
-  it('true; echo $?', async () => {
-    await assertParity('true; echo $?')
-  })
-
-  it('false; echo $?', async () => {
-    await assertParity('false; echo $?')
-  })
-
-  it('true | false; echo $?', async () => {
-    await assertParity('true | false; echo $?')
-  })
-
-  it('false | true; echo $?', async () => {
-    await assertParity('false | true; echo $?')
-  })
-
-  it('true && echo $?', async () => {
-    await assertParity('true && echo $?')
-  })
-
-  it('false && echo $? (short-circuits)', async () => {
-    await assertParity('false && echo $?')
-  })
-
-  it('false || echo $?', async () => {
-    await assertParity('false || echo $?')
-  })
-
-  it('true || echo $? (short-circuits)', async () => {
-    await assertParity('true || echo $?')
-  })
-
-  it('true && false; echo $?', async () => {
-    await assertParity('true && false; echo $?')
-  })
-
-  it('false || true; echo $?', async () => {
-    await assertParity('false || true; echo $?')
-  })
-
-  it('if true; then echo $?; fi', async () => {
-    await assertParity('if true; then echo $?; fi')
-  })
-
-  it('if false; then echo a; else echo $?; fi', async () => {
-    await assertParity('if false; then echo a; else echo $?; fi')
-  })
-
-  it('false; true; echo $?', async () => {
-    await assertParity('false; true; echo $?')
-  })
-
-  it('true; false; echo $?', async () => {
-    await assertParity('true; false; echo $?')
-  })
-
-  it('false; if true; then echo $?; fi (if resets)', async () => {
-    await assertParity('false; if true; then echo $?; fi')
-  })
-
-  it('true; (false); echo $? (subshell)', async () => {
-    await assertParity('true; (false); echo $?')
-  })
-
-  it('false; while false; do echo x; done; echo $? (empty while)', async () => {
-    await assertParity('false; while false; do echo x; done; echo $?')
-  })
-
-  it('! true; echo $? (negation true)', async () => {
-    await assertParity('! true; echo $?')
-  })
-
-  it('! false; echo $? (negation false)', async () => {
-    await assertParity('! false; echo $?')
-  })
+  it.each([
+    'true; echo $?',
+    'false; echo $?',
+    'true | false; echo $?',
+    'false | true; echo $?',
+    'true && echo $?',
+    'false && echo $?',
+    'false || echo $?',
+    'true || echo $?',
+    'true && false; echo $?',
+    'false || true; echo $?',
+    'if true; then echo $?; fi',
+    'if false; then echo a; else echo $?; fi',
+    'false; true; echo $?',
+    'true; false; echo $?',
+    'false; if true; then echo $?; fi',
+    'true; (false); echo $?',
+    'false; while false; do echo x; done; echo $?',
+    '! true; echo $?',
+    '! false; echo $?',
+  ])('%s', assertParity)
 })

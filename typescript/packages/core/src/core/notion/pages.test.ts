@@ -24,7 +24,6 @@ import {
   getChildPages,
   getDatabase,
   getPage,
-  queryDataSource,
   queryDataSourcePage,
   queryDataSourcePages,
   searchDataSources,
@@ -138,27 +137,6 @@ describe('queryDataSourcePages shared contract', () => {
   })
 })
 
-describe('queryDataSource collector shared contract', () => {
-  it.each(CASES)('$name', async (testCase) => {
-    const transport = queryTransport(testCase)
-    const result = queryDataSource(transport, 'ds')
-    if (testCase.error === undefined) {
-      expect(await result).toEqual(testCase.pages.flat())
-    } else {
-      const errorClass =
-        testCase.error.kind === 'NotionAPIError' ? NotionAPIError : PaginationStalledError
-      await expect(result).rejects.toBeInstanceOf(errorClass)
-      const expected = Object.fromEntries(
-        Object.entries(testCase.error).filter(([key]) => key !== 'kind'),
-      )
-      await expect(result).rejects.toMatchObject(expected)
-    }
-    expect(transport.invocations.map(({ args }) => args.start_cursor ?? null)).toEqual(
-      testCase.cursors,
-    )
-  })
-})
-
 describe('searchDataSources', () => {
   // 2025-09-03 dropped "database" as a search filter value: the searchable
   // schema-bearing object is the data source now.
@@ -193,7 +171,7 @@ describe('getDatabase', () => {
   })
 })
 
-describe('queryDataSource', () => {
+describe('queryDataSourcePages', () => {
   it('paginates API-post-data-source-query and returns the rows', async () => {
     const transport = new FakeTransport()
     transport.responses.push({
@@ -206,7 +184,8 @@ describe('queryDataSource', () => {
       has_more: false,
       next_cursor: null,
     })
-    const rows = await queryDataSource(transport, 'ds1')
+    const rows = []
+    for await (const page of queryDataSourcePages(transport, 'ds1')) rows.push(...page)
     expect(transport.invocations).toEqual([
       { name: 'API-post-data-source-query', args: { data_source_id: 'ds1', page_size: 100 } },
       {
@@ -392,9 +371,9 @@ it('refuses a truncated query even after a complete first page', async () => {
       request_status: { type: 'incomplete', incomplete_reason: 'query_result_limit_reached' },
     },
   )
-  await expect(queryDataSource(transport, 'ds')).rejects.toThrow(
-    'Notion query incomplete: query_result_limit_reached',
-  )
+  const pages = queryDataSourcePages(transport, 'ds')
+  expect(await pages.next()).toEqual({ value: [{ id: 'first' }], done: false })
+  await expect(pages.next()).rejects.toThrow('Notion query incomplete: query_result_limit_reached')
   expect(transport.invocations).toHaveLength(2)
 })
 

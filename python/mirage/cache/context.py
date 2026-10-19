@@ -57,28 +57,6 @@ class CacheInvalidator(Protocol):
     def probed_stat(self, path: PathSpec) -> FileStat | None: ...
 
 
-def push_cache_manager(
-    manager: CacheInvalidator | None,
-) -> CacheInvalidator | None:
-    """Set the active cache manager for the current async context.
-
-    The mount entry point pushes its manager before dispatching a
-    command, and the caller restores the previous value afterwards by
-    pushing the manager this call returns.
-
-    Args:
-        manager (CacheInvalidator | None): Manager to activate, or None
-            to clear.
-
-    Returns:
-        CacheInvalidator | None: The previously active manager, so
-        callers can restore it.
-    """
-    prev = current_caller().cache_manager
-    bind_caller(replace(current_caller(), cache_manager=manager))
-    return prev
-
-
 def active_cache_manager() -> CacheInvalidator | None:
     """Return the active cache manager for the current async context."""
     return current_caller().cache_manager
@@ -141,21 +119,6 @@ def publish_read(path: str, data: bytes, fingerprint: str | None) -> None:
     capture = current_caller().read_facts
     if capture is not None and capture[0] == path:
         capture[1].append((data, fingerprint))
-
-
-def push_write_context(context: WriteContext | None) -> WriteContext | None:
-    """Set the write context for the current async context.
-
-    Args:
-        context (WriteContext | None): the mount's context, None for an
-            unconditional mount.
-
-    Returns:
-        WriteContext | None: the previous one, for the caller to restore.
-    """
-    prev = current_caller().write_context
-    bind_caller(replace(current_caller(), write_context=context))
-    return prev
 
 
 async def read_versioned(

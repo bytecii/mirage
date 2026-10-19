@@ -9,6 +9,7 @@ from mirage.commands.errors import FindParseError
 from mirage.core.generic.find_eval import (
     Action,
     And,
+    Effects,
     Empty,
     FindEntry,
     Mtime,
@@ -19,7 +20,7 @@ from mirage.core.generic.find_eval import (
     Prune,
     TrueNode,
     Type,
-    eval_predicate,
+    evaluate,
     tree_has_action,
 )
 
@@ -77,8 +78,8 @@ def test_globals_extracted_as_truenode():
     )
     assert expr.maxdepth == 2
     assert expr.mindepth == 1
-    assert eval_predicate(expr.tree, _ent(name="x.foo")) is False
-    assert eval_predicate(expr.tree, _ent(name="x")) is True
+    assert evaluate(expr.tree, _ent(name="x.foo"), Effects()) is False
+    assert evaluate(expr.tree, _ent(name="x"), Effects()) is True
 
 
 def test_depth_first_is_depth_or_delete():

@@ -76,5 +76,4 @@ export const VFSStateKey = Object.freeze({
   FILES: 'files',
   DIRS: 'dirs',
   MODIFIED: 'modified',
-  KEY_PREFIX: 'key_prefix',
 } as const)
