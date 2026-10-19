@@ -57,7 +57,7 @@ from mirage.core.hf_hub.tree import (
 )
 from mirage.core.hf_hub.tree_entry import TreeEntry
 from mirage.errors.constants import MISS_ERRORS
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, IOResult, PathRecord
 from mirage.types import PathSpec
 from mirage.workspace.files import Files
 
@@ -132,7 +132,7 @@ async def write_file(
     accessor: HfHubAccessor,
     repo_path: str,
     local_dir: PathSpec,
-) -> str:
+) -> PathSpec:
     """Fetch one file and store it under the workspace directory.
 
     Args:
@@ -142,7 +142,7 @@ async def write_file(
         local_dir (str): where to write it, as a virtual path.
 
     Returns:
-        str: the virtual path written.
+        PathSpec: the path written.
     """
     url = resolve_url(
         accessor.endpoint,
@@ -155,7 +155,7 @@ async def write_file(
     target = local_dir.join(repo_path)
     await ensure_dir(vfs, target.parent)
     await vfs.write(target, data)
-    return target.virtual
+    return target
 
 
 async def fetch_all(
@@ -164,7 +164,7 @@ async def fetch_all(
     paths: list[str],
     local_dir: PathSpec,
     workers: int,
-) -> list[str]:
+) -> list[PathSpec]:
     """Download every selected file, a bounded number at a time.
 
     Upstream downloads with a worker pool for the same reason: a
@@ -181,10 +181,10 @@ async def fetch_all(
         workers (int): how many fetches may be in flight.
 
     Returns:
-        list[str]: the virtual paths written, in the order selected.
+        list[PathSpec]: the paths written, in the order selected.
     """
 
-    async def one(path: str) -> str:
+    async def one(path: str) -> PathSpec:
         return await write_file(vfs, accessor, path, local_dir)
 
     return await bounded_map(paths, one, workers)
@@ -215,7 +215,7 @@ async def cache_file(
     folder: str,
     sha: str,
     force: bool,
-) -> str:
+) -> PathSpec:
     """Put one file in the cache and link it into the snapshot.
 
     The bytes land once, under their content address, and the snapshot
@@ -235,7 +235,7 @@ async def cache_file(
         force (bool): fetch even when the blob is already held.
 
     Returns:
-        str: the snapshot path the file now appears at.
+        PathSpec: the snapshot path the file now appears at.
     """
     etag = etag_of(entry)
     blob = blob_path(cache_dir, folder, etag)
@@ -259,7 +259,7 @@ async def cache_file(
         except MISS_ERRORS:
             pass
         await vfs.symlink(link, target)
-    return link.virtual
+    return link
 
 
 async def fetch_into_cache(
@@ -270,7 +270,7 @@ async def fetch_into_cache(
     cache_dir: PathSpec,
     force: bool,
     workers: int,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[PathSpec]]:
     """Populate the cache for one revision, bounded the same way.
 
     Args:
@@ -283,8 +283,8 @@ async def fetch_into_cache(
         workers (int): how many fetches may be in flight.
 
     Returns:
-        tuple[str, list[str]]: the snapshot directory, and the snapshot
-        paths written in the order selected.
+        tuple[str, list[PathSpec]]: the snapshot directory, and the
+        snapshot paths written in the order selected.
     """
     sha = await head_commit(accessor) or accessor.revision
     folder = repo_folder_name(accessor.repo_id, accessor.repo_type)
@@ -299,7 +299,7 @@ async def fetch_into_cache(
         await ensure_dir(vfs, ref.parent)
         await vfs.write(ref, sha.encode())
 
-    async def one(path: str) -> str:
+    async def one(path: str) -> PathSpec:
         return await cache_file(
             vfs, accessor, tree[path], cache_dir, folder, sha, force
         )
@@ -466,7 +466,12 @@ async def download_cmd(
             bool(fl.as_bool("force_download")),
             workers,
         )
-    if fl.as_bool("quiet"):
-        return text_out(f"{base}\n")
-    body = "".join(f"{path}\n" for path in written)
-    return text_out(f"{body}{base}\n")
+    # What the line wrote is handed back as records with their paths,
+    # and the listing is rendered from them.
+    records = [PathRecord(path) for path in written]
+    body = "".join(f"{r.path.virtual}\n" for r in records)
+    out, io = text_out(
+        f"{base}\n" if fl.as_bool("quiet") else f"{body}{base}\n"
+    )
+    io.records = records
+    return out, io

@@ -116,7 +116,7 @@ async def test_download_writes_through_the_workspace_dispatcher(
     record, calls, tree, _ = view
     mock_tree.return_value = TREE
     mock_bytes.return_value = b"payload"
-    await download_cmd(
+    out, io = await download_cmd(
         *leaf_args(
             texts=("acme/widget", "a.txt"),
             flags={"local_dir": PathSpec.from_str_path("/work/out")},
@@ -125,6 +125,8 @@ async def test_download_writes_through_the_workspace_dispatcher(
     )
     assert tree["/work/out/a.txt"] == b"payload"
     assert ("write", "/work/out/a.txt", {"data": b"payload"}) in calls
+    assert [r.path.virtual for r in io.records] == ["/work/out/a.txt"]
+    assert await materialize(out) == b"/work/out/a.txt\n/work/out\n"
 
 
 @pytest.mark.asyncio
