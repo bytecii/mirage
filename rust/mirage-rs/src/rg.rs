@@ -3023,6 +3023,22 @@ mod tests {
     }
 
     #[test]
+    fn dense_literal_matches_share_poll_allowance() {
+        let data = [vec![b'a'; 64 * 1024], b"\n".to_vec()].concat();
+        for pattern in ["a", "abcdef|a"] {
+            let (out, tally, calls) = run(
+                &data,
+                json!({"pattern":pattern,"count_matches":true,"stats":true}),
+            );
+            assert_eq!(out, b"65536\n", "{pattern}");
+            assert_eq!(tally["matched_lines"], 1, "{pattern}");
+            assert_eq!(tally["matches"], 65_536, "{pattern}");
+            assert_eq!(tally["searched"], data.len(), "{pattern}");
+            assert!(calls < 2_000, "{pattern} needed {calls} drains");
+        }
+    }
+
+    #[test]
     fn ready_output_does_not_start_an_unrelated_record_search() {
         use crate::Stream;
         let mut stream = super::Rg {

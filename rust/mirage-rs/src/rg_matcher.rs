@@ -463,7 +463,6 @@ fn scan_literals(
     }
     let end = haystack.len().min(cursor.saturating_add(*budget));
     let found = filter.find(haystack, Span::from(cursor..end));
-    *budget -= end - cursor;
     let safe_end = if end == haystack.len() {
         end
     } else {
@@ -472,8 +471,10 @@ fn scan_literals(
     if let Some(found) =
         found.filter(|found| !prefix || end == haystack.len() || found.start < safe_end)
     {
+        *budget -= end.min(found.start.saturating_add(longest)) - cursor;
         return Scan::Hit(found.start);
     }
+    *budget -= end - cursor;
     if end == haystack.len() {
         Scan::Exhausted
     } else {
