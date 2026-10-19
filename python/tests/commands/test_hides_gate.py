@@ -53,6 +53,7 @@ def test_no_backend_registers_its_own_grep_or_rg():
     the session cannot see."""
     commands, failed = _registered()
     assert not failed, f"builtin modules would not import: {failed}"
+    assert commands, "no registered builtin commands were found"
     offenders = [
         f"{cmd.vfs}/{cmd.name} ({inspect.getsourcefile(inspect.unwrap(cmd.fn))})"
         for cmd in commands

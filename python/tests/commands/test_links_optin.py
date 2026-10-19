@@ -47,6 +47,7 @@ def test_every_link_aware_shadow_delegates_to_the_generic():
     """
     commands, failed = _registered()
     assert not failed, f"builtin modules would not import: {failed}"
+    assert commands, "no registered builtin commands were found"
     offenders = []
     for cmd in commands:
         if cmd.name not in LINK_AWARE:
