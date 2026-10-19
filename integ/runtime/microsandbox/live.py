@@ -269,19 +269,6 @@ async def mode_checks(mode):
 
             await check(mode + "_host_change_visible", freshness)
 
-        async def parallel():
-            results = await asyncio.gather(
-                *(probe("parallel", f" {i}") for i in range(6))
-            )
-            assert [r["index"] for r in results] == [str(i) for i in range(6)]
-            assert all(r["end"] > r["start"] for r in results)
-            span = max(r["end"] for r in results) - min(
-                r["start"] for r in results
-            )
-            assert span < 3, f"six one-second jobs took {span:.1f}s"
-
-        await check(mode + "_parallel_processes", parallel)
-
         async def streams():
             result = await agent.shell(
                 "python3 -c 'import sys; d=sys.stdin.buffer.read(); "

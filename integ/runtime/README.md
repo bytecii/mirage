@@ -43,7 +43,7 @@ differs.
 | [`host/`](host/)                       | runtime | the SDK's in-process entry point: `with ws:` and `patchNodeFs`                                    |
 | [`sandlock/`](sandlock/)               | runtime | Landlock limits on a host process                                                                 |
 | [`apple_container/`](apple_container/) | runtime | Apple's container: stderr, sessions, an unserved cwd                                              |
-| [`microsandbox/`](microsandbox/)       | runtime | Microsandbox: an unserved cwd, and live scripts against a real guest (below)                      |
+| [`microsandbox/`](microsandbox/)       | runtime | microsandbox: an unserved cwd and real-guest checks                                               |
 | [`e2b/`](e2b/)                         | scripts | manual checks against a live E2B sandbox, not run by the runners                                  |
 
 ## Runtimes
@@ -143,40 +143,3 @@ With `INTEG_RUNTIME_STRICT=1` an unmet requirement fails instead of
 skipping. `MIRAGE_INTEG_BOX_MOUNTS` says the docker, e2b or microsandbox
 guest has sshfs, FUSE, and a mount of its own at `/boxdata` holding `own.txt`
 (`box`).
-
-## Microsandbox live matrix
-
-`microsandbox/setup.sh` provisions a dedicated running guest with a locally
-built Mirage wheel. If its `mirage-rs` dependency has not been published,
-pass a matching guest-compatible native wheel, built from this checkout's
-`rust/python` on Linux, as the third argument. `microsandbox/live.py` and
-`microsandbox/live.ts` exercise `fuse`, `ssh` and `both`, including mounted
-cwd, symlinks, binary I/O, session rules, cancellation, stopped guests,
-storage-lock contention and cleanup. They stop and restart the guest and hide
-`/dev/fuse` for a while; do not use a guest holding work you want to keep.
-Build the Node packages first, then from the repository root:
-
-```bash
-uv build --wheel python --out-dir /tmp/mirage-wheels
-msb create python:3.12-slim-bookworm --name mirage-e2e-python --memory 1G
-bash integ/runtime/microsandbox/setup.sh mirage-e2e-python /tmp/mirage-wheels/mirage_ai-*.whl
-MIRAGE_E2E_SANDBOX=mirage-e2e-python python/.venv/bin/python integ/runtime/microsandbox/live.py
-msb remove --force mirage-e2e-python
-```
-
-`live.ts` runs the same way against a second guest, with
-`integ/node_modules/.bin/tsx integ/runtime/microsandbox/live.ts`.
-
-The adapter tests in `python/tests/runtime/sandbox/microsandbox/` and
-`typescript/packages/node/src/runtime/sandbox/microsandbox/` take real guests
-too, each skipped when unset: `MIRAGE_INTEG_MICROSANDBOX_SANDBOX` (Python and
-the guest's own FUSE workspace at `/data`, with `/data/hello.txt` holding
-`hello from Mirage FUSE`), `MIRAGE_INTEG_MICROSANDBOX_MOUNT_SANDBOX` (Python,
-`sshfs` and a usable `/dev/fuse`) and
-`MIRAGE_INTEG_MICROSANDBOX_STOPPED_SANDBOX` (a stopped guest, which they check
-is never started).
-
-These runners work with released Microsandbox 0.7.8 and its stock CLI,
-firmware and guest agent. They exercise the delayed-`cd` workaround and show
-the automatic-start race when a guest stops between the running-state check
-and the exec. Hosted CI does not provision these guests.
