@@ -138,10 +138,8 @@ this workspace's mount modes and permissions.
 - `host` is also the address unless `hostname` overrides it; `port`,
   `username`, `identity_file` and `timeout` are optional. Authentication is
   a key or an agent, never a password.
-- The runtime opens one SSH connection, and each line is one exec channel on
-  it, with its own stdin, stderr and exit code. The working directory and
-  environment travel in the command, so the machine's login shell must be
-  POSIX.
+- The machine's login shell must be POSIX-compatible. Commands use the
+  session's working directory and environment.
 - A [timeout](/home/setup/runtime/sandbox#timeouts) does not kill the remote program.
 
 <Warning>

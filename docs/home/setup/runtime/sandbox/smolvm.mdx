@@ -108,10 +108,9 @@ smolvm machine exec --name mirage-box -- mirage workspace create /tmp/sandbox.ya
 
 ## Notes
 
-- The `smolvm` CLI is the transport, so there is no package to install.
-- The first captured line checks the machine and accepts only `running`.
-  Start a `stopped` or `created` machine; `unreachable` means its guest agent
-  is not answering; a `frozen` machine is a fork base, so use a clone.
+- The machine must be `running`. Start a `stopped` or `created` machine,
+  or clone a `frozen` machine before using it. Mirage cannot run commands
+  while a machine is `unreachable`.
 - Lines sent to one machine share its files and processes. Give each tenant
   its own machine.
 - A [timeout](/home/setup/runtime/sandbox#timeouts) does not kill the program in the machine.

@@ -1,15 +1,13 @@
 ---
 title: WASI
 icon: /images/webassembly-logo.svg
-description: Full CPython in WebAssembly on wasmtime, for python3 in the Python SDK.
+description: Run Python in WebAssembly with access to workspace files, in the Python SDK.
 ---
 
-`wasi` runs full CPython, with the whole standard library, compiled to
-WebAssembly and run on [wasmtime](https://wasmtime.dev) inside the Mirage
-process. It has no host files or network: the files it opens are the
-workspace's, under the same mount modes and permissions as shell commands.
-The first run compiles the interpreter and caches it; later runs start in
-milliseconds. Python SDK only.
+`wasi` runs CPython in WebAssembly, with the standard library available
+subject to the restrictions below. Programs can access workspace files
+under the same permissions as shell commands, but cannot access host files
+or the network. Python SDK only.
 
 ## Installation
 
@@ -67,11 +65,6 @@ A run that needs more raises `MemoryError`. CPython starts at about 40M, so
 a cap below that fails every run. There is no cap by default.
 
 ## Python compatibility
-
-The tables list supported APIs; expand **Limitations** for unsupported APIs
-and runtime-specific restrictions. These sections describe how Python APIs
-reach the workspace. Higher-level modules built on these calls, including
-`os.path`, `pathlib`, `glob`, `shutil` and `json.load()`, work too.
 
 Examples assume a writable `/data` mount. Mount modes and permissions still apply.
 
@@ -343,14 +336,8 @@ Network connections are unavailable in this runtime.
 
 ## Notes
 
-Paths outside the mounts show the CPython build, read-only.
-
-Compiled modules and idle engines are reused across runs; each invocation still
-gets a fresh store, filesystem descriptors, memory and interruption epoch. A
-sleeping guest observes cancellation through the preview1 poll bridge. Exit
-statuses use the low eight bits, including 130, 200 and 255, and open files are
-flushed on exit. Traceback source lines come from the user program's line cache.
-
-The CPython WASI libc can normalize an empty path before issuing a syscall;
-Mirage cannot recover spelling already removed by the interpreter. Its preview1
-boundary rejects empty paths and preserves trailing directory requirements.
+- Each command starts with fresh Python state. Files saved to workspace
+  mounts persist between commands.
+- Exit codes are limited to 0–255.
+- Empty-path behavior depends on the Python build. Use `.` for the current
+  directory.

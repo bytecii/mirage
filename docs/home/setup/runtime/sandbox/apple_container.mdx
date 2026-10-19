@@ -118,13 +118,9 @@ container exec my-sandbox mirage workspace create /tmp/sandbox.yaml
 
 ## Notes
 
-- The `container` CLI is the transport, so there is no package to install.
-  `container` is the name the container was started with, and the first
-  captured line checks that it is running.
-- Each command runs under a short `sh` prelude, so the image needs a POSIX
-  `sh`. The session's environment wins over the image's, and a working
-  directory the container does not have fails (`can't cd to /data`) instead
-  of being created empty.
+- Set `container` to the name of a running container.
+- The image needs a POSIX-compatible `sh`. The session's environment wins
+  over the image's. The working directory must already exist in the container.
 - Host directories reach the container only through `--volume`. A service on
   your Mac is not at `127.0.0.1` inside; Apple's
   [host integration guide](https://github.com/apple/container/blob/main/docs/host-integration.md)

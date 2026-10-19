@@ -1,23 +1,22 @@
 ---
 title: Introduction
-description: "The world's first virtual terminal for AI agents: scriptable, composable, and durable."
+description: Give AI agents one shell for files, tools and code.
 icon: /images/mirage-icon-light.svg
 ---
 
-Mirage frees the terminal interface from the local kernel so you can compose
-your own virtual terminal service: connect remote data and storage, dynamically
-route commands across runtimes, and control what agents can access and execute
-through one familiar shell.
+Connect data sources as files, add commands for your services, and choose where
+code runs. Agents work through familiar shell commands, with profiles and
+policies controlling what they can access and execute.
 
-<img noZoom src="/images/mirage-overview-light.svg" alt="Mirage architecture: agents and harness reach profiles and the Mirage shell, which resolve Unix-like commands, virtual CLIs and programming languages onto runtimes and the virtual filesystem, with authentication, the policy engine and notifications alongside" className="block dark:hidden w-full" />
-<img noZoom src="/images/mirage-overview-dark.svg" alt="Mirage architecture: agents and harness reach profiles and the Mirage shell, which resolve Unix-like commands, virtual CLIs and programming languages onto runtimes and the virtual filesystem, with authentication, the policy engine and notifications alongside" className="hidden dark:block w-full" />
+<img noZoom src="/images/mirage-overview-light.svg" alt="Mirage connects agents to files, tools and runtimes, with access controls and notifications" className="block dark:hidden w-full" />
+<img noZoom src="/images/mirage-overview-dark.svg" alt="Mirage connects agents to files, tools and runtimes, with access controls and notifications" className="hidden dark:block w-full" />
 
 - **[Virtual filesystem](/home/setup/vfs).** Virtualize S3, Drive, Slack, databases and more under one root, accessible with `ls`, `cat`, `grep` and `find`.
 - **[Virtual CLIs](/home/setup/clis).** Give agents commands such as `git`, `slack` and `ntn`, with credentials configured per tool.
 - **[Mirage shell](/home/core/shell).** Compose files, CLIs and runtimes with pipes, redirects, variables and jobs.
 - **[Agent profiles](/home/profiles).** Choose what each agent can run and which files and folders it can see.
 - **[Policy engine](/home/policy/policies).** Apply rules to commands, file operations and session changes before they run.
-- **[Dynamic runtimes](/home/setup/runtime/overview).** Route commands to in-process, sandboxed or remote runtimes, independently of where the data lives.
+- **[Runtimes](/home/setup/runtime/overview).** Run code in the workspace, on your host, in a sandbox or on a remote machine.
 - **[Service credentials](/home/authentication).** Connect credentials from environment variables, dotenv, AWS Secrets Manager or 1Password.
 - **[Notifications](/home/notifications).** Notify agents about external file or directory changes in the virtual filesystem.
 
@@ -79,190 +78,38 @@ The search prints:
 to use the same commands on your own data. Continue with the
 [Python](/python/quickstart) or [TypeScript](/typescript/quickstart) quickstart.
 
-## Real use case: run a Slack report and save it to Redis
-
-An agent can read a script shared in Slack, run it, save the result to Redis,
-and post a reply. Here RAM, <Icon icon="database" /> Redis and
-<Icon icon="slack" /> Slack share one root, `python3` runs on Monty inside the
-workspace, and `slack` is a virtual CLI.
-
-Set up [Slack credentials](/home/setup/slack) and a Redis connection first.
-Set `SLACK_BOT_TOKEN` and `REDIS_URL`, then replace the example channel and file
-path with your own. Install the Redis and Monty extras:
-`uv add "mirage-ai[redis,monty]"` in Python, or
-`npm install @struktoai/mirage-node redis @pydantic/monty` in TypeScript.
-
-<Tabs>
-  <Tab title="Python" icon="/images/python-logo.svg">
-    Run inside an async function or a Jupyter notebook:
-
-    ```python
-    import os
-
-    from mirage import RAMVFS, MountMode, Workspace
-    from mirage.commands.cli.builtin.slack import SLACK
-    from mirage.vfs.redis import RedisVFS
-    from mirage.vfs.slack import SlackConfig, SlackVFS
-
-    token = os.environ["SLACK_BOT_TOKEN"]
-
-    ws = Workspace(
-        {
-            "/tmp": (RAMVFS(), MountMode.EXEC),
-            "/redis": (RedisVFS(url=os.environ["REDIS_URL"]), MountMode.WRITE),
-            "/slack": (SlackVFS(SlackConfig(token=token)), MountMode.EXEC),
-        },
-        runtimes=["monty", "workspace"],
-    )
-    ws.register_cli("slack", SLACK, {"token": token})
-
-    await ws.shell("grep -rln session /redis /tmp")
-    await ws.shell("python3 /slack/channels/general__C04KEPWF6V7/2026-04-04/files/report__F07Q2.py > /redis/report.txt")
-    await ws.shell('slack send-message --channel C04KEPWF6V7 --text "report is up"')
-    ```
-  </Tab>
-  <Tab title="TypeScript" icon="/images/typescript-logo.svg">
-    ```typescript
-    import { MountMode, RAMVFS, RedisVFS, SLACK, SlackVFS, Workspace } from '@struktoai/mirage-node'
-
-    const token = process.env.SLACK_BOT_TOKEN!
-
-    const ws = new Workspace(
-      {
-        '/tmp': [new RAMVFS(), MountMode.EXEC],
-        '/redis': [new RedisVFS({ url: process.env.REDIS_URL! }), MountMode.WRITE],
-        '/slack': [new SlackVFS({ token }), MountMode.EXEC],
-      },
-      { runtimes: ['monty', 'workspace'] },
-    )
-    ws.registerCli('slack', SLACK, { token })
-
-    await ws.shell('grep -rln session /redis /tmp')
-    await ws.shell('python3 /slack/channels/general__C04KEPWF6V7/2026-04-04/files/report__F07Q2.py > /redis/report.txt')
-    await ws.shell('slack send-message --channel C04KEPWF6V7 --text "report is up"')
-    ```
-  </Tab>
-  <Tab title="CLI" icon="terminal">
-    ```bash
-    cat > workspace.yaml <<'EOF'
-    runtimes:
-      - monty
-      - workspace
-    mounts:
-      /tmp:
-        vfs: ram
-        mode: exec
-      /redis:
-        vfs: redis
-        mode: write
-        config:
-          url: ${REDIS_URL}
-      /slack:
-        vfs: slack
-        mode: exec
-        config:
-          token: ${SLACK_BOT_TOKEN}
-    clis:
-      slack:
-        cli: slack
-        config:
-          token: ${SLACK_BOT_TOKEN}
-    EOF
-
-    mirage workspace create workspace.yaml --id demo
-    mirage shell -w demo -c 'grep -rln session /redis /tmp'
-    mirage shell -w demo -c 'python3 /slack/channels/general__C04KEPWF6V7/2026-04-04/files/report__F07Q2.py > /redis/report.txt'
-    mirage shell -w demo -c 'slack send-message --channel C04KEPWF6V7 --text "report is up"'
-    ```
-  </Tab>
-</Tabs>
-
-1. `grep -rln session /redis /tmp` searches Redis and RAM in one pass and lists the files that mention `session`.
-2. `python3` runs a script someone shared in Slack's `#general`. Monty runs it inside Mirage, with no host files or network, and `>` writes its output into Redis. The path is an example: list the day's `files/` folder for your file's real name.
-3. `slack send-message` is a virtual CLI: Mirage answers it with the token you registered, with nothing installed. It is found by name, so `man`, `type` and `which` see it like any other program.
-
-## What is Mirage?
-
-<CardGroup cols={2}>
-  <Card title="Virtual Filesystem" icon="folder" href="/home/setup/vfs">
-    S3, Drive, Slack, Gmail, Redis and more under one root, read with <code>ls</code>, <code>grep</code> and <code>find</code>.
-  </Card>
-  <Card title="Virtual CLIs" icon="wrench" href="/home/setup/clis">
-    <code>git</code>, <code>gh</code>, <code>slack</code>, <code>ntn</code> and more, answered by Mirage with nothing installed.
-  </Card>
-  <Card title="Virtual Runtimes" icon="microchip" href="/home/setup/runtime/overview">
-    Python, JavaScript and other programs run inside Mirage, in a sandbox or on a remote host.
-  </Card>
-  <Card title="Mirage Shell" icon="terminal" href="/home/core/shell">
-    One command line where pipes, redirects, jobs and history work across all of it.
-  </Card>
-  <Card title="Agent Profiles" icon="robot" href="/home/profiles">
-    <code>allow</code>, <code>ask</code> or <code>deny</code> a command, and <code>hide</code> or <code>show</code> a path.
-  </Card>
-  <Card title="Policy Engine" icon="scale-balanced" href="/home/policy/policies">
-    A script checks every command, file access and variable before it runs.
-  </Card>
-  <Card title="Notifications" icon="bell" href="/home/notifications">
-    A change in a service arrives as a file event, so the agent reacts instead of rescanning.
-  </Card>
-  <Card title="Service credentials" icon="key" href="/home/authentication">
-    Credentials come from the environment, dotenv, AWS Secrets Manager or 1Password.
-  </Card>
-</CardGroup>
-
 ## Use Cases
 
-Mirage is the world's first virtual terminal: it turns any infrastructure into
-a virtual terminal interface for AI agents. It is highly scriptable,
-customizable, secure and durable.
-
-<CardGroup cols={2}>
-  <Card title="Event-driven triage" icon="bolt">
-    A Slack reply or GitHub push becomes a file change the agent reacts to.
-  </Card>
-  <Card title="Search and RAG" icon="book-open">
-    <code>grep</code> uses each service's own search, and <code>search</code> finds semantic matches in vector stores.
-  </Card>
-  <Card title="Scriptable Policy" icon="scale-balanced">
-    A policy script guards every command, and can even route it to the runtime it runs on.
-  </Card>
-  <Card title="Observability copilots" icon="gauge">
-    <code>grep</code> and <code>jq</code> over Langfuse and Jaeger traces.
-  </Card>
-  <Card title="Scriptable Virtual Terminal" icon="code">
-    Run <code>python3</code> and <code>node</code> inside Mirage, or native programs in a sandbox.
-  </Card>
-  <Card title="Durable Virtual Terminal" icon="clock-rotate-left">
-    Snapshot a run to one file and restore it later.
-  </Card>
-</CardGroup>
+- **Respond to changes.** React to Slack replies or GitHub pushes through file notifications.
+- **Search connected data.** Use `grep` for text search and `search` for semantic matches in vector stores.
+- **Investigate traces.** Query Langfuse and Jaeger traces with `grep` and `jq`.
 
 ## FAQ
 
 <AccordionGroup>
   <Accordion title="Do I need FUSE?">
-    No. Mirage runs the workspace in-process: <code>ws.shell(...)</code> parses and dispatches commands without mounting anything on the host. FUSE is an optional surface if you also want host tools (editors, language servers, <code>rg</code>) to see the workspace.
+    No. Agents can use workspace files through Mirage directly. Use <a href="/home/setup/fuse">FUSE</a> when host tools, such as editors or language servers, need to open those files.
   </Accordion>
   <Accordion title="Where does the shell run? Is it really bash?">
-    The shell runs in your Mirage process: a tree-sitter bash parser plus an executor that routes each command to the mount that owns its paths. There is no <code>/bin/bash</code> underneath. Common Unix commands work (<code>ls</code>, <code>cat</code>, <code>grep</code>, <code>find</code>, <code>head</code>, <code>wc</code>, <code>jq</code>, ...) with pipes, redirects, globs, and <code>&&</code>/<code>||</code>. <code>python3</code>, <code>node</code> and other programs go to the <a href="/home/setup/runtime/overview">runtime</a> that captures them.
+    Mirage provides a Bash-compatible shell in your application. It supports common commands, pipes, redirects, variables and jobs. See the <a href="/home/core/shell">shell guide</a> for supported behavior and differences from Bash.
   </Accordion>
   <Accordion title="Is it sandboxed?">
-    The shell only sees your mounts. The default runtimes run inside Mirage with no host files or network: Monty takes <code>python3</code> in a pool of local worker processes, and QuickJS takes <code>node</code> in-process. Host and sandbox runtimes (<code>local</code>, Docker, E2B, Daytona, SSH) have their own files and network; see <a href="/home/setup/runtime/overview#files">what each runtime reaches</a>.
+    The shell sees the files you mount. The default Monty and QuickJS runtimes cannot access host files or the network. Other runtimes have different access; see <a href="/home/setup/runtime/overview#files">runtime file and network access</a> before choosing one.
   </Accordion>
   <Accordion title="What about latency and cost?">
-    Backend-bound. <code>cat /s3/...</code> is one GetObject; <code>find /postgres/...</code> is a SQL query. Reads go through the workspace cache: under the default <code>read: bounded</code> a repeat read within the mount's <code>ttl</code> makes no backend call, and under <code>read: fresh</code> it costs one metadata check (and a download if the file changed).
+    Operations use the APIs of the services you connect, so their latency and usage charges apply.
   </Accordion>
   <Accordion title="Hosted or self-hosted?">
-    Self-hosted. Mirage is a library plus a thin local daemon. The daemon lives in your process or sandbox; data only leaves your network if a mount you configured already does (e.g. an S3 read).
+    Self-hosted. Run Mirage in your own application, server or sandbox, and connect the services you need.
   </Accordion>
   <Accordion title="Which agent frameworks are supported?">
-    Anything that exposes a shell tool: Claude Code, Codex / OpenAI Agents SDK, Cursor, OpenHands, Pydantic deepagents. Direct SDK integrations live under <a href="/python/agents">Python agents</a> and <a href="/typescript/agents">TypeScript agents</a>.
+    Any agent that can call a shell tool can use Mirage. See the <a href="/home/agents">agent integrations</a> for setup guides.
   </Accordion>
   <Accordion title="Python or TypeScript?">
-    Both. The two SDKs share the same <code>Workspace</code> API, commands and CLIs, and most mounts. Runtimes differ: <code>wasi</code> is Python-only and <code>pyodide</code> TypeScript-only; see the <a href="/home/setup/runtime/overview">runtime table</a>. TypeScript ships <code>@struktoai/mirage-node</code> for Node and <code>@struktoai/mirage-browser</code> for browsers.
+    Both SDKs provide workspaces, shell commands and service integrations. Runtime availability differs; see the <a href="/home/setup/runtime/overview">runtime comparison</a>. Start with the <a href="/python/quickstart">Python</a> or <a href="/typescript/quickstart">TypeScript</a> quickstart.
   </Accordion>
   <Accordion title="What if a VFS I want isn't supported yet?">
-    VFS types are pluggable. The <a href="/python/vfs/new">"Add a VFS"</a> guide walks through the read/write/stat surface a new backend implements. PRs welcome.
+    You can add a custom filesystem. See <a href="/python/vfs/new">Add a VFS</a> for the required API and examples.
   </Accordion>
 </AccordionGroup>
 

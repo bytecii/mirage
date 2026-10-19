@@ -1,18 +1,18 @@
 ---
 title: Pyodide
 icon: python
-description: Full CPython in WebAssembly, with packages such as numpy, for python3 in the TypeScript SDK.
+description: Run Python and packages such as numpy in the TypeScript SDK, in Node and browsers.
 ---
 
-[Pyodide](https://pyodide.org) is full CPython compiled to WebAssembly, run
-in a worker, with packages such as numpy loaded on import. The files it opens
-are the workspace's, under the same mount modes and permissions as shell
-commands. On supported Node versions, Mirage hardens the worker against
-known host file, module, and network access paths after interpreter setup.
-This is not a security boundary for hostile code; see
-[containment](/typescript/runtime/python#containment) for limits and browser
-behavior. Each command starts a fresh interpreter. TypeScript SDK
-only, in Node and in browsers.
+[Pyodide](https://pyodide.org) runs Python with packages such as numpy in
+Node and browsers. Workspace file access follows the same permissions as
+shell commands, and each command starts with fresh Python state.
+TypeScript SDK only.
+
+Pyodide does not provide isolation for hostile code. Host and network access
+depend on the environment and configuration; see
+[containment](/typescript/runtime/python#containment) before choosing it for
+untrusted programs.
 
 ## Installation
 
@@ -21,7 +21,7 @@ pnpm add @struktoai/mirage-node pyodide
 ```
 
 In a browser, install `@struktoai/mirage-browser` and `pyodide` instead. The page
-must be cross-origin isolated for the worker; see
+must be cross-origin isolated; see
 [worker and browser setup](/typescript/runtime/python#worker-and-browser-setup).
 
 ## Usage
@@ -121,16 +121,11 @@ runtimes:
 ```
 
 A run starts at about 50M. One that passes the cap fails with
-`MemoryError`, and the next run starts fresh. On Node the run is stopped
-as soon as it passes the cap; in a browser, which cannot read a worker's
-memory, it fails when it ends. There is no cap by default.
+`MemoryError`, and the next run starts fresh. Node stops the run when it
+passes the cap; browsers check the cap when the run ends. There is no cap
+by default.
 
 ## Python compatibility
-
-The tables list supported APIs; expand **Limitations** for unsupported APIs
-and runtime-specific restrictions. These sections describe how Python APIs
-reach the workspace. Higher-level modules built on these calls, including
-`os.path`, `pathlib`, `glob`, `shutil` and `json.load()`, work too.
 
 Examples assume a writable `/data` mount. Mount modes and permissions still apply.
 
@@ -395,7 +390,7 @@ and `b`. The file is read when it is opened.
   <Accordion title="Limitations" id="subprocess-limitations">
     | API or behavior | Limitation |
     | --- | --- |
-    | `subprocess.run()`, `subprocess.Popen()` | Runs a Mirage command, after pending writes land. |
+    | `subprocess.run()`, `subprocess.Popen()` | Runs commands inside Mirage. Pending file writes are saved before the command starts. |
   </Accordion>
 </AccordionGroup>
 

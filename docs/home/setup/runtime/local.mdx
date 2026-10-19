@@ -1,25 +1,26 @@
 ---
 title: Local
 icon: laptop
-description: Run the host's python3, and any other host program you capture, as a subprocess.
+description: Run programs installed on your host with the Python or TypeScript SDK.
 ---
 
-`local` runs programs on the host as subprocesses: the host's `python3`, and
-any other program you add to its `captures`, such as `ffmpeg`, `gcc` or a
-vendor CLI. A program sees the host's files and network, not the workspace
+`local` runs programs installed on your host, such as `python3`, `node`,
+`tsx`, `ffmpeg` or a vendor CLI. Add their names to `captures` to select them.
+A program sees the host's files and network, not the workspace
 mounts; to reach the mounts, give it a [FUSE folder](/home/setup/fuse).
 Nothing confines it; on Linux, [Sandlock](/home/setup/runtime/sandbox/sandlock)
 does. Python SDK and Node only, and never in the default runtimes.
 
 ## Installation
 
-Nothing to install. `home` names the `python3` to run. Without it, Mirage
+Install the programs you want to run on the host. `home` selects only the
+Python interpreter. Without it, Mirage
 uses `MIRAGE_LOCAL_HOME`, then the interpreter running Mirage (Python) or
 `python3` on `PATH` (Node).
 
 ## Usage
 
-`captures` defaults to `python3` and `python`. Add program names, or
+`captures` defaults to `python3` and `python`. Add names such as `node` or `tsx`, or
 [`@external`](/home/setup/runtime/overview#captures) for every program
 Mirage does not have itself. Mirage's own commands, pipes and redirects stay
 in Mirage: `ffmpeg -i in.mp4 out.webm | wc -c` sends only `ffmpeg`.

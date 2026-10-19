@@ -1,16 +1,13 @@
 ---
 title: QuickJS
 icon: js
-description: A small ES2023 engine in WebAssembly for node and js, in both Mirage SDKs.
+description: Run JavaScript scripts and pipe transforms in both Mirage SDKs.
 ---
 
-QuickJS runs `node` and `js`: a bare ES2023 engine in WebAssembly, inside the
-Mirage process, for small scripts and pipe transforms. It is not Node: there
-is no `require`, npm, `fs` or `fetch`. The files it opens are the workspace's,
-under the same mount modes and permissions as shell commands. It is in the
-default runtimes of both SDKs. The Python SDK runs
-[quickjs-ng](https://github.com/quickjs-ng/quickjs), and the TypeScript SDK
-runs [QuickJS](https://bellard.org/quickjs/) through quickjs-emscripten.
+QuickJS is the default runtime for `node` and `js` in both SDKs. It supports
+ES2023 for small scripts and pipe transforms, with access to workspace files
+under the same permissions as shell commands. Despite the command name,
+it does not provide Node.js APIs, npm packages or network access.
 
 ## Installation
 
@@ -78,9 +75,7 @@ list it yourself:
 
 ## JavaScript compatibility
 
-`std` and `os` are globals, as in `qjs --std`. Python uses the supplied
-QuickJS-NG WASI build; TypeScript uses the bundled QuickJS engine and the
-Mirage file adapter. The SDK columns identify where their APIs differ.
+`std` and `os` are globals. The SDK columns identify where their APIs differ.
 
 In TypeScript, any `std` or `os` function not listed as supported throws
 `TypeError`.
@@ -358,6 +353,3 @@ Unavailable in this runtime.
 - QuickJS cannot reach host files or the network. `command_limits` bound its
   time and output, and in TypeScript a run also stops at 64 MiB of memory.
   Run untrusted or heavy code in a [sandbox](/home/setup/runtime/sandbox).
-- The Python host inherits the supplied WASI build's diagnostic filenames
-  (`<cmdline>` for evaluated source) and `os.getcwd()` spelling after `..`.
-  Its libc can normalize an empty path before Mirage sees the syscall.

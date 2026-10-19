@@ -113,8 +113,7 @@ mirage workspace create /tmp/sandbox.yaml
 
 ## Notes
 
-- The runtime connects on the first captured line and keeps the client until
-  the workspace closes, which leaves the sandbox running.
+- Closing the workspace leaves the sandbox running.
 - Sizing, GPUs, snapshots, networking, idle-stop and auto-delete stay
   Daytona settings. The
   [Daytona example](https://github.com/strukto-ai/mirage/tree/main/examples/python/runtimes/daytona)
