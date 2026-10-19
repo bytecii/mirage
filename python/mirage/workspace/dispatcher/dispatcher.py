@@ -1848,6 +1848,11 @@ class Dispatcher:
                     vfs_path=mount_key(value.virtual, prefix),
                 )
         result: Any
+        generation = (
+            None
+            if mount.cache_manager is None
+            else mount.cache_manager.generation
+        )
         # A fill keeps the token its backend records with the read; a
         # read outside a line (FUSE, ws.vfs) records into a scope of its
         # own for that.
@@ -1903,7 +1908,7 @@ class Dispatcher:
                 )
                 if call.fresh:
                     await self._reconciler.on_fresh_stat(
-                        mount, call.path.virtual, result
+                        mount, call.path.virtual, result, generation
                     )
                 if call.name == "stat":
                     result = await _sized(mount, call.path, result)
@@ -1914,7 +1919,7 @@ class Dispatcher:
             if result is None:
                 if call.fresh:
                     await self._reconciler.on_fresh_stat(
-                        mount, call.path.virtual, None
+                        mount, call.path.virtual, None, generation
                     )
                 else:
                     await self._reconciler.on_enoent(

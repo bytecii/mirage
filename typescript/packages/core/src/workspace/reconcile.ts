@@ -327,10 +327,18 @@ export class Reconciler {
   // mounts and links stay, and its listings are dropped. A row that disagrees
   // with the stored one, or a held copy the fingerprint cannot vouch for, is
   // invalidated as a write is, keeping the version a conditional write sends.
-  // A vouched copy whose row moved keeps its bytes.
-  async onFreshStat(mount: MountEntry, path: string, row: FileStat | null): Promise<void> {
+  // A vouched copy whose row moved keeps its bytes. An answer a local change
+  // overtook while it was asked (the manager's `generation`, read before the
+  // stat was sent, moved) is applied to nothing: that change already settled
+  // the caches, and the answer may predate it.
+  async onFreshStat(
+    mount: MountEntry,
+    path: string,
+    row: FileStat | null,
+    generation: number | null,
+  ): Promise<void> {
     const manager = mount.cacheManager
-    if (manager === null) return
+    if (manager?.generation !== generation) return
     const stored = (await mount.index.get(path)).entry ?? null
     const folder = stored?.type === FileType.DIRECTORY || (await mount.index.holdsSubtree(path))
     if (row === null || (folder && row.type !== FileType.DIRECTORY)) {

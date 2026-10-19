@@ -172,6 +172,27 @@ class HeldRAM extends RAMVFS {
   }
 }
 
+class LateStatRAM extends RAMVFS {
+  gate: Promise<void> | null = null
+  asked: () => void = () => undefined
+  readonly started = new Promise<void>((resolve) => {
+    this.asked = resolve
+  })
+
+  override async stat(path: PathSpec): Promise<FileStat> {
+    const gate = this.gate
+    this.gate = null
+    try {
+      return await super.stat(path)
+    } finally {
+      if (gate !== null) {
+        this.asked()
+        await gate
+      }
+    }
+  }
+}
+
 describe('fresh stat', () => {
   it.each([false, true])('sees an externally created file with fresh=%s', async (fresh) => {
     const vfs = new RAMVFS()
@@ -366,6 +387,28 @@ describe('fresh stat', () => {
       expect(DEC.decode(await reading)).toBe('old')
       vfs.gate = null
       expect(DEC.decode(await ws.vfs.read('/data/f.txt'))).toBe('grown\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('keeps attributes set since a late fresh miss', async () => {
+    const vfs = new LateStatRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.mkdir('/data/d')
+      let release: () => void = () => undefined
+      vfs.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const asking = ws.vfs.stat('/data/d/f.txt', undefined, { fresh: true })
+      asking.catch(() => undefined)
+      await vfs.started
+      await ws.vfs.write('/data/d/f.txt', 'new')
+      await ws.vfs.setxattr('/data/d/f.txt', 'user.k', new TextEncoder().encode('v'))
+      release()
+      await expect(asking).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(DEC.decode(await ws.vfs.getxattr('/data/d/f.txt', 'user.k'))).toBe('v')
     } finally {
       await ws.close()
     }

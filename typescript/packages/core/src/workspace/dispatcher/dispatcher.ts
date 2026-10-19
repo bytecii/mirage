@@ -1759,6 +1759,7 @@ export class Dispatcher {
         ? runWithRecording(fill).then(([value]) => value)
         : fill()
     let result
+    const generation = mount.cacheManager?.generation ?? null
     try {
       if (await this.streams(call, mount, vfs)) {
         return [await recorded(() => this.openStream(call, mount, scope, filler)), dst, fullArgs]
@@ -1876,6 +1877,7 @@ export class Dispatcher {
             mount,
             p.virtual,
             result instanceof FileStat ? result : null,
+            generation,
           )
         }
         if (name === 'stat') result = await sized(mount, p, result)
@@ -1890,7 +1892,7 @@ export class Dispatcher {
           isMissingPath(err) || isEnotdir(err) ? this.namespaceResult(name, p.virtual) : null
         if (fallback === null) {
           if (call.fresh && (isMissingPath(err) || isEnotdir(err))) {
-            await this.reconciler.onFreshStat(mount, p.virtual, null)
+            await this.reconciler.onFreshStat(mount, p.virtual, null, generation)
           } else {
             await this.reconciler.onEnoent(mount, name, p.virtual, err)
           }

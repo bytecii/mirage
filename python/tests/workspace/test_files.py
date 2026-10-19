@@ -156,6 +156,22 @@ class _HeldRAM(RAMVFS):
         return data
 
 
+class _LateStatRAM(RAMVFS):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate: asyncio.Event | None = None
+        self.asked = asyncio.Event()
+
+    async def stat(self, path):
+        gate, self.gate = self.gate, None
+        try:
+            return await super().stat(path)
+        finally:
+            if gate is not None:
+                self.asked.set()
+                await gate.wait()
+
+
 class TestFreshStat:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("fresh", [False, True])
@@ -335,6 +351,26 @@ class TestFreshStat:
             assert await reading == b"old"
             vfs.gate = None
             assert await ws.vfs.read("/data/f.txt") == b"grown\n"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_late_fresh_miss_keeps_attributes_set_since(self):
+        vfs = _LateStatRAM()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.mkdir("/data/d")
+            gate = vfs.gate = asyncio.Event()
+            asking = asyncio.create_task(
+                ws.vfs.stat("/data/d/f.txt", fresh=True)
+            )
+            await vfs.asked.wait()
+            await ws.vfs.write("/data/d/f.txt", b"new")
+            await ws.vfs.setxattr("/data/d/f.txt", "user.k", b"v")
+            gate.set()
+            with pytest.raises(FileNotFoundError):
+                await asking
+            assert await ws.vfs.getxattr("/data/d/f.txt", "user.k") == b"v"
         finally:
             await ws.close()
 
