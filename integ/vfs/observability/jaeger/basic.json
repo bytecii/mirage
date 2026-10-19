@@ -279,11 +279,11 @@
       "targets": [
         "jaeger"
       ],
-      "command": "rm -rf /j/services /j/services/checkout-api/operations.json",
+      "command": "rm -rf /j/services/checkout-api /j/services/orders-api/operations.json",
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "rm: cannot remove '/j/services': Operation not supported\nrm: cannot remove '/j/services/checkout-api/operations.json': Operation not supported\n"
+        "stderr": "rm: cannot remove '/j/services/checkout-api/operations.json': Operation not supported\nrm: cannot remove '/j/services/checkout-api/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1.json': Operation not supported\nrm: cannot remove '/j/services/orders-api/operations.json': Operation not supported\n"
       }
     }
   ]

@@ -12,10 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { captureSessionContext } from '../../../context/session_context.ts'
+import { currentCaller, runWithCaller } from '../../../context/session_context.ts'
 import type { Context } from '../../../commands/config.ts'
 import type { PathSpec } from '../../../types.ts'
-import { ContextScope } from '../../../utils/context_scope.ts'
 import { Activity } from '../../../utils/activity.ts'
 import { asyncContextIsolatesTasks } from '../../../utils/async_context.ts'
 import { ConcurrencyLimiter } from '../../../concurrency/limiter.ts'
@@ -265,9 +264,12 @@ export class PyodideRuntime extends PythonRuntime<undefined> {
       this.capped(runtime, await runtime.runOne(program, ctx, binding))
     if (this.sync === undefined && (ctx.processes?.depth ?? 0) > 0)
       return this.withFreshRuntime(execute)
-    const scope = new ContextScope(captureSessionContext())
+    const caller = currentCaller()
     return this.schedule(() =>
-      this.withPermit(() => scope.run(() => this.withFreshRuntime(execute)), ctx.signal),
+      this.withPermit(
+        () => runWithCaller(caller, () => this.withFreshRuntime(execute)),
+        ctx.signal,
+      ),
     )
   }
 

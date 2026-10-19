@@ -35,6 +35,7 @@ from mirage.context import (
     reset_current_session,
     set_current_session,
 )
+from mirage.context.session_context import awaits_as, calls_as
 from mirage.mount.core import MountCore
 from mirage.observe.context import RecordingScope, record, start_op
 from mirage.policy import Deny, Policy, PolicyDenied
@@ -121,8 +122,9 @@ async def test_callbacks_retain_session_and_gate_after_capture():
         other = ws.runtime_context()
         assert context.ctx.session is not None
         assert context.ctx.vfs is not None
-        assert "/secret/" not in context.scope.call(
-            context.ctx.vfs.mount_prefixes
+        assert (
+            "/secret/"
+            not in calls_as(context.caller, context.ctx.vfs.mount_prefixes)()
         )
         secret = PathSpec.from_str_path("/secret/a")
         with pytest.raises((FileNotFoundError, PermissionError)):
@@ -137,24 +139,26 @@ async def test_callbacks_retain_session_and_gate_after_capture():
             await context.ctx.session.set("SECRET", "no")
         assert refused.value.refusal is not None
         assert "protected" in refused.value.refusal.reason
-        # A captured scope carries the owner as well as the session.
+        # A captured caller carries the owner as well as the session.
         assert (
-            context.scope.call(
-                get_current_session_for, ws._session_mgr
+            calls_as(context.caller, get_current_session_for)(
+                ws._session_mgr
             ).session_id
             == "agent"
         )
         reads = await asyncio.gather(
-            context.scope.run(
+            awaits_as(
+                context.caller,
                 lambda: asyncio.sleep(
                     0, result=context.ctx.session.get("PUBLIC")
-                )
-            ),
-            other.scope.run(
+                ),
+            )(),
+            awaits_as(
+                other.caller,
                 lambda: asyncio.sleep(
                     0, result=other.ctx.session.get("PUBLIC")
-                )
-            ),
+                ),
+            )(),
         )
         assert reads == ["agent", None]
 
@@ -167,10 +171,14 @@ async def test_context_keeps_namespace_live_and_matches_native_projection():
         await ws.shell("ln -s /data/a /data/link")
         links = link_view(context.ctx.vfs)
         assert links is not None
-        assert context.scope.call(links.resolve, "/data/link") == "/data/a"
+        assert (
+            calls_as(context.caller, links.resolve)("/data/link") == "/data/a"
+        )
         ws.add_mount("/data/nested", RAMVFS(), mode=MountMode.EXEC)
         assert context.resolver.owner_of("/data/nested/a") == "/data/nested/"
-        vfs = context.scope.call(RuntimeFiles.of, context.ctx, context.binding)
+        vfs = calls_as(context.caller, RuntimeFiles.of)(
+            context.ctx, context.binding
+        )
         mount = MountCore(ws.vfs)
         # Call the sync adapter on a worker to keep its serving loop free.
         guest = await asyncio.to_thread(vfs.read, "/data/link")

@@ -270,8 +270,9 @@ Answer more than needed, never less: an extra file costs a read, a missing one
 is a wrong answer. Files are matched on `vfs_path` without case; a search that holds only
 keys names each with `mounted_path(path, "/" + key)` from
 `mirage.utils.key_prefix`. Files a session hides are dropped from your answer
-before grep sees it, so it may cover the whole tree; where a path rule reaches
-below the directory, the search is not asked and every file is read. Return `None` when the answer may be incomplete (an
+before grep sees it, so it may cover the whole tree; under a path rule the
+search is still asked, and a file the rule refuses reports `Permission denied`
+whatever your answer says about it. Return `None` when the answer may be incomplete (an
 error, a truncated result, an index that lags writes) and every file is read. A
 word-based index answers `whole_word=True` and returns `None` otherwise.
 

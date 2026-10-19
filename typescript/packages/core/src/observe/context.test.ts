@@ -16,8 +16,7 @@
 import { describe, expect, it } from 'vitest'
 import { MountMode } from '../types.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
-import { ContextScope } from '../utils/context_scope.ts'
-import { captureSessionContext } from '../context/session_context.ts'
+import { type Caller, currentCaller, runWithCaller } from '../context/session_context.ts'
 import { Workspace } from '../workspace/workspace/workspace.ts'
 import {
   commandRecords,
@@ -321,12 +320,13 @@ describe('commandRecords', () => {
   // the command's own frame has exited; its record is still the command's.
   it('rides a captured recording context', async () => {
     const [mine] = await runWithRecording(async () => {
-      let captured: ContextScope | undefined
+      let captured: Caller | undefined
       const list = await commandRecords(async (records) => {
-        captured = new ContextScope(captureSessionContext())
+        captured = currentCaller()
         return records
       })
-      await captured?.run(async () => {
+      if (captured === undefined) throw new Error('no caller captured')
+      await runWithCaller(captured, async () => {
         record('write', '/late', 'ram', 1, startOp())
       })
       return list

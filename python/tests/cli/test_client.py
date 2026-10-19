@@ -12,8 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import httpx
 import pytest
@@ -141,6 +144,67 @@ def test_a_remote_url_is_never_spawned(tmp_path, monkeypatch):
             client.ensure_running()
     assert spawned == []
     assert not (tmp_path / "auth_token").exists()
+
+
+class _GonePopen:
+    """A spawned daemon that has already exited, as a crash leaves it."""
+
+    returncode = 3
+
+    def __init__(self, cmd, **kwargs):
+        pass
+
+    def poll(self):
+        return self.returncode
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_a_daemon_that_exits_ends_the_wait(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV_HOME, str(tmp_path))
+    monkeypatch.delenv("MIRAGE_DAEMON_PORT", raising=False)
+    monkeypatch.setattr("mirage.cli.client.subprocess.Popen", _GonePopen)
+    url = f"http://127.0.0.1:{_free_port()}"
+    with DaemonClient(DaemonSettings(url=url)) as client:
+        started = time.monotonic()
+        with pytest.raises(DaemonUnreachable, match="exited with code 3"):
+            client.ensure_running()
+        assert time.monotonic() - started < 5
+
+
+def test_a_daemon_that_lost_the_bind_waits_for_the_winner(
+    tmp_path, monkeypatch
+):
+    # Two commands spawned at once: the loser exits on a held port while
+    # the winner, already listening, is still starting up.
+    monkeypatch.setenv(ENV_HOME, str(tmp_path))
+    monkeypatch.delenv("MIRAGE_DAEMON_PORT", raising=False)
+    monkeypatch.setattr("mirage.cli.client.subprocess.Popen", _GonePopen)
+    asked = []
+
+    class Starting(BaseHTTPRequestHandler):
+        def do_GET(self):
+            asked.append(self.path)
+            self.send_response(200 if len(asked) > 3 else 503)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Starting)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with DaemonClient(DaemonSettings(url=url)) as client:
+            client.ensure_running()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert asked[-1] == "/v1/health" and len(asked) == 4
 
 
 def test_the_token_is_the_settings_own_else_the_login(tmp_path, monkeypatch):

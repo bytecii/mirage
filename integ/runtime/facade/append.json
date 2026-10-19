@@ -30,6 +30,14 @@
             "ops_contain": [
               "append /data/seed.txt"
             ]
+          },
+          "expect_on": {
+            "s3": {
+              "ops_contain": [
+                "read /data/seed.txt",
+                "write /data/seed.txt"
+              ]
+            }
           }
         },
         {
@@ -71,6 +79,13 @@
             "ops_contain": [
               "append /data/new.txt"
             ]
+          },
+          "expect_on": {
+            "s3": {
+              "ops_contain": [
+                "write /data/new.txt"
+              ]
+            }
           }
         },
         {

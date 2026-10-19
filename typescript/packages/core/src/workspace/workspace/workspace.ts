@@ -97,10 +97,8 @@ import {
   restrictedMountsFor,
   type RuntimeContext,
 } from '../../runtime/binding.ts'
-import { ContextScope } from '../../utils/context_scope.ts'
 import {
   type Caller,
-  captureSessionContext,
   currentCaller,
   getAdmission,
   getCurrentSessionUnlessForeign,
@@ -109,6 +107,8 @@ import {
   runWithRefusalSink,
   runWithSession,
   runAsProgram,
+  runWithExecution,
+  sessionCaller,
   sessionVisibility,
 } from '../../context/session_context.ts'
 import { pathVisible } from '../../utils/hidden.ts'
@@ -190,7 +190,7 @@ export class Workspace {
   private shellParser: ShellParser | null
   private readonly shellParserFactory: (() => Promise<ShellParser>) | null
   private shellParserPromise: Promise<ShellParser> | null = null
-  readonly processes = new ProcessSupervisor()
+  readonly processes = new ProcessSupervisor(runWithExecution)
   readonly jobTable: JobTable
   readonly cache: FileCache & BaseVFS
   readonly namespace: Namespace
@@ -680,7 +680,6 @@ export class Workspace {
     const dispatcher =
       sessionId === undefined ? this.dispatcher : this.dispatcher.forSession(session)
     const gate = getAdmission()
-    const scope = new ContextScope(captureSessionContext(session, this.sessionManager))
     return captureBinding(
       this.runtimeBinding,
       {
@@ -707,7 +706,7 @@ export class Workspace {
         ),
         restrictedMounts: restrictedMountsFor(session, this.sandboxMounts()),
       },
-      scope,
+      sessionCaller(session, this.sessionManager),
     )
   }
 
@@ -764,7 +763,7 @@ export class Workspace {
     // terminal, so the command limits bound what it hands back wherever
     // the parent's own output goes.
     child.terminalOutput = true
-    const scope = new ContextScope(captureSessionContext(child, this.sessionManager))
+    const caller = sessionCaller(child, this.sessionManager)
     const input = new ProcessInput(this.io.bufferBytes),
       output = new ProcessOutput(request.mergeStderr, this.io.bufferBytes),
       abort = new AbortController()
@@ -790,7 +789,10 @@ export class Workspace {
               'session changed during hydration; retry spawn after ensureSessionsLoaded',
             )
           admission.checkSpawn()
-          const result = await scope.run(async () => {
+          // The handle bound the child's execution id around this run; the
+          // caller captured at spawn holds the spawning one's.
+          const bound = { ...caller, execution: currentCaller().execution }
+          const result = await runWithCaller(bound, async () => {
             const view = sessionView(child, this.policies)
             for (const [name, value] of Object.entries(env ?? {})) {
               await view.set(name, value)

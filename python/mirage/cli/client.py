@@ -12,7 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -36,6 +38,8 @@ from mirage.server.daemon_config import (
     validate_daemon_table,
 )
 from mirage.server.paths import mirage_home
+
+logger = logging.getLogger(__name__)
 
 
 class DaemonUnreachable(RuntimeError):
@@ -115,13 +119,16 @@ class DaemonClient:
             return False
 
     def ensure_running(
-        self, startup_timeout: float = 5.0, allow_spawn: bool = True
+        self, startup_timeout: float = 30.0, allow_spawn: bool = True
     ) -> None:
         """Ensure the daemon is reachable, optionally spawning it.
 
         Args:
             startup_timeout (float): seconds to wait for the spawned
-                daemon to answer ``/v1/health``.
+                daemon to answer ``/v1/health``. A first start imports the
+                whole server, and compiles it on a fresh install. A daemon
+                that exits first ends the wait, unless another daemon
+                already holds the port.
             allow_spawn (bool): if True and the daemon is unreachable
                 at a local URL, starts ``mirage.server.daemon:app``
                 detached. A remote URL never starts one.
@@ -142,18 +149,39 @@ class DaemonClient:
                 f"daemon not reachable at {self.settings.url}; "
                 "run `mirage workspace create CONFIG.yaml` to spawn one"
             )
-        self._spawn_daemon()
+        daemon = self._spawn_daemon()
         deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
             if self.is_reachable(timeout=0.3):
                 return
+            # Gone without answering: a crash, or a bind lost to a daemon
+            # another command spawned, which holds the port and is waited
+            # for.
+            if daemon.poll() is not None and not self._listening():
+                raise DaemonUnreachable(
+                    f"daemon exited with code {daemon.returncode} before "
+                    f"answering /v1/health; see {mirage_home() / 'daemon.log'}"
+                )
             time.sleep(0.1)
         raise DaemonUnreachable(
             f"daemon spawned but did not answer /v1/health within "
             f"{startup_timeout:.1f}s"
         )
 
-    def _spawn_daemon(self) -> None:
+    def _listening(self) -> bool:
+        """Whether anything accepts a connection on the daemon's port."""
+        parsed = urlparse(self.settings.url)
+        try:
+            with socket.create_connection(
+                (parsed.hostname or "127.0.0.1", self._port_from_url()),
+                timeout=0.3,
+            ):
+                return True
+        except OSError as exc:
+            logger.debug("nothing accepts on the daemon's port: %s", exc)
+            return False
+
+    def _spawn_daemon(self) -> subprocess.Popen[bytes]:
         table = read_daemon_table(mirage_home())
         validate_daemon_table(table)
         port = self._resolve_port(table)
@@ -181,7 +209,7 @@ class DaemonClient:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "daemon.log"
         with open(log_file, "ab") as f:
-            subprocess.Popen(
+            return subprocess.Popen(
                 cmd,
                 env=env,
                 stdout=f,

@@ -779,7 +779,9 @@ export class Dispatcher {
     // The command's gate judges its own calls; a metadata call passes, as
     // its guards let stat pass, unless it only asks admission, and a scan
     // guard reads nothing: the rule judges each read it guards. A warm read
-    // is judged once the file cache is found to hold a copy.
+    // is judged in the cache stage, held or not: its answer stands in for the
+    // read (a search's ruled-out file is read as empty), so it meets the rule
+    // the read would.
     const isWarm = name === 'read' && warm === true
     const gate =
       (METADATA_OPS.has(name) && !admitOnly) || name === 'before_full_scan' || isWarm
@@ -842,9 +844,9 @@ export class Dispatcher {
       return [null, new IOResult()]
     }
     // The cache stage answers first where the file cache decides: a call
-    // standing in for a read gives way to the read for a file it holds, and a
-    // warm read of a file it holds no copy of answers null. Neither has
-    // anything to judge; the read is judged.
+    // standing in for a read gives way to the read for a file it holds,
+    // which is judged, and a warm read answers whether it holds one, judged
+    // as the read it stands in for.
     if (READ_STAND_IN_OPS.has(name) && (await this.held(call, owner))) {
       memoryAnswered(report)
       return [null, new IOResult()]
@@ -852,7 +854,7 @@ export class Dispatcher {
     if (call.warm) {
       const held = await this.held(call, owner)
       const ruleGate = this.caller?.ruleGate ?? null
-      if (held && ruleGate !== null) judge(ruleGate, call.typed, call.walked, call.path)
+      if (ruleGate !== null) judge(ruleGate, call.typed, call.walked, call.path)
       memoryAnswered(report)
       return [held ? true : null, new IOResult()]
     }
@@ -1620,8 +1622,12 @@ export class Dispatcher {
    * call, a coded preVfs policy reach below one of its paths, it is declined
    * and the caller walks, entry by entry, through calls that are each judged.
    * Inside a running line only the profile's path rules judge an entry, so a
-   * coded policy declines no walk there. A hide declines the copies and the
-   * removal, which would reach hidden entries; a read in HIDE_FILTERED_OPS
+   * coded policy declines no walk there. A path rule declines no
+   * `files_containing`: its answer only rules files out of a walk that still
+   * lists every one, and each file it rules out meets the rule as a warm read,
+   * so one the rule refuses reports `Permission denied` as its read would. A
+   * hide declines the copies and the removal, which would reach hidden
+   * entries; a read in HIDE_FILTERED_OPS
    * runs and `filter` drops what the session hides from its answer. A file
    * copy is declined the same way: the bytes it moves never pass through a
    * read. A tree copy is declined too when a link stands below its
@@ -1641,7 +1647,12 @@ export class Dispatcher {
     if (!HIDE_FILTERED_OPS.has(call.name) && paths.some((p) => hiddenUnder(call.vis, p.virtual))) {
       return true
     }
-    if (call.ruleGate !== null) return paths.some((p) => call.ruleGate?.scopes(p.virtual) === true)
+    if (call.ruleGate !== null) {
+      return (
+        call.name !== 'files_containing' &&
+        paths.some((p) => call.ruleGate?.scopes(p.virtual) === true)
+      )
+    }
     return this.policies.wantsFor('preVfs', this.sessionId(), this.lineRunning())
   }
 

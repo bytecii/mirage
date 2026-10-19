@@ -17,6 +17,8 @@ import { createRequire } from 'node:module'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { RAMVFS } from '../vfs/ram/ram.ts'
+import { record, startOp } from '../observe/context.ts'
+import { norm } from '../utils/path.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { Limit, MountMode, OnExceed, PathSpec } from '../types.ts'
 import { MountRegistry } from '../workspace/mount/registry.ts'
@@ -1125,6 +1127,128 @@ describe('postCommand and postSession', () => {
       expect([out.exitCode, out.stdoutText]).toEqual([126, 'k\n'])
       const piped = await ws.shell('cat /data/vault/k | cat')
       expect([piped.exitCode, piped.stderrText]).toEqual([0, 'cat: Permission denied\n'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  /**
+   * Streams a file a little at a time and records what a read moved when
+   * its stream closes, as a backend that learns it at the end does.
+   */
+  class AccountsAtClose extends RAMVFS {
+    override readonly cachesReads = false
+
+    override readStream(path: PathSpec): AsyncIterable<Uint8Array> {
+      const data = this.accessor.store.files.get(norm(path.mountPath)) ?? new Uint8Array()
+      return chunksRecordedAtClose(path, data)
+    }
+  }
+
+  async function* chunksRecordedAtClose(
+    path: PathSpec,
+    data: Uint8Array,
+  ): AsyncGenerator<Uint8Array> {
+    const timer = startOp()
+    let sent = 0
+    try {
+      for (let start = 0; start < data.byteLength; start += 1024) {
+        const chunk = data.subarray(start, start + 1024)
+        sent += chunk.byteLength
+        await Promise.resolve()
+        yield chunk
+      }
+    } finally {
+      record('read', path.virtual, 's3', sent, timer)
+    }
+  }
+
+  class RecordsByCommand implements Policy {
+    readonly seen = new Map<string, readonly Record<string, unknown>[]>()
+
+    postCommand(ctx: CommandResultContext): Action | null {
+      this.seen.set(ctx.command, [...ctx.records])
+      return null
+    }
+  }
+
+  it('a stream its reader stops early closes as its command', async () => {
+    // head pulls cat's output after cat returned and stops after a line:
+    // the read is cat's, and so is the record its backend makes as the
+    // stream closes, so head is charged with nothing.
+    const ws = new Workspace(
+      { '/data/': new AccountsAtClose() },
+      { mode: MountMode.WRITE, shellParser: parser },
+    )
+    try {
+      const big = Array.from({ length: 20000 }, (_, i) => `line ${String(i)}\n`).join('')
+      await ws.vfs.write('/data/big', big)
+      const policy = new RecordsByCommand()
+      ws.policies.add(policy)
+      const out = await ws.shell('cat /data/big | head -1')
+      expect([out.exitCode, out.stdoutText]).toEqual([0, 'line 0\n'])
+      const reads = policy.seen.get('cat') ?? []
+      expect(reads.map((r) => [r.op, r.path])).toEqual([['read', '/data/big']])
+      const bytes = reads[0]?.bytes as number
+      expect(bytes).toBeGreaterThan(0)
+      expect(bytes).toBeLessThan(big.length)
+      expect(policy.seen.get('head')).toEqual([])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a once nod lasts while the line streams and no longer', async () => {
+    // The approved retry opens /data/b only once /data/a is drained, after
+    // the line returned its output: the nod still covers it. The run after
+    // asks again.
+    const ws = executableWorkspace()
+    try {
+      await ws.vfs.write('/data/a', 'a\n'.repeat(50000))
+      await ws.vfs.write('/data/b', 'b\n'.repeat(3))
+      ws.createSession('agent', {
+        profile: {
+          commands: { ask: [{ reason: 'b', commands: ['cat'], paths: ['/data/b'] }] },
+        },
+      })
+      const line = 'cat /data/a /data/b | tail -c 4'
+      const held = await ws.shell(line, { sessionId: 'agent' })
+      expect(held.refusal?.kind).toBe('pending')
+      const [nod] = ws.decisions.pending()
+      await ws.decisions.answer(nod?.id ?? '', Outcome.ALLOW)
+      const out = await ws.shell(line, { sessionId: 'agent' })
+      expect([out.exitCode, out.stdoutText]).toEqual([0, 'b\nb\n'])
+      const again = await ws.shell(line, { sessionId: 'agent' })
+      expect(again.refusal?.kind).toBe('pending')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class AskBigReads implements Policy {
+    preVfs(ctx: VfsContext): Action | null {
+      return ctx.call.name === 'read' && ctx.path.virtual === '/data/big'
+        ? { kind: 'ask', reason: 'big read' }
+        : null
+    }
+  }
+
+  it('a once nod covers one streamed read however far it is pulled', async () => {
+    const ws = new Workspace(
+      { '/data/': new AccountsAtClose() },
+      { mode: MountMode.WRITE, shellParser: parser },
+    )
+    try {
+      await ws.vfs.write('/data/big', 'x'.repeat(10000))
+      ws.policies.add(new AskBigReads())
+      const held = await ws.vfs.readStream('/data/big').catch((err: unknown) => err)
+      expect(held).toBeInstanceOf(PolicyDenied)
+      await ws.decisions.answer((held as PolicyDenied).refusal?.askId ?? '', Outcome.ALLOW)
+      const stream = (await ws.vfs.readStream('/data/big'))[Symbol.asyncIterator]()
+      expect((await stream.next()).value).toHaveLength(1024)
+      await stream.return?.()
+      const again = await ws.vfs.readStream('/data/big').catch((err: unknown) => err)
+      expect((again as PolicyDenied).refusal?.kind).toBe('pending')
     } finally {
       await ws.close()
     }

@@ -21,6 +21,7 @@ from typing import Any
 
 from mirage.commands.builtin.utils.limit import run_with_timeout
 from mirage.commands.config import Context
+from mirage.context.session_context import current_caller, with_caller
 from mirage.errors.types import CommandTimeoutError
 from mirage.io import IOResult
 from mirage.io.pipe import BytePipe
@@ -35,7 +36,6 @@ from mirage.runtime.types import ExecutionKind, OutputFn, RunResult
 from mirage.shell.bytes import encode_text
 from mirage.types import PathSpec, Producer
 from mirage.utils.abort import MirageAbortError
-from mirage.utils.context_scope import ContextScope
 from mirage.workspace.expand.argv import Argv
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.session import SessionState, env_snapshot
@@ -135,7 +135,7 @@ def _stream_external(
 ) -> tuple[ByteSource, IOResult, ExecutionNode]:
     """Keep a process and its deadline alive until its bounded output is closed."""
     pipe = BytePipe()
-    scope = ContextScope()
+    caller = current_caller()
     io = IOResult(
         producer=Producer(
             command=argv.name,
@@ -207,7 +207,7 @@ def _stream_external(
         finally:
             await close()
 
-    return OutputStream(scope.stream(output()), close), io, node
+    return OutputStream(with_caller(output(), caller), close), io, node
 
 
 async def _execute_program(

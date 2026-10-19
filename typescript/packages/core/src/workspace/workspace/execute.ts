@@ -24,7 +24,12 @@ import type { ProcessHandle } from '../../process/handle.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import { concat } from '../../utils/bytes.ts'
-import { activeRecords, lostPaths, runWithRecording } from '../../observe/context.ts'
+import {
+  activeRecords,
+  lostPaths,
+  runWithRecording,
+  type RecordingState,
+} from '../../observe/context.ts'
 import type { Observer } from '../../observe/observer.ts'
 import type { OpRecord } from '../../observe/record.ts'
 import { Channel } from '../../shell/console/types.ts'
@@ -1004,45 +1009,69 @@ async function runParsedLine(
       ))
         ? env.router.context(command, effectiveSession, await judged())
         : null
-      const result = await abortable(
-        inLine(() =>
-          runWholeLine(
-            lineRuntime,
-            command,
-            stdin,
-            effectiveSession,
-            env.registry.allMounts(),
-            env.registry.policies,
-            () => env.invalidateAllAfterRemote(),
-            killed,
-            env.registry.commandLimits,
-            claimantFor(rootNode, handed),
-            route,
-          ),
-        ),
-        killed,
-      )
-      const refusal = result.refusal ?? nested.latest
-      held = isPendingRefusal(refusal)
-      recordStatus(targetSession, result.exitCode)
-      if (isLine) {
-        const lineIo = new IOResult({
-          exitCode: result.exitCode,
-          stdout: result.stdout,
-          refusal,
-          ...(result.stderr !== null ? { stderr: result.stderr } : {}),
-        })
-        // Joined like the tree's record: a stalled store releases the
-        // caller, a fast one records before history is read.
+      const runLine = (): ReturnType<typeof runWholeLine> =>
+        runWholeLine(
+          lineRuntime,
+          command,
+          stdin,
+          effectiveSession,
+          env.registry.allMounts(),
+          env.registry.policies,
+          () => env.invalidateAllAfterRemote(),
+          killed,
+          env.registry.commandLimits,
+          claimantFor(rootNode, handed),
+          route,
+        )
+      // The runtime's file calls are the line's, recorded as a tree's are,
+      // and handed over however the run ends: a call it finished before it
+      // failed or was aborted still happened.
+      const recording: RecordingState = { records: [], mountId: null, ledger: env.records }
+      const lineRecords = recording.records
+      // Joined like the tree's record: a stalled store releases the caller,
+      // a fast one records before history is read.
+      const logLine = async (io: IOResult): Promise<void> => {
         await joinOrAbort(
           env.observer.logExecution(
             command,
-            await shown(lineIo, options.sink),
-            [],
+            await shown(io, options.sink),
+            lineRecords,
             targetSession.sessionId,
             effectiveSession.cwd,
           ),
           killed,
+        )
+      }
+      let result: Awaited<ReturnType<typeof runWholeLine>>
+      try {
+        result = await abortable(
+          inLine(() =>
+            isLine ? runWithCaller({ ...currentCaller(), recording }, runLine) : runLine(),
+          ),
+          killed,
+        )
+      } catch (error) {
+        env.records.push(...lineRecords)
+        if (isLine) {
+          const aborted = killed?.aborted === true
+          const failed = failureResult(aborted ? makeAbortError(killed) : error)
+          if (aborted) failed.exitCode = 130
+          await logLine(new IOResult(failed))
+        }
+        throw error
+      }
+      env.records.push(...lineRecords)
+      const refusal = result.refusal ?? nested.latest
+      held = isPendingRefusal(refusal)
+      recordStatus(targetSession, result.exitCode)
+      if (isLine) {
+        await logLine(
+          new IOResult({
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            refusal,
+            ...(result.stderr !== null ? { stderr: result.stderr } : {}),
+          }),
         )
       }
       return new ExecuteResult(
@@ -1134,7 +1163,7 @@ async function runParsedLine(
     }
     try {
       execResult = await inLine(async () =>
-        isLine ? runWithRecording(runBody) : [await runBody(), []],
+        isLine ? runWithRecording(runBody, env.records) : [await runBody(), []],
       )
       // A record a nested line earned is the line's to report when its
       // own tree earned none (see NestedRefusal). A question a gate left

@@ -1358,6 +1358,31 @@ class Broken implements Policy {
 }
 
 describe('explain answers and the op form', () => {
+  // Twin of test_explain_reads_a_scope_that_spells_a_byte_past_utf8: `env`
+  // runs printf as a scope of its own, spelled from the expanded words,
+  // and `$'\xff'` expands to a byte no UTF-8 encodes.
+  it('reads a scope that spells a byte past UTF-8', async () => {
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      const said = await ws.explain("env printf '%d\\n' $'\\x27\\xff'")
+      const [env] = said.node.children
+      const [scope] = env?.children ?? []
+      const [printf] = scope?.children ?? []
+      expect([
+        said.exitCode,
+        printf !== undefined && 'command' in printf ? printf.command : null,
+      ]).toEqual([0, 'printf'])
+      expect(printf !== undefined && 'command' in printf ? printf.words.at(-1)?.text : null).toBe(
+        "'\udcff",
+      )
+    } finally {
+      await ws.close()
+    }
+  })
+
   it("shows every policy's answer in chain order", async () => {
     const ws = new Workspace(
       { '/data/': new RAMVFS() },

@@ -300,8 +300,10 @@ async function fullScan(
  * sees.
  * Both are asked through the dispatcher, which drops what the session hides
  * from a `filesContaining` answer, judges `linesContaining` as a read of its
- * file, and answers null where a path rule or a preVfs policy reaches below a
- * directory, so every file is read and judged.
+ * file, judges each file a search rules out as the read it stands in for (the
+ * `isWarm` call), so a file a path rule refuses reports `Permission denied`,
+ * and answers null where a coded preVfs policy reaches below a directory, so
+ * every file is read and judged.
  * When neither can stand in for a walk, the mount's `beforeFullScan` may
  * refuse it.
  * Mirrors Python's `search_reads`.

@@ -21,9 +21,9 @@ from mirage.context.session_context import (
     CallerToken,
     bind_caller,
     current_caller,
+    current_execution_id,
     reset_caller,
 )
-from mirage.execution.context import current_execution_id
 from mirage.observe.record import STAMP_FINGERPRINT_OPS, OpRecord, RecordIndex
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import under_path
@@ -159,12 +159,29 @@ class Recorder:
         lost (LostPaths): The line's lost paths.
         index (RecordIndex): The line's version index over ``sink``.
         mount_id (str | None): Identity of the mounted instance serving reads.
+        ledger (list[OpRecord] | None): the workspace ledger a line hands
+            its records to when it ends; None for a file call's own
+            recorder, which no other call joins.
     """
 
     sink: list[OpRecord]
     lost: LostPaths
     index: RecordIndex
     mount_id: str | None = None
+    ledger: list[OpRecord] | None = None
+
+
+def fresh_recorder(ledger: list[OpRecord] | None = None) -> Recorder:
+    """An empty recorder, for a line or a call outside one.
+
+    Args:
+        ledger (list[OpRecord] | None): the workspace ledger a line hands
+            its records to, None for a file call's own.
+    """
+    sink: list[OpRecord] = []
+    return Recorder(
+        sink=sink, lost=LostPaths(sink), index=RecordIndex(sink), ledger=ledger
+    )
 
 
 def _set_recorder(rec: Recorder | None) -> CallerToken:
@@ -184,16 +201,18 @@ class RecordingScope:
     Args:
         active (bool): False joins the enclosing scope instead of
             opening a new one.
+        ledger (list[OpRecord] | None): the workspace ledger the line
+            hands its records to, which a file call of that workspace
+            made on the line joins.
     """
 
-    def __init__(self, active: bool = True) -> None:
+    def __init__(
+        self, active: bool = True, ledger: list[OpRecord] | None = None
+    ) -> None:
         self.records: list[OpRecord] = []
         self._token = None
         if active:
-            sink: list[OpRecord] = []
-            rec = Recorder(
-                sink=sink, lost=LostPaths(sink), index=RecordIndex(sink)
-            )
+            rec = fresh_recorder(ledger)
             self.records = rec.sink
             self._token = _set_recorder(rec)
 
@@ -411,9 +430,7 @@ def finish_record(
 ) -> OpRecord:
     """Close ``timer`` and build the finished record.
 
-    The one place an op's duration and wall-clock stamp are read, shared
-    by the recorder sink (:func:`record`) and by the ``Files`` facade's own
-    ledger, so the two cannot disagree about what a duration measures.
+    The one place an op's duration and wall-clock stamp are read.
 
     Args:
         op (str): Operation name ("read", "write").

@@ -31,6 +31,20 @@
             "ops_contain": [
               "pwrite /data/digits.txt"
             ]
+          },
+          "expect_on": {
+            "s3": {
+              "ops_contain": [
+                "read /data/digits.txt",
+                "write /data/digits.txt"
+              ]
+            },
+            "redis": {
+              "ops_contain": [
+                "read /data/digits.txt",
+                "write /data/digits.txt"
+              ]
+            }
           }
         },
         {

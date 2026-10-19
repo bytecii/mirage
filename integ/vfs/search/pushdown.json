@@ -237,6 +237,88 @@
         "stdout": "/search/edge/fold.txt\n/search/edge/fold.txt:0\n/search/edge/hit.txt:1\n/search/edge/fold.txt:\u017fun rises\n/search/edge/hit.txt:wombat and the sun\n/search/edge/hit.txt:wombat and the sun\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "search_word_drops_a_hidden_hit_unread",
+      "seq": 540254,
+      "targets": [
+        "box",
+        "dropbox"
+      ],
+      "session": "veiled",
+      "note": "beta.txt is hidden and holds the word: the mount's search still names it, the session drops it, and only alpha.txt is read; a walk without the search would read gamma.txt too.",
+      "command": "grep -rlw wombat /search",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "/search/alpha.txt\n",
+        "stderr": "",
+        "check": "[\"/search/alpha.txt\"]\n"
+      },
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "search_word_rg_drops_a_hidden_hit_unread",
+      "seq": 540255,
+      "targets": [
+        "box",
+        "dropbox"
+      ],
+      "session": "veiled",
+      "command": "rg -lw wombat /search",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "/search/alpha.txt\n",
+        "stderr": "",
+        "check": "[\"/search/alpha.txt\"]\n"
+      },
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "search_word_reports_a_denied_file_it_rules_out",
+      "seq": 540256,
+      "targets": [
+        "box",
+        "dropbox"
+      ],
+      "session": "walled",
+      "note": "gamma.txt is denied and holds no match: the search stays on and reads only beta.txt, and gamma.txt still answers Permission denied with exit 2, as a full scan does.",
+      "command": "grep -rw sleeps /search",
+      "clear_cache": true,
+      "expect": {
+        "exit": 2,
+        "stdout": "/search/beta.txt:the wombat sleeps\n",
+        "stderr": "grep: /search/gamma.txt: Permission denied\n",
+        "check": "[\"/search/beta.txt\"]\n"
+      },
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "search_word_lists_around_a_denied_file",
+      "seq": 540257,
+      "targets": [
+        "box",
+        "dropbox"
+      ],
+      "session": "walled",
+      "command": "grep -rlw wombat /search",
+      "clear_cache": true,
+      "expect": {
+        "exit": 2,
+        "stdout": "/search/alpha.txt\n/search/beta.txt\n",
+        "stderr": "grep: /search/gamma.txt: Permission denied\n",
+        "check": "[\"/search/alpha.txt\",\"/search/beta.txt\"]\n"
+      },
+      "check": {
+        "read_paths": true
+      }
     }
   ]
 }

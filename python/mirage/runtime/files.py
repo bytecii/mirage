@@ -21,16 +21,20 @@ from mirage.bridge.sync import run_async_from_sync
 from mirage.commands.builtin.utils.links import link_view
 from mirage.commands.config import Context
 from mirage.concurrency.limiter import ConcurrencyLimiter
+from mirage.context.session_context import (
+    awaits_as,
+    calls_as,
+    current_caller,
+)
 from mirage.errors.fs import einval, eloop, numbered
 from mirage.errors.types import OperationNotSupportedError
-from mirage.runtime.binding import ScopedResolver, WorkspaceBinding
+from mirage.runtime.binding import CallerResolver, WorkspaceBinding
 from mirage.runtime.constants import ABSENT_PATH, LISTING_ENTRY_CONCURRENCY
 from mirage.runtime.errors import CrossMountError
 from mirage.runtime.handles import FlushStep, Kept
 from mirage.runtime.resolver import MountResolver
 from mirage.runtime.types import DispatchFn, VFSEntry, VFSStat
 from mirage.types import FileStat, PathSpec
-from mirage.utils.context_scope import ContextScope
 from mirage.utils.path import CycleError, norm, resolve_path
 from mirage.utils.remnants import entry_name
 from mirage.utils.stat_view import (
@@ -162,8 +166,8 @@ class RuntimeFiles:
 
         Over the run's files (``ctx.vfs``, whose calls are the program's
         own), the binding's routing table and the namespace's links, each
-        replaying the run's context, which ``Runtime.execute`` set up, for
-        a guest that calls back from elsewhere.
+        made as the run's caller, which ``Runtime.execute`` bound, for a
+        guest that calls back from a thread of its own.
 
         Args:
             ctx (Context): the run's context.
@@ -172,13 +176,13 @@ class RuntimeFiles:
         """
         if binding is None or ctx.vfs is None:
             return None
-        scope = ContextScope()
+        caller = current_caller()
         links = link_view(ctx.vfs)
         return cls(
-            scope.wrap_async(ctx.vfs.dispatch),
+            awaits_as(caller, ctx.vfs.dispatch),
             asyncio.get_running_loop(),
-            ScopedResolver(binding.resolver, scope),
-            None if links is None else scope.wrap(links.resolve),
+            CallerResolver(binding.resolver, caller),
+            None if links is None else calls_as(caller, links.resolve),
         )
 
     def kept(self, path: str, *, stored: bool, rendered: bool) -> Kept:

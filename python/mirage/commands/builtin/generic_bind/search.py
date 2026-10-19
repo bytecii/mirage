@@ -370,7 +370,9 @@ async def search_reads(
     link leads elsewhere, which the mount's search never sees. Both are
     asked through the dispatcher, which drops what the session hides
     from a ``files_containing`` answer, judges ``lines_containing`` as a
-    read of its file, and answers None where a path rule or a pre_vfs
+    read of its file, judges each file a search rules out as the read it
+    stands in for (the ``is_warm`` call), so a file a path rule refuses
+    reports ``Permission denied``, and answers None where a coded pre_vfs
     policy reaches below a directory, so every file is read and judged.
     When neither can stand in for a walk, the mount's
     ``before_full_scan`` may refuse it.

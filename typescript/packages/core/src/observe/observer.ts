@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { IOResult } from '../io/types.ts'
-import { currentExecutionId } from '../execution/context.ts'
 import { utcDateFolder } from '../utils/dates.ts'
 import {
   EVENT_CLEAR,
@@ -27,6 +26,7 @@ import {
 import type { OpRecord } from './record.ts'
 import { type ObserverStore, RAMObserverStore } from './store.ts'
 import { compareCodePoints } from '../utils/sort.ts'
+import { currentExecutionId } from '../context/session_context.ts'
 
 const KNOWN_EVENTS = new Set<string>([EVENT_COMMAND, EVENT_CLEAR, EVENT_DELETE, EVENT_OP])
 

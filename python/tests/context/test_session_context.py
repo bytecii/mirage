@@ -12,7 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import errno
+from dataclasses import replace
 
 import pytest
 
@@ -33,6 +35,13 @@ from mirage.context import (
     set_current_session,
     set_program_invocation,
     strongest_mode_under,
+)
+from mirage.context.session_context import (
+    Caller,
+    bind_caller,
+    current_caller,
+    reset_caller,
+    with_caller,
 )
 from mirage.types import (
     HiddenPaths,
@@ -461,3 +470,38 @@ def test_an_evaluation_binds_with_its_own_session_only():
     finally:
         reset_current_session(token)
     assert get_current_evaluation() is None
+
+
+@pytest.mark.asyncio
+async def test_a_stream_is_pulled_and_closed_as_the_caller_it_was_made_with():
+    # The reader's own caller is never seen by the stream, what a pull
+    # binds stays the stream's for its next pull, and none of it reaches
+    # the reader; the close a reader that stops early sends runs as the
+    # stream's caller too.
+    made = Caller(command_started=1)
+    reader = Caller(command_started=2)
+    seen: list[int | None] = []
+    consumer = asyncio.current_task()
+
+    async def source():
+        assert asyncio.current_task() is consumer
+        seen.append(current_caller().command_started)
+        bind_caller(replace(current_caller(), command_started=3))
+        try:
+            yield 1
+            seen.append(current_caller().command_started)
+            yield 2
+        finally:
+            seen.append(current_caller().command_started)
+
+    token = bind_caller(reader)
+    try:
+        stream = with_caller(source(), made)
+        assert await anext(stream) == 1
+        assert current_caller() is reader
+        assert await anext(stream) == 2
+        await stream.aclose()
+        assert current_caller() is reader
+    finally:
+        reset_caller(token)
+    assert seen == [1, 3, 3]

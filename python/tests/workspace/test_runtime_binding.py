@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
@@ -34,6 +36,7 @@ from mirage.runtime.python.base import PythonRuntime
 from mirage.runtime.resolver import MountResolver
 from mirage.runtime.types import Program, RunResult
 from mirage.runtime.workspace import WorkspaceRuntime
+from mirage.utils.abort import MirageAbortError
 
 
 @pytest_asyncio.fixture
@@ -580,6 +583,94 @@ class LineBox(Runtime, LineExecutorMixin):
         return RunResult(
             stdout=b"box:" + line.encode(), stderr=None, exit_code=0
         )
+
+
+class ReadingBox(LineBox):
+    """A whole-line runtime that reads a workspace file for its line."""
+
+    async def run_line(self, engine, paths, texts, ctx) -> RunResult:
+        data = await ctx.vfs.read("/ram/f.txt")
+        return RunResult(stdout=data, stderr=None, exit_code=0)
+
+
+@pytest.mark.asyncio
+async def test_what_a_runtime_reads_is_in_its_lines_report():
+    # A runtime's reads are the line's: they reach the workspace's ledger
+    # and the observer's account of the line, as a command's do.
+    box = ReadingBox()
+    box.captures = ("*",)
+    ws = Workspace(
+        {"/ram": RAMVFS()}, mode=MountMode.EXEC, runtimes=[box, "workspace"]
+    )
+    try:
+        await ws.vfs.write("/ram/f.txt", b"hi\n")
+        mark = len(ws.vfs.records)
+        io = await ws.shell("anything")
+        assert await materialize(io.stdout) == b"hi\n"
+        assert [(r.op, r.path) for r in ws.vfs.records[mark:]] == [
+            ("read", "/ram/f.txt")
+        ]
+        logged = await ws.observer.events()
+        line = next(
+            i for i, e in enumerate(logged) if e.get("command") == "anything"
+        )
+        before = logged[line - 1]
+        assert (before["type"], before["op"], before["path"]) == (
+            "op",
+            "read",
+            "/ram/f.txt",
+        )
+    finally:
+        await ws.close()
+
+
+class StallingBox(LineBox):
+    """A whole-line runtime that reads a workspace file, then never ends."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read = asyncio.Event()
+
+    async def run_line(self, engine, paths, texts, ctx) -> RunResult:
+        await ctx.vfs.read("/ram/f.txt")
+        self.read.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_what_an_aborted_runtime_read_stays_on_the_books():
+    # The runtime finished its read before the line was aborted: the read
+    # happened, so it reaches the ledger and the line's record all the same.
+    box = StallingBox()
+    box.captures = ("*",)
+    ws = Workspace(
+        {"/ram": RAMVFS()}, mode=MountMode.EXEC, runtimes=[box, "workspace"]
+    )
+    try:
+        await ws.vfs.write("/ram/f.txt", b"hi\n")
+        mark = len(ws.vfs.records)
+        cancel = asyncio.Event()
+        running = asyncio.ensure_future(ws.shell("anything", cancel=cancel))
+        await box.read.wait()
+        cancel.set()
+        with pytest.raises(MirageAbortError):
+            await running
+        assert [(r.op, r.path) for r in ws.vfs.records[mark:]] == [
+            ("read", "/ram/f.txt")
+        ]
+        logged = await ws.observer.events()
+        line = next(
+            i for i, e in enumerate(logged) if e.get("command") == "anything"
+        )
+        before = logged[line - 1]
+        assert (before["type"], before["op"], before["path"]) == (
+            "op",
+            "read",
+            "/ram/f.txt",
+        )
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio

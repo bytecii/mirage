@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   getCurrentEvaluation,
-  captureSessionContext,
+  sessionCaller,
   effectiveMountMode,
   effectivePathMode,
   getAdmission,
@@ -29,6 +29,9 @@ import {
   runWithSession,
   strongestModeUnder,
   runWithEvaluation,
+  currentCaller,
+  runWithCaller,
+  withCaller,
 } from './session_context.ts'
 import { asyncContextIsolatesTasks } from '../utils/async_context.ts'
 import { MountMode, weakerMode } from '../types.ts'
@@ -435,12 +438,42 @@ describe('the evaluation binding', () => {
           expect(getCurrentEvaluation()).toBe(expected)
           return Promise.resolve()
         })
-        const [scope] = captureSessionContext(rebound)
-        await scope?.(() => {
+        await runWithCaller(sessionCaller(rebound), () => {
           expect(getCurrentEvaluation()).toBe(expected)
+          return Promise.resolve()
         })
       }
     })
     expect(getCurrentEvaluation()).toBeNull()
+  })
+})
+
+describe('withCaller', () => {
+  it('pulls and closes a stream as the caller it was made with', async () => {
+    // The reader's own caller is never seen by the stream and stays the
+    // reader's between pulls; the close a reader that stops early sends
+    // runs as the stream's caller too.
+    const made = { ...currentCaller(), started: 1 }
+    const reader = { ...currentCaller(), started: 2 }
+    const seen: (number | null)[] = []
+    async function* source(): AsyncGenerator<number> {
+      try {
+        seen.push(currentCaller().started)
+        yield await Promise.resolve(1)
+        seen.push(currentCaller().started)
+        yield 2
+      } finally {
+        seen.push(currentCaller().started)
+      }
+    }
+    await runWithCaller(reader, async () => {
+      const stream = withCaller(source(), made)
+      expect((await stream.next()).value).toBe(1)
+      expect(currentCaller()).toBe(reader)
+      expect((await stream.next()).value).toBe(2)
+      await stream.return(undefined)
+      expect(currentCaller()).toBe(reader)
+    })
+    expect(seen).toEqual([1, 1, 1])
   })
 })

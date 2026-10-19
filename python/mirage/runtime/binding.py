@@ -18,10 +18,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from mirage.commands.config import Context
+from mirage.context.session_context import (
+    Caller,
+    awaits_as,
+    calls_as,
+    current_caller,
+)
 from mirage.runtime.resolver import MountResolver
 from mirage.runtime.types import DispatchFn
 from mirage.types import MountMode
-from mirage.utils.context_scope import ContextScope
 from mirage.utils.hidden import is_glob, show_head
 from mirage.workspace.files import Files
 from mirage.workspace.session import SessionState
@@ -31,18 +36,19 @@ from mirage.workspace.session import SessionState
 class RuntimeContext:
     """Local workspace binding captured for one execution, never guest globals.
 
-    The scoped entry points retain session, policy, and observation context
-    even when called later from a worker callback. No workspace stores are
-    exposed. ``ctx`` is the same ``Context`` a command or CLI gets: its
-    ``vfs`` is the session's files over the binding's dispatch, so a
-    guest's calls are the program's own, and its links are the ones a
-    guest's path resolves through. ``Runtime.execute`` runs under it and
-    hands the run this ``vfs`` and ``session``.
+    The entry points run as ``caller``, the caller the execution was
+    captured under (its session, policies, recorder and execution), even
+    when a guest calls them later from a thread of its own. No workspace
+    stores are exposed. ``ctx`` is the same ``Context`` a command or CLI
+    gets: its ``vfs`` is the session's files over the binding's dispatch,
+    so a guest's calls are the program's own, and its links are the ones
+    a guest's path resolves through. ``Runtime.execute`` runs as
+    ``caller`` and hands the run this ``vfs`` and ``session``.
     """
 
     binding: WorkspaceBinding
     resolver: MountResolver
-    scope: ContextScope
+    caller: Caller
     ctx: Context
     restricted_mounts: tuple[str, ...] = ()
 
@@ -145,9 +151,9 @@ def capture_binding(
         restricted_mounts (tuple[str, ...] | None): the mounts the
             session restricts.
     """
-    scope = ContextScope()
+    caller = current_caller()
     ctx = ctx if ctx is not None else Context()
-    dispatch = scope.wrap_async(binding.dispatch)
+    dispatch = awaits_as(caller, binding.dispatch)
     ctx = replace(
         ctx,
         vfs=(
@@ -158,40 +164,41 @@ def capture_binding(
     )
     # A read of the session reads the session it is bound to; only a
     # write passes the gates, which read the caller, so only a write
-    # replays it.
+    # runs as it.
     session = ctx.session
     if session is not None:
         ctx = replace(
             ctx,
             session=replace(
                 session,
-                set=scope.wrap_async(session.set),
-                unset=scope.wrap_async(session.unset),
-                mark=scope.wrap_async(session.mark),
+                set=awaits_as(caller, session.set),
+                unset=awaits_as(caller, session.unset),
+                mark=awaits_as(caller, session.mark),
             ),
         )
-    resolver = ScopedResolver(binding.resolver, scope)
     return RuntimeContext(
         binding=binding,
-        resolver=resolver,
-        scope=scope,
+        resolver=CallerResolver(binding.resolver, caller),
+        caller=caller,
         ctx=ctx,
         restricted_mounts=restricted_mounts or (),
     )
 
 
-class ScopedResolver:
-    """Delegate every routing question under the captured context."""
+class CallerResolver:
+    """Ask every routing question as the captured caller, whose session
+    decides which mounts it is told of."""
 
-    def __init__(self, resolver: MountResolver, scope: ContextScope) -> None:
-        self._resolver = resolver
-        self._scope = scope
+    def __init__(self, resolver: MountResolver, caller: Caller) -> None:
+        self._prefixes = calls_as(caller, resolver.prefixes)
+        self._owner_of = calls_as(caller, resolver.owner_of)
+        self._link_children = calls_as(caller, resolver.link_children)
 
     def prefixes(self) -> list[str]:
-        return self._scope.call(self._resolver.prefixes)
+        return self._prefixes()
 
     def owner_of(self, path: str) -> str | None:
-        return self._scope.call(self._resolver.owner_of, path)
+        return self._owner_of(path)
 
     def link_children(self, directory: str) -> set[str]:
-        return self._scope.call(self._resolver.link_children, directory)
+        return self._link_children(directory)

@@ -397,6 +397,23 @@ def test_a_hidden_operand_beside_a_visible_one_keeps_its_match(line):
 
 
 @pytest.mark.parametrize(
+    "line",
+    ["grep -r ada /d", "grep -rc ada /d", "grep -rl ada /d", "rg ada /d"],
+)
+def test_a_deny_rule_on_a_file_keeps_the_search_on(line):
+    # The search still narrows under the rule. The refused c.txt holds no
+    # match, so the search rules it out, and that answer meets the rule as
+    # the read it stands in for: it reports Permission denied, exit 2, as a
+    # full scan does, and only the files holding the text are read.
+    vfs, deny = SearchRAM(lines=None), ("/d/c.txt",)
+    out, err, code = _run(vfs, line, deny=deny)
+    assert (out, err, code) == _run(RAMVFS(), line, deny=deny)
+    assert (b"/d/c.txt: Permission denied" in err, code) == (True, 2)
+    assert (vfs.asked, vfs.scans) == ([("ada", False)], [])
+    assert sorted(vfs.reads) == ["d/a.txt", "d/sub/d.txt"]
+
+
+@pytest.mark.parametrize(
     "line", ["grep -r ada /d", "grep -rn ada /d", "grep -rl ada /d"]
 )
 def test_a_path_rule_below_the_walk_keeps_greps_answer(line):

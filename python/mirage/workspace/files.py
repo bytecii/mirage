@@ -16,16 +16,32 @@ import asyncio
 import functools
 import posixpath
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from mirage.context import get_current_session, session_visibility
+from mirage.context import (
+    Caller,
+    bind_caller,
+    current_caller,
+    get_current_session,
+    reset_caller,
+    session_visibility,
+)
+from mirage.context.session_context import calls_as
 from mirage.errors.types import NoMountError
 from mirage.io import IOResult, OpReport
 from mirage.io.stream import close_quietly, ensure_stream
 from mirage.io.types import ByteSource
 from mirage.observe import OpRecord
-from mirage.observe.context import OpTimer, finish_record, start_op
+from mirage.observe.context import (
+    OpTimer,
+    Recorder,
+    active_recorder,
+    command_records,
+    fresh_recorder,
+    record,
+    start_op,
+)
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, MountMode, PathSpec, Visibility
 from mirage.utils.hidden import leads_hidden, path_visible
@@ -295,26 +311,6 @@ class Files:
             found.add(root)
         return sorted(found)
 
-    def _record(
-        self,
-        op: str,
-        path: str,
-        source: str,
-        nbytes: int,
-        timer: OpTimer,
-        session: str,
-    ) -> None:
-        rec = finish_record(
-            op,
-            path,
-            source.value if hasattr(source, "value") else str(source),
-            nbytes,
-            timer,
-        )
-        self._records.append(rec)
-        if self._observer is not None:
-            asyncio.ensure_future(self._observer.log_op(rec, session))
-
     def _owner(self, path: str) -> MountRow | None:
         """The mount owning ``path`` by longest prefix, or None."""
         owner = owner_prefix((m.prefix for m in self._mounts), path)
@@ -370,9 +366,16 @@ class Files:
         """Run one op through the workspace dispatcher and record it.
 
         The dispatcher owns the whole pipeline (follow, grants, gates, cache,
-        structure, invalidation); the facade's own share is the record,
-        which names the path the dispatcher's report says the op ran on,
-        its links followed.
+        structure, invalidation). On a line this workspace runs, the op
+        records where the line records, so its records are the line's;
+        anywhere else (outside a line, or on another workspace's) it
+        records into its own recorder, handed to this ledger and the
+        observer once the op ends, a stream's once it closes. What records it is what
+        records a line's calls: the backend and the dispatcher, with the
+        tokens they read. An op nothing below recorded (a stat, a listing,
+        a warm cache hit, a synthetic namespace answer) is recorded here,
+        on the path the dispatcher's report says it ran on, its links
+        followed.
 
         Whether the op is a write is the dispatcher's call too: it reads that
         off the op name, so there is nothing for a caller here to
@@ -392,6 +395,20 @@ class Files:
         timer = start_op()
         report = OpReport()
         seen: list[str] = []
+        # Only a line this workspace runs is joined: another workspace's
+        # line, or another call's own recorder seen through a shared
+        # browser stack, would take this workspace's records.
+        line = active_recorder()
+        own = (
+            None
+            if line is not None and line.ledger is self._records
+            else fresh_recorder()
+        )
+        token = (
+            None
+            if own is None
+            else bind_caller(replace(current_caller(), recorder=own))
+        )
 
         async def run() -> tuple[Any, Any]:
             sess = get_current_session()
@@ -406,87 +423,71 @@ class Files:
                 **kwargs,
             )
 
+        # The op's own list gathers every record made below it; a command
+        # the op runs in on that line (a handler reaching ``ws.vfs``) is
+        # charged them once the op ends.
+        held = None if own is not None else current_caller().command_sink
+        outer = held[0] if held is not None else None
         try:
-            bound = self._session_id if session_id is None else session_id
-            result, _ = await (
-                run() if self._bind is None else self._bind(bound, run)
-            )
-        except BaseException:
-            # Anything raised after the op ran (a post_vfs deny, a hard
-            # output cap, a bookkeeping failure) suppresses the result,
-            # not the effect, so observation must reflect the op before
-            # the error propagates. The dispatcher stamps the report at the
-            # moment of completion, so even a foreign error the dispatcher
-            # never defined leaves the transfer on the books.
-            ran = report.path or typed.virtual
-            owner = self._owner(ran)
-            if report.completed and owner is not None:
-                self._record_op(
-                    op,
-                    ran,
-                    owner,
-                    report.source,
-                    report.bytes,
-                    None,
-                    kwargs,
-                    timer,
-                    self._session_for(seen),
-                )
-            raise
+            with command_records(own=True) as mine:
+                caller = current_caller()
+                try:
+                    bound = (
+                        self._session_id if session_id is None else session_id
+                    )
+                    result, _ = await (
+                        run() if self._bind is None else self._bind(bound, run)
+                    )
+                except BaseException:
+                    # Anything raised after the op ran (a post_vfs deny, a
+                    # hard output cap, a bookkeeping failure) suppresses the
+                    # result, not the effect, so observation must reflect
+                    # the op before the error propagates. The dispatcher
+                    # stamps the report at the moment of completion, so even
+                    # a foreign error the dispatcher never defined leaves the
+                    # transfer on the books.
+                    self._settle(
+                        op, typed, report, None, kwargs, timer, mine, caller
+                    )
+                    self._hand_over(own, seen, mine, outer)
+                    raise
+                finally:
+                    # A write owns its source even when it never reaches
+                    # the dispatcher (an unknown session refused at the bind).
+                    if op in ("write", "append"):
+                        await close_quietly(kwargs.get("data"))
         finally:
-            # A write owns its source even when it never reaches the
-            # dispatcher (an unknown session refused at the bind).
-            if op in ("write", "append"):
-                await close_quietly(kwargs.get("data"))
-        ran = report.path or typed.virtual
-        owner = self._owner(ran)
-        if owner is None or (op == "write" and kwargs.get("admit_only")):
+            if token is not None:
+                reset_caller(token)
+        if op == "write" and kwargs.get("admit_only"):
+            self._hand_over(own, seen, mine, outer)
             return result
 
-        def record(answer: Any) -> None:
-            self._record_op(
-                op,
-                ran,
-                owner,
-                report.source,
-                report.bytes,
-                answer,
-                kwargs,
-                timer,
-                self._session_for(seen),
+        def settle(answer: Any) -> None:
+            self._settle(
+                op, typed, report, answer, kwargs, timer, mine, caller
             )
+            self._hand_over(own, seen, mine, outer)
 
         if hasattr(result, "__aiter__"):
-            recorded = _recorded(result, lambda: record(None))
+            recorded = _recorded(result, lambda: settle(None))
             await recorded.__anext__()
             return recorded
-        record(result)
+        settle(result)
         return result
 
-    def _session_for(self, seen: list[str]) -> str:
-        """The session id a record carries: the one the op ran as, else
-        this facade's own, else the unbound entry point's empty id.
-
-        Args:
-            seen (list[str]): what ``_run_as_seen`` noted.
-        """
-        if seen:
-            return seen[0]
-        return self._session_id if self._session_id is not None else ""
-
-    def _record_op(
+    def _settle(
         self,
         op: str,
-        path: str,
-        owner: MountRow,
-        source: str | None,
-        moved: int | None,
-        result: Any,
+        typed: PathSpec,
+        report: OpReport,
+        answer: Any,
         kwargs: dict[str, Any],
         timer: OpTimer,
-        session: str,
+        mine: list[OpRecord],
+        caller: Caller,
     ) -> None:
-        """Record one op from the dispatcher's report of who served it.
+        """Record an op that ran and that nothing below recorded.
 
         The dispatcher names the server when it was not the owning mount (a
         warm cache hit, a synthetic namespace answer): neither moved
@@ -497,22 +498,72 @@ class Files:
 
         Args:
             op (str): the op name.
-            path (str): the resolved virtual path.
-            owner (MountRow): the mount owning the path.
-            source (str | None): the dispatcher's server, None for the mount.
-            moved (int | None): bytes the backend moved, None to
-                measure the result.
-            result (Any): what the op returned, None when withheld.
+            typed (PathSpec): the path as asked.
+            report (OpReport): the dispatcher's account of what ran.
+            answer (Any): what the op returned, None when withheld.
             kwargs (dict[str, Any]): the op's arguments.
             timer (OpTimer): the stopwatch opened when the op started.
-            session (str): the session the op ran as.
+            mine (list[OpRecord]): what the op recorded below.
+            caller (Caller): the op's caller, its recorder bound.
         """
-        nbytes = (
-            moved if moved is not None else self._payload_bytes(result, kwargs)
+        if mine or not report.completed:
+            return
+        ran = report.path or typed.virtual
+        owner = self._owner(ran)
+        if owner is None:
+            return
+        moved = report.bytes
+        calls_as(caller, record)(
+            op,
+            ran,
+            report.source or owner.resource_type,
+            moved
+            if moved is not None
+            else self._payload_bytes(answer, kwargs),
+            timer,
         )
-        self._record(
-            op, path, source or owner.resource_type, nbytes, timer, session
-        )
+
+    def _hand_over(
+        self,
+        own: Recorder | None,
+        seen: list[str],
+        mine: list[OpRecord],
+        outer: list[OpRecord] | None,
+    ) -> None:
+        """Hand an op's records on once it ended: its own to the ledger
+        and the observer, while an op on a running line left them with the
+        line; and each to the command the op ran in, if any.
+
+        Args:
+            own (Recorder | None): the recorder the op opened, None when
+                it recorded into a line's.
+            seen (list[str]): the session the op ran as, once known.
+            mine (list[OpRecord]): what the op recorded.
+            outer (list[OpRecord] | None): the records of the command the
+                op ran in, None outside one.
+        """
+        if outer is not None:
+            outer.extend(mine)
+        if own is None or not own.sink:
+            return
+        records = list(own.sink)
+        own.sink.clear()
+        self._records.extend(records)
+        if self._observer is not None:
+            session = self._session_for(seen)
+            for rec in records:
+                asyncio.ensure_future(self._observer.log_op(rec, session))
+
+    def _session_for(self, seen: list[str]) -> str:
+        """The session id a record carries: the one the op ran as, else
+        this facade's own, else the unbound entry point's empty id.
+
+        Args:
+            seen (list[str]): the session the op ran as, once known.
+        """
+        if seen:
+            return seen[0]
+        return self._session_id if self._session_id is not None else ""
 
     async def read(
         self,

@@ -22,7 +22,7 @@ from mirage import MountMode, Workspace
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.config import command
 from mirage.commands.spec import CommandSpec
-from mirage.execution.context import current_execution_id
+from mirage.context.session_context import current_execution_id
 from mirage.io.types import IOResult
 from mirage.observe.store import RAMObserverStore
 from mirage.policy import Action, CommandContext, Deny, Policy
