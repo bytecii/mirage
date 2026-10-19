@@ -21,7 +21,14 @@ import { dateClock } from './dates.ts'
 import { FormatUsageError, GitError } from './errors.ts'
 import { filterWords, refFilter, withoutFilterValues } from './ref_filter.ts'
 import { formatRefs, parseFormat, usedFields } from './ref_format.ts'
-import { isRootRef, listingResult, matchAsPath, refListing, sortKeys } from './ref_list.ts'
+import {
+  isRootRef,
+  listingResult,
+  matchAsPath,
+  refListing,
+  sortKeys,
+  sortsNamed,
+} from './ref_list.ts'
 import { opened } from './session.ts'
 import { QuoteStyle, RefKind } from './types.ts'
 import { checkSwitches, fatal } from './util.ts'
@@ -101,7 +108,9 @@ export async function forEachRef(
       count,
       omitEmpty: fl.asBool('omit_empty'),
       icase,
-      stream: filter === null || (filter.merged === null && filter.noMerged === null),
+      stream:
+        (keys === null || !sortsNamed(fl)) &&
+        (filter === null || (filter.merged === null && filter.noMerged === null)),
     })
     return listingResult(out, errors, stopped)
   } catch (err) {

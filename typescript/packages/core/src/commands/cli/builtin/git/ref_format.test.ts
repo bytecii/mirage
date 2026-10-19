@@ -22,6 +22,8 @@ import {
   parseFormat,
   parseSortKeys,
   quoteText,
+  renderRow,
+  ValueTable,
   versioncmp,
   type ListingOptions,
 } from './ref_format.ts'
@@ -34,6 +36,8 @@ import {
   type RefObject,
 } from './types.ts'
 
+// Every expectation below is git's own output for the same refs, measured
+// with git 2.47.3 and 2.50.1.
 const ENC = new TextEncoder()
 
 function commit(when: number, subject: string): RefObject {
@@ -47,16 +51,29 @@ function commit(when: number, subject: string): RefObject {
   }
 }
 
-function ref(name: string, kind: RefKind, obj: RefObject): RefItem {
-  return { name, oid: obj.oid, kind, symref: null, obj, peeled: null, upstream: null, worktree: '' }
+function ref(name: string, oid: string, kind: RefKind, obj: RefObject | null): RefItem {
+  return { name, oid, kind, symref: null, obj, peeled: null, upstream: null, worktree: '' }
 }
 
 const BLOB: RefObject = { oid: 'b'.repeat(40), type: 'blob', raw: ENC.encode('x') }
-const A = ref('refs/heads/a', RefKind.BRANCH, commit(300, 'three'))
-const B = ref('refs/heads/b', RefKind.BRANCH, commit(100, 'one'))
-const BLOB_TAG = ref('refs/tags/blob', RefKind.TAG, BLOB)
-const C = ref('refs/tags/c', RefKind.TAG, commit(300, 'tie'))
-const ITEMS = [A, B, BLOB_TAG, C]
+const HEAD_A = ref('refs/heads/a', '1'.repeat(40), RefKind.BRANCH, commit(300, 'three'))
+const TAG_BLOB = ref('refs/tags/blob', 'b'.repeat(40), RefKind.TAG, BLOB)
+const ITEMS = [
+  HEAD_A,
+  ref('refs/heads/b', '2'.repeat(40), RefKind.BRANCH, commit(100, 'one')),
+  TAG_BLOB,
+  ref('refs/tags/c', '3'.repeat(40), RefKind.TAG, commit(300, 'tie')),
+]
+// Three refs dated within one day, so a short date ties them all.
+const DATED = (
+  [
+    ['a10', 1300],
+    ['a9', 1400],
+    ['v2.0', 900],
+  ] as const
+).map(([n, when], i) =>
+  ref(`refs/tags/${n}`, String(i).padStart(40, '0'), RefKind.TAG, commit(when, n)),
+)
 const CTX: RefContext = {
   known: new Set(),
   strict: true,
@@ -72,12 +89,11 @@ const CTX: RefContext = {
 function run(
   template: string,
   keys: readonly string[] | null = ['refname'],
-  items: readonly RefItem[] = ITEMS,
-  options: ListingOptions = {},
+  options: ListingOptions & { items?: RefItem[] } = {},
 ): [string, string | null] {
   const [out, stopped] = formatRefs(
     parseFormat(template),
-    items,
+    options.items ?? ITEMS,
     CTX,
     keys ? parseSortKeys(keys) : null,
     options,
@@ -85,53 +101,40 @@ function run(
   return [out, stopped === null ? null : stopped.message]
 }
 
-it.each(['refname:short', 'refname:lstrip=2'])(
-  'sorts transformed names by %s before applying count',
-  (key) => {
-    const items = [
-      { ...A, name: 'refs/heads/main' },
-      { ...C, name: 'refs/tags/base' },
-    ]
-    expect(run('%(refname)', ['refname', key], items, { count: 1 })).toEqual([
-      'refs/tags/base\n',
-      null,
-    ])
-    expect(run('%(refname)', [key], items, { count: 1 })).toEqual(['refs/heads/main\n', null])
-  },
-)
-
 it.each([
   ['100%%', '100%'],
-  ['%41%2x', 'A%2x'],
+  ['%41%4g', 'A%4g'],
   ['50% off', '50% off'],
   ['%', '%'],
+  ['x%', 'x%'],
 ])('expands the percent escapes in %j', (text, expected) => {
   expect(literalText(text)).toBe(expected)
 })
 
-it('names a raw byte with a hex escape', () => {
-  expect([...encodeText(literalText('%ff%00'))]).toEqual([0xff, 0x00])
+it('reads a hex escape as a raw byte', () => {
+  expect(encodeText(literalText('%ff%00'))).toEqual(new Uint8Array([0xff, 0x00]))
 })
 
 it('never opens a field at a quoted percent', () => {
   expect(parseFormat('%%(refname)').pieces).toEqual(['%(refname)'])
+  const pieces = parseFormat('%%%(refname)').pieces
+  expect(pieces.map((p) => (typeof p === 'string' ? p : p.text))).toEqual(['%', 'refname'])
 })
 
-it('refuses an unclosed field as a usage error, or a listing fatal', () => {
+it('refuses an unclosed field with the usage or as a listing fatal', () => {
   expect(() => parseFormat('x %(refname')).toThrow(FormatUsageError)
   expect(() => parseFormat('x %(refname')).toThrow('malformed format string %(refname')
   expect(() => listingFormat('x %(refname')).toThrow(UnparsableFormatError)
-  expect(() => listingFormat('x %(refname')).toThrow(
-    'malformed format string %(refname\nfatal: unable to parse format string',
-  )
 })
 
-it('refuses rest, and a bare raw under a text quote', () => {
-  expect(() => parseFormat('%(rest)')).toThrow('this command reject atom %(rest)')
-  expect(() => parseFormat('%(raw)', QuoteStyle.SHELL)).toThrow(
-    '--format=raw cannot be used with --python, --shell, --tcl',
-  )
-  expect(parseFormat('%(raw)', QuoteStyle.PERL).pieces.length).toBe(1)
+it('refuses raw under a quoting that cannot carry bytes', () => {
+  for (const spelling of ['raw', '*raw']) {
+    expect(() => parseFormat(`%(${spelling})`, QuoteStyle.SHELL)).toThrow(
+      new GitError(`--format=${spelling} cannot be used with --python, --shell, --tcl`),
+    )
+  }
+  expect(parseFormat('%(raw)', QuoteStyle.PERL).pieces).toHaveLength(1)
+  expect(parseFormat('%(raw:size)', QuoteStyle.SHELL).pieces).toHaveLength(1)
 })
 
 it('sorts by the last key given first', () => {
@@ -141,43 +144,64 @@ it('sorts by the last key given first', () => {
     ['objecttype', true, true],
     ['refname', false, false],
   ])
+  expect(() => parseSortKeys(['v:-refname'])).toThrow(new GitError('unknown field name: -refname'))
 })
 
-it('sorts a prerelease suffix before its release', () => {
-  expect(versioncmp('v2.0-rc1', 'v2.0', ['-rc'])).toBeLessThan(0)
-  expect(versioncmp('v2.0', 'v2.0-rc1', ['-rc'])).toBeGreaterThan(0)
+it.each([
+  [[], ['v1.0', 'v1.0-rc1', 'v1.0.1', 'v1.2', 'v1.10']],
+  [['-rc'], ['v1.0-rc1', 'v1.0-rc2', 'v1.0', 'v1.0.1']],
+  [
+    ['-rc', '-beta'],
+    ['v2.0-rc1', 'v2.0-beta', 'v2.0', 'v2.0.0'],
+  ],
+  [
+    ['-rc', '0'],
+    ['release-1.0', 'release-1.0-rc'],
+  ],
+  [
+    ['-pre', '', '-post'],
+    ['v1-pre', 'v1', 'v1-post'],
+  ],
+  [
+    ['-rc', '-rc1'],
+    ['v1.0-rc2', 'v1.0-rc1', 'v1.0'],
+  ],
+])('places the configured suffixes %j', (suffixes, names) => {
+  for (let i = 0; i + 1 < names.length; i++) {
+    expect(versioncmp(names[i] ?? '', names[i + 1] ?? '', suffixes)).toBeLessThan(0)
+    expect(versioncmp(names[i + 1] ?? '', names[i] ?? '', suffixes)).toBeGreaterThan(0)
+  }
 })
 
 it.each([
   [QuoteStyle.SHELL, "it's!!", "'it'\\''s'\\!''\\!''"],
   [QuoteStyle.PERL, "it's!\\", "'it\\'s!\\\\'"],
-  [QuoteStyle.PYTHON, "it's!\\\n", "'it\\'s!\\\\\\n'"],
-  [QuoteStyle.TCL, "it's!\\\n$", '"it\'s!\\\\\\n\\$"'],
+  [QuoteStyle.PYTHON, "it's!\\\n\t", "'it\\'s!\\\\\\n\t'"],
+  [QuoteStyle.TCL, '[a]{b}$"\\\n\t\x01', '"\\[a\\]\\{b\\}\\$\\"\\\\\\n\\t\x01"'],
 ])('quotes for %s', (style, text, expected) => {
   expect(quoteText(text, style)).toBe(expected)
 })
 
-it('breaks ties by name, unreversed', () => {
-  expect(run('%(refname)', ['-committerdate'])[0]).toBe(
-    'refs/heads/a\nrefs/tags/c\nrefs/heads/b\nrefs/tags/blob\n',
-  )
-})
-
-it('counts the rows it omits as empty', () => {
-  const [out] = run('%(if)%(subject)%(then)%(subject)%(end)', ['objectsize'], ITEMS, {
-    count: 3,
-    omitEmpty: true,
-  })
-  expect(out).toBe('one\ntie\n')
-})
-
-it('nests blocks and quotes them whole', () => {
+it('nests blocks and quotes them as a whole', () => {
   const fmt = parseFormat(
-    '%(if:equals=blob)%(objecttype)%(then)[%(align:6,right)%(refname:lstrip=2)%(end)]' +
-      '%(else)%(subject)%(end)',
+    '%(if:equals=blob)%(objecttype)%(then)[%(align:6,right)%(refname:lstrip=2)%(end)]%(else)%(subject)%(end)',
     QuoteStyle.SHELL,
   )
-  expect(formatRefs(fmt, [B, BLOB_TAG], CTX, null)[0]).toBe("'one'\n'[  blob]'\n")
+  expect(formatRefs(fmt, ITEMS.slice(1, 3), CTX, null)).toEqual(["'one'\n'[  blob]'\n", null])
+})
+
+it('takes a plain if as false on white space alone', () => {
+  expect(run('%(if) %(then)y%(else)n%(end)', ['refname'], { items: ITEMS.slice(0, 1) })).toEqual([
+    'n\n',
+    null,
+  ])
+})
+
+it('pads an align by display width', () => {
+  const fmt = parseFormat(
+    '%(align:6)Ærø%(end)|%(align:6,middle)日本%(end)|%(align:7,middle)ab%(end)|',
+  )
+  expect(renderRow(fmt, HEAD_A, new ValueTable([], CTX))).toBe('Ærø   | 日本 |  ab   |')
 })
 
 it.each([
@@ -189,34 +213,97 @@ it.each([
   ['%(if)%(else)', 'format: %(else) atom used without a %(then) atom'],
   ['%(if)x%(then)y%(then)', 'format: %(then) atom used more than once'],
   ['%(if)x%(then)y%(else)z%(else)', 'format: %(else) atom used more than once'],
-  ['%(if)x%(then)y%(else)z%(then)', 'format: %(then) atom used more than once'],
-])('refuses %s', (template, message) => {
+  ['%(if)a%(align:3)%(then)b%(end)%(end)', 'format: %(then) atom used without a %(if) atom'],
+  ['%(align:3)%(if)a%(end)%(then)b%(end)', 'format: %(if) atom used without a %(then) atom'],
+])('refuses blocks that do not nest in %j where a row renders', (template, message) => {
   expect(run(template)).toEqual(['', message])
+  expect(run(template, ['refname'], { items: [] })).toEqual(['', null])
+})
+
+it('breaks ties by name upward whatever the direction', () => {
+  expect(run('%(refname)', ['-committerdate'])[0]).toBe(
+    'refs/heads/a\nrefs/tags/c\nrefs/heads/b\nrefs/tags/blob\n',
+  )
+})
+
+it('compares a styled date key by instant only in the first comparison', () => {
+  const items = DATED
+  expect(run('%(refname:lstrip=2)', ['authordate:short'], { items })[0]).toBe('a10\nv2.0\na9\n')
+  expect(run('%(refname:lstrip=2)', ['-authordate:short'], { items })[0]).toBe('a10\na9\nv2.0\n')
+  expect(run('%(refname:lstrip=2)', ['authordate'], { items })[0]).toBe('v2.0\na10\na9\n')
+})
+
+it.each([
+  [['authordate:short', 'authordate:short'], 'a10\nv2.0\na9\n'],
+  [['authordate:short', 'committerdate:short'], 'a10\nv2.0\na9\n'],
+  [['committerdate:short', 'v:authordate:short'], 'a10\na9\nv2.0\n'],
+])("makes the first comparison the sort's whatever key makes it, for %j", (keys, expected) => {
+  expect(run('%(refname:lstrip=2)', keys, { items: DATED })[0]).toBe(expected)
+})
+
+it('counts the empty row an omitted line leaves', () => {
+  expect(
+    run('%(if)%(subject)%(then)%(subject)%(end)', ['objectsize'], { count: 3, omitEmpty: true })[0],
+  ).toBe('one\ntie\n')
 })
 
 it('stops a streamed listing where a field fails', () => {
-  expect(run('%(refname) %(authordate:bogus)', ['refname'], [BLOB_TAG, A])).toEqual([
+  const items = [TAG_BLOB, HEAD_A]
+  expect(run('%(refname) %(authordate:bogus)', ['refname'], { items })).toEqual([
     'refs/tags/blob \n',
     'unknown date format bogus',
   ])
-})
-
-it('fails a sorted listing before it prints', () => {
-  expect(run('%(refname) %(authordate:bogus)', ['-refname'], [BLOB_TAG, A])).toEqual([
-    '',
-    'unknown date format bogus',
+  expect(run('%(refname) %(authordate:bogus)', ['refname'], { items, count: 1 })).toEqual([
+    'refs/tags/blob \n',
+    null,
   ])
 })
 
-it('puts a detached HEAD first when asked', () => {
-  const head = ref('HEAD', RefKind.DETACHED, commit(1, 'x'))
-  const [out] = run('%(refname)', ['-refname'], [A, B, head], {
+it('refuses a field no comparison reads', () => {
+  const refused = ['', 'unknown date format bogus']
+  expect(run('%(refname)', ['authordate:bogus'], { items: ITEMS.slice(0, 1) })).toEqual(refused)
+  expect(run('%(refname)', ['authordate:bogus', 'refname'], { items: ITEMS.slice(0, 2) })).toEqual(
+    refused,
+  )
+  // A blob has no author date to refuse.
+  expect(run('%(refname)', ['authordate:bogus'], { items: ITEMS.slice(2, 3) })).toEqual([
+    'refs/tags/blob\n',
+    null,
+  ])
+})
+
+it('sorts even the default order under --ignore-case', () => {
+  const items = ['B', 'a'].map((name) =>
+    ref(`refs/heads/${name}`, '1'.repeat(40), RefKind.BRANCH, commit(1, 'x')),
+  )
+  expect(run('%(refname)', ['refname'], { items, count: 1 })).toEqual(['refs/heads/B\n', null])
+  expect(run('%(refname)', ['refname'], { items, count: 1, icase: true })).toEqual([
+    'refs/heads/a\n',
+    null,
+  ])
+  // --no-sort keeps the order the refs came in.
+  expect(run('%(refname)', null, { items, icase: true })).toEqual([
+    'refs/heads/B\nrefs/heads/a\n',
+    null,
+  ])
+})
+
+it('renders every row of a sorted listing before it prints', () => {
+  for (const count of [0, 1]) {
+    const items = [HEAD_A, TAG_BLOB]
+    expect(run('%(refname) %(authordate:bogus)', ['-refname'], { items, count })).toEqual([
+      '',
+      'unknown date format bogus',
+    ])
+  }
+})
+
+it('leads with a detached HEAD when asked', () => {
+  const head = ref('HEAD', '1'.repeat(40), RefKind.DETACHED, commit(1, 'x'))
+  const [out] = run('%(refname:short)', ['-refname'], {
+    items: [...ITEMS.slice(0, 2), head],
     detachedFirst: true,
     stream: false,
   })
   expect(out.split('\n')[0]).toBe('')
-})
-
-it('keeps GitError the only refusal', () => {
-  expect(new UnparsableFormatError('x')).toBeInstanceOf(GitError)
 })

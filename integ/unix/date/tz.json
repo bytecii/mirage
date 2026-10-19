@@ -404,7 +404,7 @@
       }
     },
     {
-      "id": "date_tz_repeated_hour_is_standard_time",
+      "id": "date_tz_repeated_hour_takes_the_named_side",
       "seq": 962353,
       "targets": [
         "ram",
@@ -427,10 +427,10 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "TZ='CET-1CEST,M3.5.0,M10.5.0/3' date -d '2025-10-26 02:30:00' '+%s %Z'",
+      "command": "TZ='CET-1CEST,M3.5.0,M10.5.0/3' date -d '2025-10-26 02:30:00 CET' '+%s %Z'; TZ='CET-1CEST,M3.5.0,M10.5.0/3' date -d '2025-10-26 02:30:00 CEST' '+%s %Z'",
       "expect": {
         "exit": 0,
-        "stdout": "1761442200 CET\n",
+        "stdout": "1761442200 CET\n1761438600 CEST\n",
         "stderr": ""
       }
     },

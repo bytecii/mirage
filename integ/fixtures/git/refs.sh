@@ -73,3 +73,19 @@ for n in 9287 18707; do
 done
 child=$(printf 'Collision child\n' | git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -p collision)
 git update-ref refs/heads/collision-child "$child"
+
+# A chain of 70 tags, deeper than any peel limit.
+deep=$(git rev-parse v1.0)
+type=commit
+for n in $(seq 70); do
+  deep=$(printf 'object %s\ntype %s\ntag deep%s\ntagger T <t@x> 1700000000 +0000\n\nDeep %s\n' "$deep" "$type" "$n" "$n" |
+    git hash-object -t tag -w --stdin)
+  type=tag
+done
+git update-ref refs/deep/chain "$deep"
+
+# A name that is not UTF-8, which the mailmap maps byte for byte.
+latin=$(printf 'tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Ren\351 <rene@example.com> 1700000000 +0000\ncommitter Ren\351 <rene@example.com> 1700000000 +0000\n\nLatin-1\n' |
+  git hash-object -t commit -w --stdin)
+git update-ref refs/latin/rene "$latin"
+printf 'Ren\303\251 Mapped <mapped@example.com> Ren\351 <rene@example.com>\n' >> .mailmap

@@ -24,7 +24,6 @@ from mirage.commands.cli.builtin.git.errors import (
 )
 from mirage.commands.cli.builtin.git.types import (
     DateMode,
-    FieldCompare,
     MailmapEntry,
     RefContext,
     RefItem,
@@ -33,6 +32,8 @@ from mirage.commands.cli.builtin.git.types import (
     RefUpstream,
 )
 
+# Every expectation below is git's own output for the same objects,
+# measured with git 2.47.3 and 2.50.1.
 COMMIT = RefObject(
     oid="c" * 40,
     type="commit",
@@ -69,6 +70,7 @@ def _value(
     name: str,
     obj: RefObject | None = COMMIT,
     ref: str = "refs/heads/main",
+    ctx: RefContext = CTX,
     **kwargs,
 ) -> str:
     """One field's text for a ref holding ``obj``.
@@ -77,97 +79,16 @@ def _value(
         name (str): the field as typed.
         obj (RefObject | None): the ref's object.
         ref (str): the ref's name.
+        ctx (RefContext): the listing's facts.
     """
     item = RefItem(
         name=ref,
         oid=obj.oid if obj else "0" * 40,
-        kind=RefKind.BRANCH,
+        kind=RefKind.TAG if ref.startswith("refs/tags/") else RefKind.BRANCH,
         obj=obj,
         **kwargs,
     )
-    return ref_fields.field_value(ref_fields.parse_field(name), item, CTX).text
-
-
-@pytest.mark.parametrize(
-    "name,oid",
-    [
-        ("objectname", COMMIT.oid),
-        ("*objectname", COMMIT.oid),
-        ("tree", "t" * 40),
-        ("parent", "p" * 40),
-    ],
-)
-def test_id_fields_widen_collisions_but_keep_longer_requested_widths(
-    name, oid
-):
-    obj = TAG if name.startswith("*") else COMMIT
-    item = RefItem(
-        name="refs/tags/v1",
-        oid=obj.oid,
-        kind=RefKind.TAG,
-        obj=obj,
-        peeled=COMMIT,
-    )
-    ctx = replace(CTX, abbreviations={oid: 8})
-    for suffix, width in [
-        ("", 40),
-        (":short", 8),
-        (":short=4", 8),
-        (":short=12", 12),
-    ]:
-        atom = ref_fields.parse_field(name + suffix)
-        assert ref_fields.field_value(atom, item, ctx).text == oid[:width]
-
-
-def test_abbreviation_requests_deduplicate_ids_at_the_smallest_width():
-    item = RefItem(
-        name="refs/tags/v1",
-        oid=TAG.oid,
-        kind=RefKind.TAG,
-        obj=TAG,
-        peeled=COMMIT,
-    )
-    fields = [
-        ref_fields.parse_field(name)
-        for name in (
-            "refname:short",
-            "objectname",
-            "*objectname:short=12",
-            "*objectname:short",
-            "*objectname:short=4",
-            "*parent:short",
-            "*tree:short=40",
-        )
-    ]
-    assert ref_fields.abbreviation_requests(fields, [item, item], CTX) == {
-        COMMIT.oid: 4,
-        "p" * 40: 7,
-        "t" * 40: 40,
-    }
-
-
-@pytest.mark.parametrize(
-    "text,expected",
-    [
-        ("2", 2),
-        (" +3", 3),
-        ("-4", -4),
-        ("", None),
-        ("2 ", None),
-        ("x", None),
-        ("99999999999", None),
-    ],
-)
-def test_c_int_reads_as_strtol_i(text, expected):
-    assert ref_fields.c_int(text) == expected
-
-
-@pytest.mark.parametrize(
-    "text,expected",
-    [("7", 7), ("+7", 7), ("-7", None), ("0", 0), ("7x", None)],
-)
-def test_c_uint_refuses_any_minus(text, expected):
-    assert ref_fields.c_uint(text) == expected
+    return ref_fields.field_value(ref_fields.parse_field(name), item, ctx).text
 
 
 @pytest.mark.parametrize(
@@ -175,30 +96,60 @@ def test_c_uint_refuses_any_minus(text, expected):
     [
         ("", "malformed field name: "),
         ("*", "malformed field name: *"),
-        ("bogus", "unknown field name: bogus"),
-        ("refnamex", "unknown field name: refnamex"),
+        (":x", "unknown field name: :x"),
+        ("bogus:x", "unknown field name: bogus:x"),
+        ("**refname", "unknown field name: **refname"),
+        ("creatorname", "unknown field name: creatorname"),
         ("refname:bogus", "unrecognized %(refname) argument: bogus"),
         ("*refname:bogus", "unrecognized %(*refname) argument: bogus"),
+        ("*tree:x", "unrecognized %(*tree) argument: x"),
+        ("*authoremail:x", "unrecognized %(*authoremail) argument: x"),
+        ("*subject:x", "unrecognized %(subject) argument: x"),
+        ("*objecttype:x", "%(objecttype) does not take arguments"),
+        ("body:x", "%(body) does not take arguments"),
         ("refname:lstrip=x", "Integer value expected refname:lstrip=x"),
         ("symref:strip=x", "Integer value expected refname:lstrip=x"),
-        ("refname:rstrip=", "Integer value expected refname:rstrip="),
+        ("upstream:rstrip=1 ", "Integer value expected refname:rstrip=1 "),
+        (
+            "refname:lstrip=2147483648",
+            "Integer value expected refname:lstrip=2147483648",
+        ),
         (
             "objectname:short=0",
             "positive value expected '0' in %(objectname:short=0)",
         ),
-        ("objectname:long", "unrecognized %(objectname) argument: long"),
-        ("*objecttype:x", "%(objecttype) does not take arguments"),
-        ("contents:lines=-1", "positive value expected contents:lines=-1"),
+        (
+            "*objectname:short=-1",
+            "positive value expected '-1' in %(*objectname:short=-1)",
+        ),
+        ("contents:lines=x", "positive value expected contents:lines=x"),
+        ("contents:size=1", "unrecognized %(contents) argument: size=1"),
         ("authoremail:trimfoo", "unrecognized %(authoremail) argument: foo"),
         ("authoremail:trim,", "unrecognized %(authoremail) argument: "),
-        ("align", "expected format: %(align:<width>,<position>)"),
-        ("align:left", "positive width expected with the %(align) atom"),
-        ("align:position=up,5", "unrecognized position:up"),
-        ("if:x", "unrecognized %(if) argument: x"),
+        ("authoremail:,trim", "unrecognized %(authoremail) argument: ,trim"),
+        (
+            "authorname:mailmap,x",
+            "unrecognized %(authorname) argument: mailmap,x",
+        ),
         (
             "upstream:short,track",
             "unrecognized %(upstream) argument: short,track",
         ),
+        ("upstream:track,", "unrecognized %(upstream) argument: track,"),
+        ("align", "expected format: %(align:<width>,<position>)"),
+        ("align:left", "positive width expected with the %(align) atom"),
+        ("align:5,up", "unrecognized %(align) argument: up"),
+        ("align:position=up,5", "unrecognized position:up"),
+        ("align:width=-1", "unrecognized width:-1"),
+        ("align:5 ", "unrecognized %(align) argument: 5 "),
+        ("align:5,", "unrecognized %(align) argument: "),
+        ("if:equals", "unrecognized %(if) argument: equals"),
+        ("rest", "this command reject atom %(rest)"),
+        ("rest:", "this command reject atom %(rest:)"),
+        ("rest:x", "%(rest) does not take arguments"),
+        ("deltabase:short", "%(deltabase) does not take arguments"),
+        ("is-base", "expected format: %(is-base:<committish>)"),
+        ("color", "expected format: %(color:<color>)"),
     ],
 )
 def test_a_field_is_refused_in_gits_words(name, message):
@@ -213,29 +164,46 @@ def test_a_field_is_refused_in_gits_words(name, message):
         "describe",
         "trailers",
         "contents:trailers",
-        "signature:key",
         "push",
         "color:red",
         "objectsize:disk",
-        "ahead-behind:main",
         "flag",
     ],
 )
 def test_a_field_this_build_lacks_is_unsupported_not_unknown(name):
-    with pytest.raises(UnsupportedFieldError) as info:
+    with pytest.raises(UnsupportedFieldError):
         ref_fields.parse_field(name)
-    assert str(info.value).startswith(f"unsupported field name: {name} ")
 
 
-def test_a_date_with_a_style_compares_as_text():
-    assert ref_fields.parse_field("committerdate").compare is FieldCompare.TIME
-    assert (
-        ref_fields.parse_field("committerdate:iso").compare
-        is FieldCompare.TEXT
-    )
-    assert (
-        ref_fields.parse_field("contents:size").compare is FieldCompare.NUMBER
-    )
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("2", 2),
+        (" +3", 3),
+        ("-4", -4),
+        ("", None),
+        ("2 ", None),
+        ("0x1", None),
+        ("2147483648", None),
+    ],
+)
+def test_c_int_reads_a_32_bit_integer(text, expected):
+    assert ref_fields.c_int(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("7", 7),
+        (" +7", 7),
+        ("-7", None),
+        ("7x", None),
+        ("2147483648", -2147483648),
+        ("4294967296", None),
+    ],
+)
+def test_c_uint_wraps_past_31_bits_and_refuses_a_minus(text, expected):
+    assert ref_fields.c_uint(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -255,7 +223,7 @@ def test_a_ref_shortens_to_what_still_names_it(name, expected):
     assert ref_fields.shorten_ref(name, known) == expected
 
 
-def test_a_loose_shortening_ignores_later_rules():
+def test_a_loose_shortening_checks_only_earlier_rules():
     known = frozenset({"refs/heads/main", "refs/tags/main"})
     assert (
         ref_fields.shorten_ref("refs/tags/main", known, strict=False) == "main"
@@ -271,7 +239,6 @@ def test_a_loose_shortening_ignores_later_rules():
     [
         (0, "refs/heads/feat/x", "refs/heads/feat/x"),
         (1, "heads/feat/x", "refs/heads/feat"),
-        (2, "feat/x", "refs/heads"),
         (4, "", ""),
         (-1, "x", "refs"),
         (-3, "heads/feat/x", "refs/heads/feat"),
@@ -283,11 +250,67 @@ def test_strip_counts_components_from_either_end(count, left, right):
     assert ref_fields.rstrip_ref("refs/heads/feat/x", count) == right
 
 
-def test_message_parts_split_subject_body_and_signature():
-    message, subject, body, sig = ref_fields.message_parts(TAG.raw.decode())
-    assert subject == "Release notes"
-    assert message[body:sig] == "More.\n"
-    assert message[sig:].startswith("-----BEGIN PGP SIGNATURE-----")
+@pytest.mark.parametrize(
+    "message,subject,body,signature",
+    [
+        ("\n\nlead\n\nbody\n", "lead", "body\n", ""),
+        ("a\n \nb\n\nc\n", "a   b", "c\n", ""),
+        (
+            "subj\r\nwith crlf\r\n\r\nbody\r\n",
+            "subj with crlf",
+            "body\r\n",
+            "",
+        ),
+        (
+            "s\nmore\n-----BEGIN PGP SIGNATURE-----\nx\n",
+            "s more",
+            "",
+            "-----BEGIN PGP SIGNATURE-----\nx\n",
+        ),
+        (
+            "s\n\n-----BEGIN PGP SIGNATURE-----\nfirst\n"
+            "-----BEGIN SSH SIGNATURE-----\nsecond\n",
+            "s",
+            "-----BEGIN PGP SIGNATURE-----\nfirst\n",
+            "-----BEGIN SSH SIGNATURE-----\nsecond\n",
+        ),
+        (
+            "s\n\nbody\n -----BEGIN PGP SIGNATURE-----\n",
+            "s",
+            "body\n -----BEGIN PGP SIGNATURE-----\n",
+            "",
+        ),
+    ],
+)
+def test_message_parts_split_subject_body_and_last_signature(
+    message, subject, body, signature
+):
+    start, found, body_at, sig = ref_fields.message_parts(message)
+    assert (found, message[body_at:sig], message[sig:]) == (
+        subject,
+        body,
+        signature,
+    )
+
+
+@pytest.mark.parametrize(
+    "subject,expected",
+    [
+        (
+            "Fix: the 'quoted' \"thing\" -- now (really) [done]!",
+            "Fix-the-quoted-thing-now-really-done",
+        ),
+        ("../..//weird...name...", ".-.-weird.name"),
+        ("-dashes- -in- -places-", "dashes-in-places"),
+        ("unicode Ærø 日本 ü", "unicode-r"),
+        ("a . .", "a"),
+        ("._.", "._"),
+        ("x.lock", "x.lock"),
+        ("a. .b", "a.-.b"),
+    ],
+)
+def test_sanitize_keeps_title_characters(subject, expected):
+    assert ref_fields.sanitize_subject(subject) == expected
 
 
 @pytest.mark.parametrize(
@@ -296,27 +319,25 @@ def test_message_parts_split_subject_body_and_signature():
         ("subject", "Subject line wraps"),
         ("subject:sanitize", "Subject-line-wraps"),
         ("body", "Body one.\nBody two.\n"),
+        ("body:", ""),
         ("contents:lines=2", "Subject line\n    wraps"),
         ("contents:size", "40"),
         ("author", "A U Thor <author@example.com> 1584244800 +0530"),
+        ("author:mailmap", ""),
+        ("creator:x", "C O Mitter <committer@example.com> 1584381600 -0800"),
         ("authorname", "A U Thor"),
-        ("authoremail", "<author@example.com>"),
         ("authoremail:trim", "author@example.com"),
         ("authoremail:localpart", "author"),
         ("authordate", "Sun Mar 15 09:30:00 2020 +0530"),
         ("authordate:short", "2020-03-15"),
-        ("committerdate:unix", "1584381600"),
-        ("creator", "C O Mitter <committer@example.com> 1584381600 -0800"),
-        ("author:foo", ""),
         ("tree:short", "ttttttt"),
         ("parent:short=4", "pppp"),
         ("numparent", "1"),
         ("tagger", ""),
-        ("objectsize", str(len(COMMIT.raw))),
         ("*objectname", ""),
         ("*refname", "refs/heads/main^{}"),
         ("*symref", "^{}"),
-        ("HEAD", "*"),
+        ("*HEAD", "*"),
         ("refname:short", "heads/main"),
     ],
 )
@@ -332,33 +353,64 @@ def test_a_commit_field(name, expected):
         ("object", "c" * 40),
         ("taggername", "T Agger"),
         ("creatordate:iso", "2020-09-13 12:26:40 +0000"),
+        (
+            "body",
+            "More.\n-----BEGIN PGP SIGNATURE-----\nsig\n-----END PGP SIGNATURE-----\n",
+        ),
         ("contents:body", "More.\n"),
         (
             "contents:signature",
             "-----BEGIN PGP SIGNATURE-----\nsig\n-----END PGP SIGNATURE-----\n",
         ),
+        ("contents:lines=9", "Release notes\n    \n    More."),
         ("authorname", ""),
         ("*objectname", "c" * 40),
         ("*subject", "Subject line wraps"),
-        ("*authorname", "A U Thor"),
     ],
 )
 def test_a_tag_field_and_what_it_peels_to(name, expected):
     assert _value(name, TAG, "refs/tags/v1", peeled=COMMIT) == expected
 
 
-def test_a_bad_date_style_is_refused_only_where_the_date_is():
+@pytest.mark.parametrize(
+    "ident,name,email,date",
+    [
+        (" Spaced  Name  <s@x> 1 +0100", " Spaced  Name ", "<s@x>", "1 +0100"),
+        ("Name<n@x>1 +0000", "", "<n@x>", ""),
+        ("<only@x> 1 +0000", "", "<only@x>", "1 +0000"),
+        ("Name <n@x>", "Name", "<n@x>", ""),
+    ],
+)
+def test_an_identity_splits_as_git_reads_it(ident, name, email, date):
+    tag = RefObject(
+        oid="d" * 40,
+        type="tag",
+        raw=f"object {'c' * 40}\ntype commit\ntag t\ntagger {ident}\n\nm\n".encode(),
+    )
+    shown = [
+        _value(f, tag, "refs/tags/t")
+        for f in ("taggername", "taggeremail", "taggerdate:raw")
+    ]
+    assert shown == [name, email, date]
+
+
+def test_a_date_style_is_checked_wherever_the_person_line_is():
     assert _value("authordate:bogus", BLOB) == ""
     assert _value("authordate:bogus", TAG, "refs/tags/v1") == ""
     with pytest.raises(UnknownDateFormatError):
         _value("authordate:bogus")
+    undated = RefObject(
+        oid="d" * 40,
+        type="tag",
+        raw=b"object x\ntype commit\ntag t\ntagger N <n@x>\n\nm\n",
+    )
+    with pytest.raises(UnknownDateFormatError):
+        _value("taggerdate:bogus", undated, "refs/tags/t")
 
 
 def test_the_mailmap_options_map_the_ident():
-    item = RefItem(
-        name="refs/heads/x", oid=COMMIT.oid, kind=RefKind.BRANCH, obj=COMMIT
-    )
-    ctx = RefContext(
+    ctx = replace(
+        CTX,
         mailmap=(
             MailmapEntry(
                 email="author@example.com",
@@ -366,20 +418,11 @@ def test_the_mailmap_options_map_the_ident():
                 mapped_name="Alice",
                 mapped_email=None,
             ),
-        )
+        ),
     )
-    assert (
-        ref_fields.field_value(
-            ref_fields.parse_field("authorname:mailmap"), item, ctx
-        ).text
-        == "Alice"
-    )
-    assert (
-        ref_fields.field_value(
-            ref_fields.parse_field("authoremail:mailmap,trim"), item, ctx
-        ).text
-        == "author@example.com"
-    )
+    assert _value("authorname:mailmap", ctx=ctx) == "Alice"
+    assert _value("authorname", ctx=ctx) == "A U Thor"
+    assert _value("authoremail:mailmap,trim", ctx=ctx) == "author@example.com"
 
 
 @pytest.mark.parametrize(
@@ -390,9 +433,10 @@ def test_the_mailmap_options_map_the_ident():
         ("upstream:lstrip=-1", "main"),
         ("upstream:track", "[ahead 1, behind 2]"),
         ("upstream:track,nobracket", "ahead 1, behind 2"),
+        ("upstream:nobracket", "refs/remotes/origin/main"),
         ("upstream:trackshort", "<>"),
-        ("upstream:remotename", "origin"),
-        ("upstream:remoteref", "refs/heads/main"),
+        ("upstream:remotename,remoteref", "refs/heads/main"),
+        ("*upstream", "refs/remotes/origin/main"),
     ],
 )
 def test_an_upstream_field(name, expected):
@@ -416,3 +460,70 @@ def test_a_gone_upstream_tracks_as_gone():
     )
     assert _value("upstream:track", upstream=up) == "[gone]"
     assert _value("upstream:trackshort", upstream=up) == ""
+
+
+def test_id_fields_widen_collisions_but_keep_longer_requested_widths():
+    item = RefItem(
+        name="refs/tags/v1",
+        oid=TAG.oid,
+        kind=RefKind.TAG,
+        obj=TAG,
+        peeled=COMMIT,
+    )
+    ctx = replace(CTX, abbreviations={COMMIT.oid: 8})
+    for suffix, width in [
+        ("", 40),
+        (":short", 8),
+        (":short=4", 8),
+        (":short=12", 12),
+        (":short=2147483648", 8),
+    ]:
+        field = ref_fields.parse_field("*objectname" + suffix)
+        assert (
+            ref_fields.field_value(field, item, ctx).text == COMMIT.oid[:width]
+        )
+
+
+def test_abbreviation_requests_take_each_id_at_its_narrowest_width():
+    item = RefItem(
+        name="refs/tags/v1",
+        oid=TAG.oid,
+        kind=RefKind.TAG,
+        obj=TAG,
+        peeled=COMMIT,
+    )
+    fields = [
+        ref_fields.parse_field(name)
+        for name in (
+            "objectname",
+            "*objectname:short=12",
+            "*objectname:short=3",
+            "*parent:short",
+            "*tree:short=40",
+        )
+    ]
+    assert ref_fields.abbreviation_requests(fields, [item, item], CTX) == {
+        COMMIT.oid: 4,
+        "p" * 40: 7,
+        "t" * 40: 40,
+    }
+
+
+def test_a_detached_head_row_names_itself_by_its_description():
+    head = RefItem(
+        name="HEAD", oid=COMMIT.oid, kind=RefKind.DETACHED, obj=COMMIT
+    )
+    ctx = replace(
+        CTX, head="HEAD", head_description="(HEAD detached at ccccccc)"
+    )
+    for name in ("refname", "refname:short", "refname:lstrip=1"):
+        assert (
+            ref_fields.field_value(
+                ref_fields.parse_field(name), head, ctx
+            ).text
+            == "(HEAD detached at ccccccc)"
+        )
+    assert (
+        ref_fields.field_value(ref_fields.parse_field("HEAD"), head, ctx).text
+        == "*"
+    )

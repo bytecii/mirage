@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { FlagView } from '../../../spec/flag_view.ts'
+import { decodeText } from '../../../../shell/bytes.ts'
 import { readOptional } from './io.ts'
 import type { MailmapEntry, RepoLocation } from './types.ts'
 import type { Files } from '../../../../workspace/files.ts'
@@ -78,9 +79,13 @@ export function mappedIdentity(identity: string, entries: readonly MailmapEntry[
 export async function loadMailmap(
   vfs: Files,
   location: RepoLocation,
+  exact = false,
 ): Promise<readonly MailmapEntry[]> {
-  const data = await readOptional(vfs, location.worktree.join(`.mailmap`))
-  return parseMailmap(new TextDecoder().decode(data ?? new Uint8Array()))
+  const data = (await readOptional(vfs, location.worktree.join(`.mailmap`))) ?? new Uint8Array()
+  // `exact` keeps every byte, as decodeText reads object headers, so a name
+  // that is not UTF-8 matches byte for byte as git's does; otherwise such a
+  // byte reads as U+FFFD, as the log family reads identities.
+  return parseMailmap(exact ? decodeText(data) : new TextDecoder().decode(data))
 }
 
 /** Apply explicit mailmap switches in command-line order. */

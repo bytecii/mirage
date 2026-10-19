@@ -1,5 +1,5 @@
 {
-  "baseline": 3271,
+  "baseline": 3267,
  "modules": {
   "runtime/sandbox/microsandbox/config": {
    "typescript_only": {
@@ -451,6 +451,12 @@
     "_YamlLoader": "PyYAML needs a SafeLoader subclass to recognize exponent-only floats without changing yaml.safe_load globally; TypeScript's yaml package already uses YAML 1.2 exponent resolution. Both loaders read the shared YAML scalar fixture."
    }
   },
+  "utils/dates": {
+   "typescript_only": {
+    "mod7": "JavaScript's % keeps the dividend's sign, so the weekday arithmetic needs a helper for a remainder from 0 to 6; Python's % already gives one.",
+    "EXACT": "Python's integers are exact at any size; TypeScript sums relative counts as BigInt and needs the bound past which a total no longer converts to a double exactly."
+   }
+  },
   "config": {
    "typescript_only": {
     "validateIndexValues": "Python checks an index block's values through its pydantic models (str url and key_prefix, StrictFloat ttl); the TypeScript loader has no model for the block, so it checks the values by hand at the same entry point."
@@ -569,19 +575,23 @@
     "TREE_ENTRY": "Python matches a tree entry with a bytes regex; TypeScript walks the latin-1 text by index in wellFormed."
    }
   },
-  "utils/dates": {
-   "python_only": {
-    "_fixed": "Python turns a naive wall clock at a fixed offset into epoch seconds through datetime; TypeScript subtracts the offset from utcFromWall inline.",
-    "_offset_seconds": "Python reads a datetime's utcoffset as seconds; TypeScript's Zone.parts already carries offsetSec."
-   },
+  "commands/cli/builtin/git/ref_fields": {
    "typescript_only": {
-    "DIGITS": "The lexer's ASCII digit set behind isDigit; Python tests str.isascii and str.isdigit inline.",
-    "isDigit": "The lexer's ASCII digit test; Python tests str.isascii and str.isdigit inline.",
-    "isLetter": "The lexer's ASCII letter test; Python tests str.isascii and str.isalpha inline.",
-    "at": "A bounds-checked token read for noUncheckedIndexedAccess; Python indexes the list.",
-    "noRel": "The zero relative offset; Python's _Rel dataclass defaults every field to zero.",
-    "trimSpaces": "String.trim takes no character set; Python strips _SPACES with str.strip.",
-    "wallOf": "The wall clock a zone shows for an instant, read off Zone.parts; Python's datetime.astimezone gives it directly."
+    "Parsed": "The headers and message a parse of an object holds; Python's _headers returns them as a tuple.",
+    "PARSED": "TypeScript keeps each object's parse in a WeakMap, since its fields decode the bytes once; Python's _headers splits the text again per call.",
+    "field": "Builds the RefField record Python's dataclass constructor builds with its defaults.",
+    "value": "Builds the FieldValue record Python's dataclass constructor builds.",
+    "withField": "Copies a RefField with changes, as Python's dataclasses.replace does."
+   }
+  },
+  "commands/cli/builtin/git/ref_format": {
+   "python_only": {
+    "_order": "Python compares two strings by code point as a -1/0/1; TypeScript imports compareCodePoints."
+   }
+  },
+  "commands/cli/builtin/git/ref_list": {
+   "python_only": {
+    "OBJECT_TYPES": "dulwich's get_raw names an object's type by its pack number; TypeScript's object reader hands back the type name."
    }
   },
   "workspace/mount/write_policy": {

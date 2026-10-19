@@ -38,6 +38,7 @@ from mirage.commands.cli.builtin.git.ref_list import (
     match_as_path,
     ref_listing,
     sort_keys,
+    sorts_named,
 )
 from mirage.commands.cli.builtin.git.repo import read_config
 from mirage.commands.cli.builtin.git.session import opened
@@ -153,8 +154,11 @@ async def for_each_ref(
             count=count,
             omit_empty=fl.as_bool("omit_empty"),
             icase=icase,
-            stream=filt is None
-            or (filt.merged is None and filt.no_merged is None),
+            stream=(keys is None or not sorts_named(fl))
+            and (
+                filt is None
+                or (filt.merged is None and filt.no_merged is None)
+            ),
         )
     except GitError as exc:
         return fatal(exc)

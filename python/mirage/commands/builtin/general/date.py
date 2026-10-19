@@ -158,11 +158,10 @@ async def date(
             return invalid_date(setting)
         dt = placed
     elif d is not None and not d.strip():
-        # GNU ACCEPTS an empty (or blank) expression, exit 0: gnulib's
-        # parse-datetime sees no component at all and falls through to
-        # "a date with no time", which is today at midnight. Measured on
-        # coreutils 9.4: `date -d ''` and `date -d '   '` both print
-        # today 00:00:00 in the command's zone.
+        # GNU ACCEPTS an empty (or blank) expression, exit 0: with no
+        # item at all it names today at midnight. Measured on coreutils
+        # 9.4: `date -d ''` and `date -d '   '` both print today 00:00:00
+        # in the command's zone.
         now = datetime.now(zone)
         dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif d is not None:

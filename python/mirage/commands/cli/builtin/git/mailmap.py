@@ -17,6 +17,7 @@ import re
 from mirage.commands.cli.builtin.git.io import read_optional
 from mirage.commands.cli.builtin.git.types import MailmapEntry, RepoLocation
 from mirage.commands.spec.flag_view import FlagView
+from mirage.shell.bytes import decode_text
 from mirage.workspace.files import Files
 
 MAILMAP_LINE = re.compile(
@@ -86,16 +87,22 @@ def mapped_identity(identity: str, entries: tuple[MailmapEntry, ...]) -> str:
 
 
 async def load_mailmap(
-    vfs: Files, location: RepoLocation
+    vfs: Files, location: RepoLocation, exact: bool = False
 ) -> tuple[MailmapEntry, ...]:
     """Read the worktree mailmap through the workspace data plane.
 
     Args:
         vfs (Files): the session's files.
         location (RepoLocation): discovered repository.
+        exact (bool): keep every byte, as ``decode_text`` reads object
+            headers, so a name that is not UTF-8 matches byte for byte as
+            git's does; otherwise such a byte reads as U+FFFD, as the log
+            family reads identities.
     """
-    data = await read_optional(vfs, location.worktree.join(".mailmap"))
-    return parse_mailmap((data or b"").decode("utf-8", "replace"))
+    data = await read_optional(vfs, location.worktree.join(".mailmap")) or b""
+    return parse_mailmap(
+        decode_text(data) if exact else data.decode("utf-8", "replace")
+    )
 
 
 def use_mailmap(fl: FlagView, enabled: bool) -> bool:
