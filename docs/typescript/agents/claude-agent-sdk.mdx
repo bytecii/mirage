@@ -18,7 +18,7 @@ pnpm add @struktoai/mirage-agents @struktoai/mirage-node @anthropic-ai/claude-ag
 
 ## Usage
 
-`buildOptions` wires a workspace into ready-to-use query options: it registers and preapproves the Mirage MCP tools, and injects a system prompt describing the mounted paths.
+`buildOptions` adds and preapproves Mirage tools, and describes the mounted paths in the system prompt. Built-in SDK tools remain available under the SDK’s [permission rules](https://code.claude.com/docs/en/agent-sdk/permissions).
 
 ```ts
 import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
@@ -49,15 +49,9 @@ const options = {
 }
 ```
 
-`allowedTools` preapproves matching MCP tools; it is not an exclusive allowlist.
-
 ## Tools
 
 The server serves the session's seven tools, [`session.tools`](/typescript/access/in-app#session-tools): `shell`, `read`, `write`, `edit`, `ls`, `grep` and `glob`, named `mcp__mirage__<tool>` in the SDK. It carries the ones the session's profile leaves it (`session.tools.names()`).
-
-<Note>
-  `buildOptions` does not remove the Claude Agent SDK's built-in tools. Those tools remain available under the SDK's own [permission rules](https://code.claude.com/docs/en/agent-sdk/permissions) and may access the host. Use this integration as a Mirage tool surface, not as host-filesystem isolation.
-</Note>
 
 ## Exports
 

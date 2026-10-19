@@ -6,7 +6,7 @@ icon: /images/grok-logo.svg
 
 | Way | Grok Build gets | Needs |
 | --- | --- | --- |
-| [CLI](#cli) | Mirage's seven tools, beside its own | Node.js 20.10 or newer |
+| [CLI](#cli) | Mirage's seven tools, beside its own | a [supported Node release](/typescript/install#quick-install) |
 | [FUSE](#fuse) | its own tools, on the workspace as a folder | `mirage-ai[fuse]` and a [FUSE driver](/home/setup/fuse) |
 
 ## Install
@@ -54,4 +54,4 @@ mirage workspace create .mirage/workspace.yaml --id demo
 cd /tmp/mirage-demo && grok
 ```
 
-File operations under `/tmp/mirage-demo` go through Mirage. Grok still runs as a host process, so its shell and file tools can access paths outside that folder when host permissions allow. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
+File operations inside `/tmp/mirage-demo` go through Mirage. The mount does not restrict the agent’s access to other host paths. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.

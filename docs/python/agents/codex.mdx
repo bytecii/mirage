@@ -115,4 +115,4 @@ mirage workspace create workspace-fuse.yaml --id demo-fuse
 cd /tmp/mirage-demo && codex
 ```
 
-File operations under `/tmp/mirage-demo` go through Mirage. Codex still runs as a host process, so its shell and file tools can access paths outside that folder when host permissions allow. In the Codex app, open the mountpoint as the project folder. `mirage workspace delete demo-fuse` unmounts it. On macOS the daemon holds one FUSE mount at a time.
+File operations inside `/tmp/mirage-demo` go through Mirage. The mount does not restrict the agent’s access to other host paths. In the Codex app, open the mountpoint as the project folder. `mirage workspace delete demo-fuse` unmounts it. On macOS the daemon holds one FUSE mount at a time.
