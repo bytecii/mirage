@@ -1001,9 +1001,10 @@ class Dispatcher:
         reached a directory, probed as the caller.
 
         The probes are the dispatcher's own, no call of the command's, so
-        its path rules do not judge them. A policy's refusal is the
-        dispatcher's own answer rather than a store's, so it stands, and a
-        dry run asks the gates only, so it probes nothing.
+        its path rules do not judge them; the caller's hides do. A
+        policy's refusal is the dispatcher's own answer rather than a
+        store's, so it stands, and a dry run asks the gates only, so it
+        probes nothing.
 
         Args:
             path (PathSpec): the path as the caller named it.
@@ -1012,6 +1013,14 @@ class Dispatcher:
         """
         if caller.explaining is not None or isinstance(
             exc, (PolicyDenied, PolicyError)
+        ):
+            return False
+        # A name the caller cannot see, or one whose walk crosses hidden
+        # space, stays missing: probing past it, to its link's target,
+        # would tell that it is there.
+        vis = caller.visibility
+        if not path_visible(vis, path.virtual) or leads_hidden(
+            vis, path.virtual, self._namespace.symlink_targets()
         ):
             return False
         prober = dataclasses.replace(caller, rule_gate=None)

@@ -1661,6 +1661,32 @@ async def test_a_read_through_a_link_takes_its_targets_kind(read):
         await ws.close()
 
 
+@pytest.mark.asyncio
+async def test_a_hidden_link_to_a_directory_stays_missing():
+    # The probe walks no further than the caller sees: a hidden link to
+    # a visible directory answers as a missing name, never as the
+    # directory its target is.
+    vfs = RAMVFS()
+    vfs._store.dirs.add("/")
+    vfs._store.files["/sub/x"] = b"x"
+    ws = Workspace({"/m": vfs}, mode=MountMode.WRITE)
+    try:
+        await ws.shell("ln -s /m/sub /m/alias")
+        ws.create_session("agent", profile={"paths": {"hide": ["/m/alias"]}})
+        with pytest.raises(FileNotFoundError):
+            await ws.vfs.read("/m/alias", session_id="agent")
+        with pytest.raises(FileNotFoundError):
+            await _drained(
+                await ws.vfs.read_stream("/m/alias", session_id="agent")
+            )
+        io = await ws.shell("cat /m/alias", session_id="agent")
+        assert io.stderr == b"cat: /m/alias: No such file or directory\n"
+        with pytest.raises(IsADirectoryError):
+            await ws.vfs.read("/m/alias")
+    finally:
+        await ws.close()
+
+
 class _UpstreamFailingRAM(_DirVoiceRAM):
     """A store whose backend fails for a path in ``voiced``, on a stat as
     on a read."""

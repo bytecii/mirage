@@ -2786,6 +2786,38 @@ const WS_READS: [string, (ws: Workspace, path: string) => Promise<string>][] = [
   ['streamed', async (ws, path) => drained(await ws.vfs.readStream(path))],
 ]
 
+describe('a read of a hidden link', () => {
+  it('keeps a hidden link to a directory missing', async () => {
+    // The probe walks no further than the caller sees: a hidden link to a
+    // visible directory answers as a missing name, never as the directory
+    // its target is.
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/')
+    vfs.store.files.set('/sub/x', ENC.encode('x'))
+    const ws = new Workspace(
+      { '/m': vfs },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      await ws.shell('ln -s /m/sub /m/alias')
+      ws.createSession('agent', { profile: { paths: { hide: ['/m/alias'] } } })
+      const agent = ws.vfs.forSession('agent')
+      const code = (read: Promise<unknown>) =>
+        read.then(
+          () => null,
+          (err: unknown) => (err as { code?: string }).code,
+        )
+      expect(await code(agent.read('/m/alias'))).toBe('ENOENT')
+      expect(await code(agent.readStream('/m/alias').then(drained))).toBe('ENOENT')
+      const io = await ws.shell('cat /m/alias', { sessionId: 'agent' })
+      expect(DEC.decode(io.stderr)).toBe('cat: /m/alias: No such file or directory\n')
+      expect(await code(ws.vfs.read('/m/alias'))).toBe('EISDIR')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
 describe.each(WS_READS)('a %s read through ws.vfs', (_, read) => {
   // A store answers a read of a directory in its own voice (a keyed store's
   // ENOENT, sftp's opaque error, no bytes); ws.vfs gets GNU's EISDIR at the

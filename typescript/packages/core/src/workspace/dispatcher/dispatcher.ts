@@ -1047,12 +1047,23 @@ export class Dispatcher {
    * Whether a read of `path` that failed or answered no bytes reached a
    * directory, probed as this dispatcher's caller. The probes are the
    * dispatcher's own, no call of the command's, so its path rules do not
-   * judge them. A policy's refusal is the dispatcher's own answer rather than
-   * a store's, so it stands, and a dry run asks the gates only, so it probes
-   * nothing. Mirrors Python's Dispatcher._read_hit_a_dir.
+   * judge them; the caller's hides do. A policy's refusal is the dispatcher's
+   * own answer rather than a store's, so it stands, and a dry run asks the
+   * gates only, so it probes nothing. Mirrors Python's
+   * Dispatcher._read_hit_a_dir.
    */
   private async readHitADir(path: PathSpec, err: unknown): Promise<boolean> {
     if (this.explaining() !== null || err instanceof PolicyDenied || err instanceof PolicyError) {
+      return false
+    }
+    // A name the caller cannot see, or one whose walk crosses hidden space,
+    // stays missing: probing past it, to its link's target, would tell that
+    // it is there.
+    const vis = sessionVisibility(this.access)
+    if (
+      !pathVisible(vis, path.virtual) ||
+      leadsHidden(vis, path.virtual, this.namespace.symlinkTargets())
+    ) {
       return false
     }
     const prober = this.caller === null ? undefined : { ...this.caller, ruleGate: null }
