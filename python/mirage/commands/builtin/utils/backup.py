@@ -18,7 +18,6 @@ from dataclasses import replace
 from mirage.commands.spec.usage import word_refusal_error
 from mirage.commands.spec.word_choice import WordMatch, match_word
 from mirage.types import PathSpec, ReaddirFn
-from mirage.utils.key_prefix import rekey
 
 # GNU's version-control words, the aliases of one value on one line as
 # GNU lists them back. The canonical word of each class is the control
@@ -89,26 +88,20 @@ def sibling_path(path: PathSpec, appended: str) -> PathSpec:
     """
     virtual = path.virtual.rstrip("/") + appended
     return replace(
-        PathSpec.from_str_path(
-            virtual, rekey(path.virtual, path.vfs_path, virtual)
-        ),
+        PathSpec.from_str_path(virtual),
         raw_path=(path.raw_path.rstrip("/") or path.raw_path) + appended,
     )
 
 
 def parent_path(path: PathSpec) -> PathSpec:
-    """The directory containing ``path`` on the same mount.
+    """The directory containing ``path``.
 
     Args:
         path (PathSpec): Any non-root path.
     """
-    virtual = path.virtual.rstrip("/").rsplit("/", 1)[0] or "/"
-    vfs = (
-        path.vfs_path.rstrip("/").rsplit("/", 1)[0]
-        if "/" in path.vfs_path.rstrip("/")
-        else ""
+    return PathSpec.from_str_path(
+        path.virtual.rstrip("/").rsplit("/", 1)[0] or "/"
     )
-    return PathSpec.from_str_path(virtual, vfs)
 
 
 async def _numbered_versions(

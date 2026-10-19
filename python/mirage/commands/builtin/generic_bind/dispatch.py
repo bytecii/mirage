@@ -17,9 +17,12 @@ from dataclasses import replace
 
 from mirage.accessor.base import NOOPAccessor
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
-from mirage.commands.builtin.utils.paths import dispatch_stat
+from mirage.commands.builtin.utils.paths import (
+    dispatch_stat,
+    virtual_flags,
+    virtual_key,
+)
 from mirage.commands.config import Context
-from mirage.commands.spec.flag_view import FlagBag
 from mirage.commands.spec.types import FlagValue
 from mirage.context.session_context import (
     Caller,
@@ -112,21 +115,8 @@ async def run_dispatch(
         follow (FollowOperands | None): the line's operand resolution,
             which its globs' matches take too.
     """
-    # The dispatcher keys every path by its whole virtual path, a path
-    # option's value as well as an operand.
-    rebased = FlagBag(flag_kwargs)
-    for key, value in rebased.items():
-        if isinstance(value, PathSpec):
-            rebased[key] = replace(value, vfs_path=value.virtual.strip("/"))
-        elif isinstance(value, list):
-            rebased[key] = [
-                replace(item, vfs_path=item.virtual.strip("/"))
-                if isinstance(item, PathSpec)
-                else item
-                for item in value
-            ]
     ctx = Context(
-        flags=rebased,
+        flags=virtual_flags(flag_kwargs),
         stdin=stdin,
         cwd=PathSpec(virtual=cwd, directory=cwd, vfs_path=cwd.strip("/")),
         vfs=vfs or Files([], dispatch, follow=follow, ledger=False),
@@ -140,7 +130,7 @@ async def run_dispatch(
     try:
         result = await builder.fn(
             NOOPAccessor(),
-            [replace(p, vfs_path=p.virtual.strip("/")) for p in paths],
+            [virtual_key(p) for p in paths],
             texts,
             ctx,
         )

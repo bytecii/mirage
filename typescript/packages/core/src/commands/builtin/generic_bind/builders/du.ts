@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { fsStrerror, isEacces, isEnotdir, isFsError, isMissingPath } from '../../../../errors/fs.ts'
-import { mountKey, mountPrefixOf, rekey, underPath } from '../../../../utils/key_prefix.ts'
+import { underPath } from '../../../../utils/key_prefix.ts'
 import { type FileStat, FileType, PathSpec } from '../../../../types.ts'
 import { treeWalk, type WalkCall } from '../../utils/tree.ts'
 import {
@@ -22,7 +22,7 @@ import {
   type DuEntries,
   duGeneric,
 } from '../../generic/du.ts'
-import { rstripSlash } from '../../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../../utils/slash.ts'
 import type { LinkView, MountView } from '../../../../view/types.ts'
 import type { CommandFn } from '../../../config.ts'
 import type { GenericCommand } from '../adapter.ts'
@@ -256,10 +256,7 @@ async function duWalk(
   }
   if (info.type !== FileType.DIRECTORY) {
     const size = info.size ?? 0
-    if (entries !== null) {
-      const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-      entries.push([`/${mountKey(path.virtual, prefix)}`, size])
-    }
+    if (entries !== null) entries.push([`/${stripSlash(path.virtual)}`, size])
     return size
   }
   budget.directories.push(path.virtual)
@@ -274,13 +271,7 @@ async function duWalk(
   const free = walk.answered.has(path.virtual.replace(/\/+$/, '') || '/')
   for (const child of children) {
     if (!free && !budget.spend(path.virtual)) break
-    total += await duWalk(
-      walk,
-      PathSpec.fromStrPath(child, rekey(path.virtual, path.vfsPath, child)),
-      budget,
-      entries,
-      follow,
-    )
+    total += await duWalk(walk, PathSpec.fromStrPath(child), budget, entries, follow)
   }
   return total
 }

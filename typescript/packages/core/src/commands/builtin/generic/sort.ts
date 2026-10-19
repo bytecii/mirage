@@ -25,7 +25,7 @@ import { PathSpec, type JsonValue } from '../../../types.ts'
 import { concat } from '../../../utils/bytes.ts'
 import { fsStrerror, isFsError } from '../../../errors/fs.ts'
 import { posixPhrase } from '../../../errors/posix.ts'
-import { mountKey } from '../../../utils/key_prefix.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 import { shellQuote } from '../../../utils/quote.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
@@ -43,7 +43,6 @@ import { matchWord } from '../../spec/word_choice.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { type FlagValue, type ParsedFlagValue } from '../../spec/types.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { mountRoot } from '../utils/links.ts'
 
 const ENC = new TextEncoder()
 
@@ -533,7 +532,7 @@ export async function sortGeneric(
     const outputPath = new PathSpec({
       virtual: parsed.output.virtual,
       directory: parsed.output.directory,
-      vfsPath: mountKey(parsed.output.virtual, mountRoot(ctx)),
+      vfsPath: stripSlash(parsed.output.virtual),
       rawPath: parsed.output.rawPath,
       dotted: parsed.output.dotted,
       walkError: parsed.output.walkError,

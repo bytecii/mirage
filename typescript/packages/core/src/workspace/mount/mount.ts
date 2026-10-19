@@ -111,7 +111,13 @@ import {
   unprovenMiss,
 } from './listing.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { dispatchStat, linkFollow, vfsStatPath } from '../../commands/builtin/utils/paths.ts'
+import {
+  dispatchStat,
+  linkFollow,
+  vfsStatPath,
+  virtualFlags,
+  virtualKey,
+} from '../../commands/builtin/utils/paths.ts'
 import { linkView } from '../../commands/builtin/utils/links.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { encodeText } from '../../shell/bytes.ts'
@@ -1541,18 +1547,21 @@ export class MountEntry {
           }),
         ]
       }
-      const keyedPaths = this.keyedPaths(cmdName, paths)
       const probe = walkProbeOf(ctx)
       const access = ctx.session?.access()
-      const runCtx = this.commandCtx(this.keyedFlags(flags), ctx)
       return this.inCommandScope(probe, async (): Promise<[ByteSource | null, IOResult]> => {
         for (const cmd of handlers) {
+          const user = this.isUserCommand(cmd)
+          const operands = user ? this.keyedPaths(cmdName, paths) : paths.map(virtualKey)
+          const runCtx = user
+            ? this.commandCtx(this.keyedFlags(flags), ctx, this.prefix)
+            : this.commandCtx(virtualFlags(flags), ctx, '')
           const refusal = this.readOnlyRefusal(cmdName, cmd, flags, access)
           if (refusal !== null) return [null, refusal]
           const result = await this.runOne(
             cmdName,
             cmd,
-            keyedPaths,
+            operands,
             texts,
             { ...runCtx, spec: namedSpec(cmd, cmdName) },
             limitOverride,
@@ -1617,9 +1626,13 @@ export class MountEntry {
   }
 
   /**
-   * Stamp this mount's backend key onto each path operand. A stdin `-`
-   * routed nowhere, so it rides on whichever mount runs the line, beside
-   * the operands that chose it. Mirrors Python's MountEntry._keyed_paths.
+   * Stamp this mount's backend key onto each path operand, for a handler that
+   * addresses its backend through the mount's accessor (a user command, a
+   * command tree's leaf); mirage's own commands get every path keyed by its
+   * whole virtual path (`virtualKey`) and reach it through their files. A
+   * stdin `-` routed nowhere, so it rides on whichever mount runs the line,
+   * beside the operands that chose it. Mirrors Python's
+   * MountEntry._keyed_paths.
    */
   private keyedPaths(cmdName: string, paths: PathSpec[]): PathSpec[] {
     const mountPrefix = rstripSlash(this.prefix)
@@ -1667,12 +1680,17 @@ export class MountEntry {
    * once, through its files, which is where the namespace facts (links,
    * nested mount roots, a trailing slash) are in view, so expanding here
    * would lose what the handler needs. Python's dispatcher never expands
-   * either. The
-   * working directory carries this mount's key. Mirrors Python's
+   * either. The working directory is keyed below `prefix`: this mount's for a
+   * handler `keyedPaths` keys the operands of, empty for mirage's own
+   * commands, whose paths keep their whole virtual path. Mirrors Python's
    * MountEntry._command_ctx.
    */
-  private commandCtx(flags: Record<string, FlagValue>, ctx: Partial<Context>): Context {
-    const prefix = rstripSlash(this.prefix)
+  private commandCtx(
+    flags: Record<string, FlagValue>,
+    ctx: Partial<Context>,
+    mountPrefix: string,
+  ): Context {
+    const prefix = rstripSlash(mountPrefix)
     const cwd = (ctx.cwd ?? ROOT_CWD).virtual
     return {
       ...ctx,
@@ -1852,7 +1870,7 @@ export class MountEntry {
       const probe = walkProbeOf(ctx)
       const access = ctx.session?.access()
       const flags = this.keyedFlags(ctx.flags)
-      const runCtx = this.commandCtx(flags, ctx)
+      const runCtx = this.commandCtx(flags, ctx, this.prefix)
       return this.inCommandScope(probe, async (): Promise<CommandFnResult> => {
         // No flag here is answered for the leaf: walkLeaf answered the
         // tree's own help, and the leaf is handed the rest.

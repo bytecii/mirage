@@ -45,6 +45,8 @@ from mirage.commands.builtin.utils.paths import (
     dispatch_stat,
     link_follow,
     vfs_stat_path,
+    virtual_flags,
+    virtual_key,
 )
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.config import (
@@ -972,20 +974,30 @@ class MountEntry:
                     exit_code=127,
                     stderr=encode_text(f"{cmd_name}: command not found"),
                 )
-            keyed = self._keyed_paths(cmd_name, paths)
-            flags = self._keyed_flags(flag_kwargs)
-            run_ctx = self._command_ctx(flags, ctx)
-            with self._command_scope(run_ctx):
+            with self._command_scope(ctx):
                 for cmd in handlers:
+                    user = self._is_user_command(cmd)
+                    operands = (
+                        self._keyed_paths(cmd_name, paths)
+                        if user
+                        else [virtual_key(p) for p in paths]
+                    )
+                    flags = (
+                        self._keyed_flags(flag_kwargs)
+                        if user
+                        else virtual_flags(flag_kwargs)
+                    )
                     refusal = self._read_only_refusal(cmd_name, cmd, flags)
                     if refusal is not None:
                         return None, refusal
                     result = await self._run_one(
                         cmd_name,
                         cmd,
-                        keyed,
+                        operands,
                         texts,
-                        run_ctx,
+                        self._command_ctx(
+                            flags, ctx, self.prefix if user else ""
+                        ),
                         limit_override,
                         paths,
                     )
@@ -1053,7 +1065,11 @@ class MountEntry:
     def _keyed_paths(
         self, cmd_name: str, paths: list[PathSpec]
     ) -> list[PathSpec]:
-        """Stamp this mount's backend key onto each path operand.
+        """Stamp this mount's backend key onto each path operand, for a
+        handler that addresses its backend through the mount's accessor
+        (a user command, a command tree's leaf); mirage's own commands
+        get every path keyed by its whole virtual path (``virtual_key``)
+        and reach it through their files.
 
         A stdin `-` routed nowhere, so it rides on whichever mount runs
         the line, beside the operands that chose it.
@@ -1118,15 +1134,18 @@ class MountEntry:
         return flags
 
     def _command_ctx(
-        self, flags: dict[str, FlagValue], ctx: Context
+        self, flags: dict[str, FlagValue], ctx: Context, prefix: str
     ) -> Context:
-        """The context a handler reads: the workspace's, its flags and
-        working directory keyed below this mount (mirrors
+        """The context a handler reads: the workspace's, its flags and its
+        working directory keyed below ``prefix`` (mirrors
         Mount.runCommand).
 
         Args:
-            flags (dict[str, FlagValue]): the keyed flags.
+            flags (dict[str, FlagValue]): the handler's flags.
             ctx (Context): the workspace's context for the command.
+            prefix (str): this mount's prefix for a handler
+                ``_keyed_paths`` keys the operands of; empty for mirage's
+                own commands, whose paths keep their whole virtual path.
         """
         cwd = ctx.cwd.virtual
         return dataclasses.replace(
@@ -1136,7 +1155,7 @@ class MountEntry:
                 virtual=cwd,
                 directory=cwd,
                 resolved=False,
-                vfs_path=mount_key(cwd, self.prefix.rstrip("/")),
+                vfs_path=mount_key(cwd, prefix.rstrip("/")),
             ),
         )
 
@@ -1338,7 +1357,7 @@ class MountEntry:
         async with self.use():
             keyed = self._keyed_paths(prog, paths)
             flags = self._keyed_flags(FlagBag(ctx.flags))
-            run_ctx = self._command_ctx(flags, ctx)
+            run_ctx = self._command_ctx(flags, ctx, self.prefix)
             with self._command_scope(run_ctx):
                 # No flag here is answered for the leaf: walk_leaf answered
                 # the tree's own help, and the leaf is handed the rest.

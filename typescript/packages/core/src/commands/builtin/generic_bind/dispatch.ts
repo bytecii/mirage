@@ -22,11 +22,9 @@ import type { DispatchFn } from '../../../runtime/types.ts'
 import { currentCaller, runWithCaller, type Caller } from '../../../context/session_context.ts'
 import type { FollowOperands } from '../../../view/types.ts'
 import { Files } from '../../../workspace/files.ts'
-import { stripSlash } from '../../../utils/slash.ts'
-import { flagOccurrences } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import type { GenericCommand } from './adapter.ts'
-import { dispatchStat } from '../utils/paths.ts'
+import { dispatchStat, virtualFlags, virtualKey } from '../utils/paths.ts'
 
 /** A streamed read that opens as the command that asked for it: at the first
  * pull, which can come after that command ended, so under the command's
@@ -73,30 +71,10 @@ export async function runDispatch(
   argv: readonly string[] = [],
   follow?: FollowOperands,
 ): Promise<[ByteSource | null, IOResult]> {
-  // The dispatcher keys every path by its whole virtual path, a path
-  // option's value as well as an operand.
-  const whole = (p: PathSpec): PathSpec =>
-    new PathSpec({
-      virtual: p.virtual,
-      directory: p.directory,
-      vfsPath: stripSlash(p.virtual),
-      pattern: p.pattern,
-      resolved: p.resolved,
-      rawPath: p.rawPath,
-      dotted: p.dotted,
-      walkError: p.walkError,
-    })
-  const rebased: Record<string, FlagValue> = { ...bag }
-  flagOccurrences(rebased).push(...flagOccurrences(bag))
-  for (const [key, value] of Object.entries(bag)) {
-    if (value instanceof PathSpec) rebased[key] = whole(value)
-    else if (Array.isArray(value))
-      rebased[key] = value.map((item) => (item instanceof PathSpec ? whole(item) : item))
-  }
   return runWithCaller({ ...currentCaller(), mount: null }, async () => {
-    const result = await builder.fn(new NOOPAccessor(), paths.map(whole), [...texts], {
+    const result = await builder.fn(new NOOPAccessor(), paths.map(virtualKey), [...texts], {
       stdin,
-      flags: rebased,
+      flags: virtualFlags(bag),
       cwd: PathSpec.fromStrPath(cwd),
       vfs: (
         vfs ??

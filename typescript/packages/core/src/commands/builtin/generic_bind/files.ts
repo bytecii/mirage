@@ -451,7 +451,8 @@ export function commandFiles(ctx: Context, paths: readonly PathSpec[] = []): Com
   // What the mount can do is the serving mount's to say: an option can route
   // the command to it with no operand there (`shuf -i 1-1 -o /ram/out` typed
   // on another mount).
-  const anchor = `${mountRoot(ctx)}/`
+  const home = mountRoot(ctx)
+  const anchor = `${home}/`
   const mounts = mountsOf(ctx)
   const [ahead, noted] = readAhead(dispatch, paths)
   const call = (

@@ -26,7 +26,7 @@ import {
 } from '../../../errors/fs.ts'
 import { operandSpelling } from '../../../errors/render.ts'
 import { type FsError } from '../../../errors/types.ts'
-import { mountKey, rekey, respelled } from '../../../utils/key_prefix.ts'
+import { respelled } from '../../../utils/key_prefix.ts'
 import {
   CycleError,
   dotLookups,
@@ -37,6 +37,8 @@ import {
   resolvePath,
 } from '../../../utils/path.ts'
 import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
+import { flagOccurrences } from '../../spec/flag_view.ts'
+import type { FlagValue } from '../../spec/types.ts'
 import type { FsCondition } from '../../../errors/types.ts'
 
 /**
@@ -136,19 +138,50 @@ export function statOrEnoent(statPath: StatPath): StatFn {
   }
 }
 
+/**
+ * `path` keyed by its whole virtual path, the shape a command's paths take:
+ * the dispatcher routes each one to its mount, so no command derives a mount
+ * from a path's key. Mirrors Python's virtual_key.
+ */
+export function virtualKey(path: PathSpec): PathSpec {
+  return new PathSpec({
+    virtual: path.virtual,
+    directory: path.directory,
+    vfsPath: stripSlash(path.virtual),
+    pattern: path.pattern,
+    resolved: path.resolved,
+    rawPath: path.rawPath,
+    dotted: path.dotted,
+    walkError: path.walkError,
+  })
+}
+
+/**
+ * A command's flags with every path value keyed by its whole virtual path
+ * (`virtualKey`): a single path (awk -f) or a list of them (repeated grep -f).
+ * Everything else passes through unchanged. Mirrors Python's virtual_flags.
+ */
+export function virtualFlags(bag: Record<string, FlagValue>): Record<string, FlagValue> {
+  const keyed: Record<string, FlagValue> = { ...bag }
+  flagOccurrences(keyed).push(...flagOccurrences(bag))
+  for (const [key, value] of Object.entries(bag)) {
+    if (value instanceof PathSpec) keyed[key] = virtualKey(value)
+    else if (Array.isArray(value))
+      keyed[key] = value.map((item) => (item instanceof PathSpec ? virtualKey(item) : item))
+  }
+  return keyed
+}
+
 // `path` spelled from its operand as typed, the way GNU names it. Mirrors
 // Python's spelled_from.
 export function spelledFrom(path: PathSpec, operand: PathSpec): PathSpec {
   return respelled(path, operandSpelling(path.virtual, operand))
 }
 
-// A path on `root`'s mount, keyed and spelled the way `root` is. Mirrors
+// A path at, under or above `root`, spelled the way `root` is. Mirrors
 // Python's descendant_path.
 export function descendantPath(root: PathSpec, virtual: string): PathSpec {
-  return spelledFrom(
-    PathSpec.fromStrPath(virtual, rekey(root.virtual, root.vfsPath, virtual)),
-    root,
-  )
+  return spelledFrom(PathSpec.fromStrPath(virtual), root)
 }
 
 // Probe a path once for {exists, isDir}. ENOTDIR counts as "does not exist":
@@ -453,8 +486,8 @@ export function resolveTarget(o: string | PathSpec, cwd: string): PathSpec {
 
 // Default a command's path operands the way the shell would: explicit
 // operands pass through, otherwise the session cwd becomes the single
-// operand (keyed against the mount prefix when the caller knows it).
-export function defaultPaths(paths: PathSpec[], cwd: string, mountPrefix = ''): PathSpec[] {
+// operand. Mirrors Python's default_paths.
+export function defaultPaths(paths: PathSpec[], cwd: string): PathSpec[] {
   if (paths.length > 0) return paths
-  return [PathSpec.fromStrPath(cwd, mountKey(cwd, mountPrefix))]
+  return [PathSpec.fromStrPath(cwd)]
 }

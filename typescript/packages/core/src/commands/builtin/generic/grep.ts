@@ -21,9 +21,9 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { fsStrerror, isFsError, isWalkError, walkRefusal } from '../../../errors/fs.ts'
 import { posixPhrase } from '../../../errors/posix.ts'
 import { followedStat } from '../../../view/namespace_view.ts'
-import { mountKey, mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { respellOne } from '../../../utils/path.ts'
-import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
+import { stripSlash } from '../../../utils/slash.ts'
+import { mountParentReaddir, mountParentStat, toPathspec } from '../utils/wrap.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
 import { concat } from '../../../utils/bytes.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
@@ -296,7 +296,7 @@ export async function grepGeneric(
     const exitCode = error instanceof UsageError ? error.exitCode : 2
     return [null, new IOResult({ exitCode, stderr: ENC.encode(error.message + '\n') })]
   }
-  const resolution = await resolvePattern(name, texts, fl, paths, mountRoot(ctx), stream)
+  const resolution = await resolvePattern(name, texts, fl, stream)
   if (resolution.error !== null || resolution.pattern === null)
     return [
       null,
@@ -389,10 +389,9 @@ export async function grepGeneric(
     }
   }
   if (searcher === null) worker = new Worker()
-  const prefix = mountPrefixOf(first.virtual, first.vfsPath)
   const mounts = mountsOf(ctx)
-  const rd = mountParentReaddir((p: string) => readdir(sameMountSpec(p, first)), mounts, prefix)
-  const st = mountParentStat((p: string) => stat(sameMountSpec(p, first)), mounts)
+  const rd = mountParentReaddir((p: string) => readdir(toPathspec(p)), mounts, mountRoot(ctx))
+  const st = mountParentStat((p: string) => stat(toPathspec(p)), mounts)
   // The walk meets links as entries: -r leaves them, -R reads what each one
   // leads to, and a directory it reaches again is a loop.
   const follow = f.recursive && f.dereference === true ? (linksOf(ctx) ?? null) : null
@@ -457,7 +456,7 @@ export async function grepGeneric(
         const child = new PathSpec({
           virtual: entry,
           directory: entry,
-          vfsPath: mountKey(entry, prefix),
+          vfsPath: stripSlash(entry),
           rawPath: respellOne(entry, p.virtual, p.rawPath),
         })
         if (!dirAdmitted(entry, f.filters)) {

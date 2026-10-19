@@ -35,7 +35,6 @@ from mirage.errors.types import FsCondition
 from mirage.io.types import ByteSource, IOResult, PathRecord
 from mirage.types import FileStat, FileType, FindType, PathSpec, Visibility
 from mirage.utils.hidden import path_visible
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import respell_one, respell_raw
 from mirage.view.types import LinkView, StatPath
 
@@ -97,26 +96,13 @@ def _matched_path(row: str, search: PathSpec) -> PathSpec:
     virtual = find_eval.unrespell_raw(
         row, search.virtual, search.raw_path or search.virtual
     )
-    prefix = mount_prefix_of(search.virtual, search.vfs_path)
     return PathSpec(
         virtual=virtual,
         directory=virtual.rsplit("/", 1)[0] or "/",
-        vfs_path=mount_key(virtual, prefix),
+        vfs_path=virtual.strip("/"),
         resolved=True,
         raw_path=row,
     )
-
-
-def apply_mount_prefix(results: list[str], mount_prefix: str) -> list[str]:
-    if not mount_prefix:
-        return results
-    out: list[str] = []
-    for r in results:
-        rel = r.lstrip("/")
-        # An empty relative path is the mount root itself (e.g. a
-        # single-file view mount); joining would add a bogus slash.
-        out.append(mount_prefix if not rel else mount_prefix + "/" + rel)
-    return out
 
 
 def missing_start_line(
@@ -285,16 +271,12 @@ async def resolve_start(
     # rather than reporting the entry itself.
     if search.raw_path.endswith("/"):
         return NOT_DIR_START
-    prefix = mount_prefix_of(search.virtual, search.vfs_path)
-    # `-path` matches the row as printed, so Path nodes carry the mount
-    # prefix and the operand's spelling; the walk stamps its own tree
-    # inside walk_find.
+    # `-path` matches the row as printed, so Path nodes carry the
+    # operand's spelling; the walk stamps its own tree inside walk_find.
     tree = find_eval.bind_tree(
-        find_eval.args_to_tree(args), prefix, search.virtual, search.raw_path
+        find_eval.args_to_tree(args), "", search.virtual, search.raw_path
     )
-    rows = apply_mount_prefix(
-        start_point_results(search, start, args, tree), prefix
-    )
+    rows = start_point_results(search, start, args, tree)
     return StartPoint(
         walk=False, results=respell_raw(rows, search.virtual, search.raw_path)
     )
@@ -322,7 +304,7 @@ def start_point_results(
         search_path (PathSpec): the start point, as the operand named it.
         start (FileStat): the start point's own stat.
         args (FindArgs): parsed find expression.
-        tree (PredNode): the prefix-stamped predicate tree.
+        tree (PredNode): the predicate tree bound to the start point.
     """
     results: list[str] = []
     if args.mtime_min is not None or args.mtime_max is not None:
@@ -340,7 +322,7 @@ def start_point_results(
         empty = start.size == 0 if start.type is FileType.FILE else False
     find_eval.emit_start_path(
         results,
-        search_path.mount_path,
+        "/" + search_path.virtual.strip("/"),
         find_eval.start_basename(search_path),
         kind=printf_kind(start),
         is_empty=empty,
@@ -373,14 +355,14 @@ def root_dir_results(
     Args:
         search_path (PathSpec): the start point, as the operand named it.
         args (FindArgs): parsed find expression.
-        tree (PredNode): the prefix-stamped predicate tree.
+        tree (PredNode): the predicate tree bound to the start point.
         is_empty (bool | None): whether the directory holds nothing, None
             when no listing was taken (``-empty`` then cannot match it).
     """
     results: list[str] = []
     find_eval.emit_start_path(
         results,
-        search_path.mount_path,
+        "/" + search_path.virtual.strip("/"),
         find_eval.start_basename(search_path),
         kind="d",
         is_empty=is_empty,
@@ -423,14 +405,11 @@ async def early_root(
         or not path_visible(visibility, search.virtual)
     ):
         return []
-    prefix = mount_prefix_of(search.virtual, search.vfs_path)
     tree = find_eval.bind_tree(
-        find_eval.args_to_tree(args), prefix, search.virtual, search.raw_path
+        find_eval.args_to_tree(args), "", search.virtual, search.raw_path
     )
     rows = root_dir_results(search, args, tree, is_empty=None)
-    return respell_raw(
-        apply_mount_prefix(rows, prefix), search.virtual, search.raw_path
-    )
+    return respell_raw(rows, search.virtual, search.raw_path)
 
 
 @dataclass(frozen=True, slots=True)

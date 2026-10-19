@@ -19,7 +19,7 @@ from typing import Any
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
 from mirage.commands.builtin.generic_bind.files import command_files
-from mirage.commands.builtin.utils.links import links_of
+from mirage.commands.builtin.utils.links import links_of, mount_root
 from mirage.commands.builtin.utils.paths import (
     descendant_path,
     entry_kind,
@@ -38,7 +38,6 @@ from mirage.errors.render import operand_spelling
 from mirage.errors.types import FsCondition
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec, WalkProbe
-from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.mode import DEFAULT_DIR_MODE, parse_chmod
 from mirage.utils.path import CycleError, norm, parent, walk_nodes
 from mirage.view.types import LinkView
@@ -95,7 +94,9 @@ async def mkdir(
         names = (
             await created_names(path, parents, links, probe) if verbose else []
         )
-        failed = await make_directory(files.mkdir, path, parents, links, probe)
+        failed = await make_directory(
+            files.mkdir, path, parents, mount_root(ctx), links, probe
+        )
         if failed is not None:
             errors.append(failed)
             continue
@@ -181,6 +182,7 @@ async def make_directory(
     mkdir: Callable[..., Awaitable[Any]],
     path: PathSpec,
     parents: bool,
+    root: str,
     links: LinkView | None = None,
     probe: WalkProbe | None = None,
 ) -> str | None:
@@ -196,6 +198,9 @@ async def make_directory(
         mkdir (Callable[..., Awaitable[Any]]): the dispatched mkdir.
         path (PathSpec): the operand.
         parents (bool): whether ``-p`` makes the missing ancestors.
+        root (str): the prefix of the mount the command runs on, without
+            its trailing slash (``mount_root``): ``-p`` makes only the
+            names on it.
         links (LinkView | None): the namespace's symlink facts.
         probe (WalkProbe | None): what a walked name is judged with,
             None outside a workspace command.
@@ -205,7 +210,7 @@ async def make_directory(
     # is met at that name and GNU quotes it rather than the operand.
     if parents and (path.dotted is not None or path.walk_error == "ELOOP"):
         failed = await _make_walked(
-            mkdir, path, path.dotted or path.virtual, links, probe
+            mkdir, path, path.dotted or path.virtual, root, links, probe
         )
         if failed is not None:
             return failed
@@ -226,6 +231,7 @@ async def _make_walked(
     mkdir: Callable[..., Awaitable[Any]],
     path: PathSpec,
     dotted: str,
+    root: str,
     links: LinkView | None,
     probe: WalkProbe | None,
 ) -> str | None:
@@ -241,10 +247,11 @@ async def _make_walked(
         mkdir (Callable[..., Awaitable[Any]]): the dispatched mkdir.
         path (PathSpec): the operand.
         dotted (str): its dotted spelling.
+        root (str): the prefix of the mount the command runs on, without
+            its trailing slash.
         links (LinkView | None): the namespace's symlink facts.
         probe (WalkProbe | None): what a walked name is judged with.
     """
-    root = mount_prefix_of(path.virtual, path.vfs_path).rstrip("/")
     follow = links.resolve if links is not None else None
     for node, spelled in walk_nodes(dotted, path.raw_path, follow):
         try:

@@ -19,13 +19,11 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { CommandName, type FlagValue } from '../../spec/types.ts'
 import { missingOperandError } from '../../spec/usage.ts'
 import { fsStrerror, isFsError } from '../../../errors/fs.ts'
-import { mountKey } from '../../../utils/key_prefix.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
 import { quoteText } from '../../quote.ts'
 import { EOVERFLOW_REASON, INT_MAX, signedDecimal } from '../utils/strtol.ts'
-import { mountRoot } from '../utils/links.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { ignoreBOM: true })
@@ -196,7 +194,6 @@ export async function csplitGeneric(
   // as it formed it (`csplit: xx00`), and stops at the first one it cannot
   // create, -k or not. Mirrors csplit.py.
   const typedPrefix = parsed.prefix
-  const mountPrefix = mountRoot(ctx)
   const first = paths[0]
   const source =
     first !== undefined && first.rawPath !== '-' ? stream(first) : (ctx.stdin ?? new Uint8Array())
@@ -224,7 +221,7 @@ export async function csplitGeneric(
         directory: scope.directory,
         dotted: scope.dotted,
         walkError: scope.walkError,
-        vfsPath: mountKey(scope.virtual, mountPrefix),
+        vfsPath: scope.vfsPath,
         rawPath: name,
       })
       try {

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { PathSpec, type ReaddirFn } from '../../../types.ts'
-import { rekey, respelled } from '../../../utils/key_prefix.ts'
+import { respelled } from '../../../utils/key_prefix.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { wordRefusalError } from '../../spec/usage.ts'
 import { matchWord } from '../../spec/word_choice.ts'
@@ -65,18 +65,15 @@ export function backupControl(
 export function siblingPath(path: PathSpec, appended: string): PathSpec {
   const virtual = rstripSlash(path.virtual) + appended
   return respelled(
-    PathSpec.fromStrPath(virtual, rekey(path.virtual, path.vfsPath, virtual)),
+    PathSpec.fromStrPath(virtual),
     (rstripSlash(path.rawPath) || path.rawPath) + appended,
   )
 }
 
-// The directory containing `path` on the same mount.
+// The directory containing `path`. Mirrors Python's parent_path.
 export function parentPath(path: PathSpec): PathSpec {
-  const strippedVirtual = rstripSlash(path.virtual)
-  const virtual = strippedVirtual.slice(0, strippedVirtual.lastIndexOf('/')) || '/'
-  const strippedVfs = rstripSlash(path.vfsPath)
-  const vfs = strippedVfs.includes('/') ? strippedVfs.slice(0, strippedVfs.lastIndexOf('/')) : ''
-  return PathSpec.fromStrPath(virtual, vfs)
+  const stripped = rstripSlash(path.virtual)
+  return PathSpec.fromStrPath(stripped.slice(0, stripped.lastIndexOf('/')) || '/')
 }
 
 // Existing numbered-backup versions (`name.~N~`) next to a target. A missing

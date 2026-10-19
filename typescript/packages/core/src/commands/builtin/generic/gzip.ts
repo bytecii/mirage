@@ -17,9 +17,9 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { flagKwargName } from '../../spec/constants.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import { fsStrerror, isFsError } from '../../../errors/fs.ts'
-import { mountedPath } from '../../../utils/key_prefix.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
-import type { PathSpec, StatFn } from '../../../types.ts'
+import { PathSpec, type StatFn } from '../../../types.ts'
 import { gnuBasename } from '../../../utils/path.ts'
 import { gzipCompressStream } from '../../../utils/compress.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
@@ -172,7 +172,7 @@ export async function gzipGeneric(
           }
           const out =
             link === null
-              ? mountedPath(p, p.mountPath + suffix)
+              ? PathSpec.fromStrPath(`/${stripSlash(p.virtual)}${suffix}`)
               : besideLink(link, p.rawPath + suffix)
           const existed = await outputTaken(out, stat, resolver)
           if (existed && !force) {

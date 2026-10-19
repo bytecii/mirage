@@ -26,6 +26,7 @@ from mirage.io.types import ByteSource, ClosedPipe, IOResult, materialize
 from mirage.io.writer import ByteWriter
 from mirage.shell.bytes import encode_text
 from mirage.types import PathSpec, StatFn
+from mirage.utils.key_prefix import mount_key
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> TeeFlags:
     )
 
 
-def error_line(path: PathSpec, exc: Exception) -> bytes:
+def error_line(path: PathSpec, exc: Exception, root: str = "") -> bytes:
     """GNU's diagnostic for one unwritable operand.
 
     A recognized filesystem refusal reads like GNU (operand as typed,
@@ -81,10 +82,12 @@ def error_line(path: PathSpec, exc: Exception) -> bytes:
     Args:
         path (PathSpec): the operand that could not be written.
         exc (Exception): the refusal.
+        root (str): the prefix of the mount the command runs on, below
+            which the operand is named; empty across mounts.
     """
     if fs_strerror(exc) is not None:
         return encode_text(fs_error_line("tee", path, exc))
-    return encode_text(f"tee: {path.mount_path}: {exc}\n")
+    return encode_text(f"tee: /{mount_key(path.virtual, root)}: {exc}\n")
 
 
 async def write_one(
@@ -162,6 +165,7 @@ async def write_output(
     append_bytes: Callable[..., Awaitable[None]] | None = None,
     stat: StatFn | None = None,
     opened_paths: list[PathSpec] | None = None,
+    root: str = "",
 ) -> tuple[ByteSource | None, IOResult]:
     """Copy ``raw`` to every operand, GNU-style.
 
@@ -202,6 +206,8 @@ async def write_output(
         write_bytes (Callable): backend whole-file write.
         append_bytes (Callable | None): backend native append, if wired.
         stat (StatFn | None): Stats a path, for the probed open.
+        root (str): the prefix of the mount the command runs on, below
+            which a transport error names its operand.
     """
     errors: list[bytes] = []
     if parsed.stop_on_error and stat is not None:
@@ -218,7 +224,7 @@ async def write_output(
                 continue
             failed: PathSpec = path
             for prior in paths[:index]:
-                if prior.mount_path in opened:
+                if prior.virtual in opened:
                     continue
                 try:
                     if not (
@@ -228,7 +234,7 @@ async def write_output(
                 except Exception as exc:
                     failed, refusal = prior, exc
                     break
-                opened.add(prior.mount_path)
+                opened.add(prior.virtual)
             if refusal is None:
                 try:
                     await write_one(
@@ -242,10 +248,10 @@ async def write_output(
                 except Exception as exc:
                     refusal = exc
                 else:
-                    opened.add(path.mount_path)
+                    opened.add(path.virtual)
                     continue
             return None, IOResult(
-                exit_code=1, stderr=error_line(failed, refusal)
+                exit_code=1, stderr=error_line(failed, refusal, root)
             )
     for index, path in enumerate(paths):
         # A store keeps a key over a directory or under a file, where an
@@ -261,7 +267,7 @@ async def write_output(
             except Exception as exc:
                 logger.debug("tee: probing %s failed: %s", path.virtual, exc)
         if refusal is not None and not isinstance(refusal, FileNotFoundError):
-            errors.append(error_line(path, refusal))
+            errors.append(error_line(path, refusal, root))
             continue
         if opened_paths is not None and proved:
             # A streamed output's own write creates it; writing it nothing
@@ -283,12 +289,12 @@ async def write_output(
                 )
             if parsed.pipe_errors is PipeErrors.REPORT:
                 errors.append(
-                    error_line(path, fs_error(path, FsCondition.EPIPE))
+                    error_line(path, fs_error(path, FsCondition.EPIPE), root)
                 )
                 if parsed.stop_on_error:
                     break
         except Exception as exc:
-            errors.append(error_line(path, exc))
+            errors.append(error_line(path, exc, root))
             if parsed.stop_on_error:
                 break
     if errors:
@@ -307,6 +313,7 @@ async def tee_generic(
     flags: Mapping[str, FlagValue] | None = None,
     stat: StatFn | None = None,
     output_key: Callable[[PathSpec], str] | None = None,
+    root: str = "",
 ) -> tuple[ByteSource | None, IOResult]:
     parsed = parse_flags(flags or {})
     if stdin is not None and not isinstance(stdin, bytes):
@@ -320,6 +327,7 @@ async def tee_generic(
             append_bytes,
             stat,
             opened,
+            root,
         )
         io.closed_stdout = _closed_stdout(parsed)
         if io.exit_code and parsed.stop_on_error:
@@ -335,6 +343,7 @@ async def tee_generic(
                 append_bytes,
                 io,
                 output_key,
+                root,
             ),
             partial(close_quietly, stdin),
         ), io
@@ -345,7 +354,14 @@ async def tee_generic(
     io = IOResult()
     if paths:
         stdout, io = await write_output(
-            paths, raw, parsed, read_stream, write_bytes, append_bytes, stat
+            paths,
+            raw,
+            parsed,
+            read_stream,
+            write_bytes,
+            append_bytes,
+            stat,
+            root=root,
         )
     io.closed_stdout = _closed_stdout(parsed)
     return stdout, io
@@ -390,6 +406,7 @@ async def _tee_stream(
     append_bytes: Callable[..., Awaitable[None]] | None,
     io: IOResult,
     output_key: Callable[[PathSpec], str] | None,
+    root: str,
 ) -> AsyncIterator[bytes]:
     writers: dict[str, tuple[PathSpec, ByteWriter, int]] = {}
     errors = [await io.materialize_stderr()]
@@ -402,7 +419,7 @@ async def _tee_stream(
             if parsed.pipe_errors is PipeErrors.IGNORE:
                 return False
             exc = fs_error(path, FsCondition.EPIPE)
-        errors.append(error_line(path, exc))
+        errors.append(error_line(path, exc, root))
         io.exit_code = 1
         return parsed.stop_on_error
 

@@ -634,7 +634,7 @@ describe('time tests and -prune', () => {
 })
 
 describe('displayPath', () => {
-  it('joins like applyMountPrefix', () => {
+  it('joins the prefix and the key with one slash', () => {
     expect(displayPath('', '/sub/x')).toBe('/sub/x')
     expect(displayPath('/data', '/sub/x')).toBe('/data/sub/x')
     expect(displayPath('/data', '/')).toBe('/data')

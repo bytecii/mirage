@@ -22,6 +22,7 @@ from mirage.commands.builtin.generic_bind.files import command_files
 from mirage.commands.builtin.utils.links import (
     link_location,
     links_of,
+    mount_root,
 )
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.config import Context
@@ -34,7 +35,6 @@ from mirage.errors.posix import posix_phrase
 from mirage.errors.types import FsCondition
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of, mounted_path
 from mirage.utils.path import CycleError, resolve_path
 from mirage.view.types import LinkView
 
@@ -61,7 +61,7 @@ def followed_parent(virtual: str, links: LinkView | None) -> str:
 
 
 def ancestors(
-    path: PathSpec, cwd: str, links: LinkView | None = None
+    path: PathSpec, cwd: str, root: str, links: LinkView | None = None
 ) -> list[tuple[PathSpec | None, str]]:
     """The directories ``-p`` removes after ``path``, as GNU cuts them from
     the operand as typed, each with its spelling. None stands for the mount
@@ -72,9 +72,10 @@ def ancestors(
     Args:
         path (PathSpec): the removed operand.
         cwd (str): the directory a relative operand resolves against.
+        root (str): the prefix of the mount the command runs on, without
+            its trailing slash (``mount_root``).
         links (LinkView | None): the namespace's symlink facts.
     """
-    prefix = mount_prefix_of(path.virtual, path.vfs_path)
     typed = path.raw_path.rstrip("/") or "/"
     chain: list[tuple[PathSpec | None, str]] = []
     while "/" in typed:
@@ -83,14 +84,14 @@ def ancestors(
             cut -= 1
         typed = typed[: cut + 1]
         literal = resolve_path(typed, cwd).rstrip("/")
-        if not literal.startswith(f"{prefix}/"):
+        if not literal.startswith(f"{root}/"):
             chain.append((None, typed))
             break
         # A parent linked onto another mount is out of this mount's reach,
         # so the name is tried here as typed.
         followed = followed_parent(literal, links)
-        virtual = followed if followed.startswith(f"{prefix}/") else literal
-        below = mounted_path(path, virtual[len(prefix) :])
+        virtual = followed if followed.startswith(f"{root}/") else literal
+        below = PathSpec.from_str_path(virtual)
         chain.append((replace(below, raw_path=typed), typed))
     return chain
 
@@ -165,7 +166,9 @@ async def rmdir(
             continue
         if not fl.as_bool("parents"):
             continue
-        for ancestor, typed in ancestors(p, ctx.cwd.virtual, links):
+        for ancestor, typed in ancestors(
+            p, ctx.cwd.virtual, mount_root(ctx), links
+        ):
             if v:
                 verbose_parts.append(f"rmdir: removing directory, '{typed}'")
             # The walk up meets the mount root, which rmdir(2) answers

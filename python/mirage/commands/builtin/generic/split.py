@@ -26,7 +26,6 @@ from mirage.io.stream import OutputStream, rechunk
 from mirage.io.types import ByteSource, IOResult
 from mirage.io.writer import ByteWriter
 from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import resolve_path
 
 
@@ -408,7 +407,6 @@ async def split_generic(
     suffix_start: int = 0,
     additional_suffix: str = "",
     separator: bytes = b"\n",
-    mount_prefix: str = "",
     cwd: str = "/",
 ) -> tuple[ByteSource | None, IOResult]:
     if len(paths) > 2:
@@ -451,10 +449,7 @@ async def split_generic(
     file_idx = 0
 
     async def emit(name: str, data: ByteSource) -> None:
-        virtual = prefix_virtual + name
-        spec = PathSpec.from_str_path(
-            virtual, mount_key(virtual, mount_prefix)
-        )
+        spec = PathSpec.from_str_path(prefix_virtual + name)
         try:
             await write_bytes(spec, data)
         except FS_ERRORS as exc:

@@ -15,8 +15,7 @@
 import { Worker } from '../../../concurrency/worker.ts'
 import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
 import { encodingFor } from '../../../utils/encoding.ts'
-import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
-import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
+import { mountParentReaddir, mountParentStat, toPathspec } from '../utils/wrap.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { MountView } from '../../../view/types.ts'
 import { FileStat, FileType, type PathSpec } from '../../../types.ts'
@@ -849,7 +848,7 @@ export async function rgGeneric(
   const walk = walkFilter(f, types, await ignoreRules(fl, dispatchOf(ctx), notes))
   let pat: RgPattern | null = null
   if (!f.listFiles) {
-    const resolution = await resolvePattern('rg', texts, fl, paths, mountRoot(ctx), stream)
+    const resolution = await resolvePattern('rg', texts, fl, stream)
     if (resolution.error !== null) {
       return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
     }
@@ -878,9 +877,8 @@ export async function rgGeneric(
     }
     const [first = STDIN_OPERAND] = paths
     const mounts = mountsOf(ctx)
-    const home = mountPrefixOf(first.virtual, first.vfsPath)
-    const rd = mountParentReaddir((p: string) => readdir(sameMountSpec(p, first)), mounts, home)
-    const st = mountParentStat((p: string) => stat(sameMountSpec(p, first)), mounts)
+    const rd = mountParentReaddir((p: string) => readdir(toPathspec(p)), mounts, mountRoot(ctx))
+    const st = mountParentStat((p: string) => stat(toPathspec(p)), mounts)
     if (
       pat !== null &&
       paths.length === 1 &&
@@ -932,7 +930,6 @@ export async function rgGeneric(
             pat,
             f,
             stream,
-            first,
             warnings,
             implicit,
             ctx.cwd.virtual,
@@ -1297,7 +1294,6 @@ async function* searchAll(
   pat: RgPattern,
   f: RgFlags,
   stream: Stream,
-  template: PathSpec,
   warnings: string[],
   implicit: boolean,
   // The session's working directory, which --pre-glob's globs are rooted at.
@@ -1338,7 +1334,7 @@ async function* searchAll(
         const opened =
           h.spec === null && h.resolver !== null
             ? h.resolver.read(h.virtual)
-            : stream(h.spec ?? sameMountSpec(h.virtual, template))
+            : stream(h.spec ?? toPathspec(h.virtual))
         const pipe = h.spec !== null && isStdin(h.spec)
         let source = opened
         const pre = f.pre ?? null

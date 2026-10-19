@@ -6,7 +6,8 @@ import { gunzipStream } from '../../../utils/compress.ts'
 import { enoent, eloop, isDotWalkError, isEisdir, isEnoent, isFsError } from '../../../errors/fs.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
 import { GzipDataError } from '../../../utils/compress.ts'
-import { mountedPath, respelled } from '../../../utils/key_prefix.ts'
+import { respelled } from '../../../utils/key_prefix.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 import type { LinkResolver } from '../utils/links.ts'
 import {
   GZIP_KNOWN_SUFFIXES,
@@ -64,7 +65,8 @@ function decompressed(path: PathSpec, suffix: string): [string, PathSpec] | null
   if (found === null) return null
   const tar = (GZIP_TAR_SUFFIXES as readonly string[]).includes(asciiLower(found)) ? '.tar' : ''
   const cut = found.length
-  return [path.rawPath.slice(0, -cut) + tar, mountedPath(path, path.mountPath.slice(0, -cut) + tar)]
+  const here = `/${stripSlash(path.virtual)}`
+  return [path.rawPath.slice(0, -cut) + tar, PathSpec.fromStrPath(here.slice(0, -cut) + tar)]
 }
 
 /**
@@ -80,13 +82,14 @@ function decompressed(path: PathSpec, suffix: string): [string, PathSpec] | null
 function retries(path: PathSpec, missing: unknown, suffix: string): PathSpec[] {
   const suffixes = suffix === GZIP_SUFFIX ? GZIP_RETRY_SUFFIXES : [suffix, ...GZIP_RETRY_SUFFIXES]
   const typed = path.rawPath
+  const here = `/${stripSlash(path.virtual)}`
   if (typed === '') {
-    const base = path.mountPath.replace(/\/+$/, '') + '/'
-    return suffixes.map((s) => respelled(mountedPath(path, base + s), s))
+    const base = here.replace(/\/+$/, '') + '/'
+    return suffixes.map((s) => respelled(PathSpec.fromStrPath(base + s), s))
   }
   const last = typed.slice(typed.lastIndexOf('/') + 1)
   if (last === '' || last === '.' || last === '..' || isDotWalkError(missing)) return []
-  return suffixes.map((s) => respelled(mountedPath(path, path.mountPath + s), typed + s))
+  return suffixes.map((s) => respelled(PathSpec.fromStrPath(here + s), typed + s))
 }
 
 async function* resumed(

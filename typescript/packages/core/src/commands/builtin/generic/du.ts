@@ -23,7 +23,7 @@ import { pathsScoped } from '../../../view/namespace_view.ts'
 import { pathVisible, visibleRecords } from '../../../utils/hidden.ts'
 import { ZERO_LENGTH_NAME } from '../../../errors/render.ts'
 import { fsStrerror, isDotWalkError, isMissingPath } from '../../../errors/fs.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
+import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { respellRaw } from '../../../utils/path.ts'
 import { lstripSlash, rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import { formatRecords } from '../utils/output.ts'
@@ -35,7 +35,7 @@ import type { Files } from '../../../workspace/files.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
 
 import { posixPhrase } from '../../../errors/posix.ts'
-import { mountsOf, mountRoot, visibilityOf } from '../utils/links.ts'
+import { mountsOf, visibilityOf } from '../utils/links.ts'
 import { vfsStatPath } from '../utils/paths.ts'
 export type ComputeSize = (p: PathSpec) => Promise<number>
 export type DuEntries = [entries: [string, number][], total: number]
@@ -150,18 +150,12 @@ export function parseFlags(ctx: Context): DuFlags {
   }
 }
 
-/** The operand GNU `du` assumes when the line names none. */
-function cwdSpec(cwd: string, mountPrefix?: string): PathSpec {
+/** The operand GNU `du` assumes when the line names none. Mirrors Python's
+ * cwd_spec. */
+function cwdSpec(cwd: PathSpec | string): PathSpec {
+  if (cwd instanceof PathSpec) return cwd
   const dir = cwd || '/'
-  // The cwd is a virtual path, so under a non-root mount its backend key is
-  // the cwd with the mount prefix removed: from /ram the backend must be
-  // asked for its own root, not for a 'ram' entry inside itself.
-  return new PathSpec({
-    vfsPath: mountPrefix === undefined ? stripSlash(dir) : mountKey(dir, mountPrefix),
-    virtual: dir,
-    directory: dir,
-    resolved: false,
-  })
+  return new PathSpec({ vfsPath: stripSlash(dir), virtual: dir, directory: dir, resolved: false })
 }
 
 /**
@@ -239,14 +233,13 @@ async function duOperandExists(
  */
 async function duOperands(
   paths: PathSpec[],
-  cwd: string,
+  cwd: PathSpec | string,
   resolveGlob: (targets: PathSpec[]) => Promise<PathSpec[]>,
   stat: (p: PathSpec) => Promise<unknown>,
   hasContent?: (p: PathSpec) => Promise<boolean>,
-  mountPrefix?: string,
   statPath: StatPath | null = null,
 ): Promise<{ present: PathSpec[]; missing: [string, string][] }> {
-  const targets = paths.length > 0 ? paths : [cwdSpec(cwd, mountPrefix)]
+  const targets = paths.length > 0 ? paths : [cwdSpec(cwd)]
   const resolved = await resolveGlob(targets)
   const present: PathSpec[] = []
   const missing: [string, string][] = []
@@ -668,11 +661,10 @@ export async function duGeneric(
   const flags = parseFlags(ctx)
   const { present, missing } = await duOperands(
     paths,
-    ctx.cwd.virtual,
+    ctx.cwd,
     resolveGlob,
     stat,
     (p) => duHasContent(visibilityOf(ctx.vfs) ?? undefined, computeEntries, p),
-    mountRoot(ctx),
     vfsStatPath(ctx.vfs) ?? null,
   )
   const out = await du(

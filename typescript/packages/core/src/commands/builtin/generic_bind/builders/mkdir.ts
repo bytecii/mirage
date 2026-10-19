@@ -30,14 +30,12 @@ import {
 } from '../../utils/paths.ts'
 import type { LinkView } from '../../../../view/types.ts'
 import { FileType, PathSpec, type WalkProbe } from '../../../../types.ts'
-import { mountPrefixOf } from '../../../../utils/key_prefix.ts'
 import { CycleError, norm, parent, walkNodes } from '../../../../utils/path.ts'
-import { rstripSlash } from '../../../../utils/slash.ts'
 import type { CommandFn } from '../../../config.ts'
 import type { GenericCommand } from '../adapter.ts'
 import { commandFiles } from '../files.ts'
 import { missingOperandError } from '../../../spec/usage.ts'
-import { linksOf } from '../../utils/links.ts'
+import { linksOf, mountRoot } from '../../utils/links.ts'
 
 /**
  * Make one name of a walk a directory, or say why it is not one.
@@ -92,10 +90,10 @@ async function makeWalked(
   mkdir: (path: PathSpec, parents?: boolean) => Promise<void>,
   path: PathSpec,
   dotted: string,
+  root: string,
   links: LinkView | null,
   probe: WalkProbe | null,
 ): Promise<string | null> {
-  const root = rstripSlash(mountPrefixOf(path.virtual, path.vfsPath))
   const follow = links === null ? null : (virtual: string) => links.resolve(virtual)
   for (const [node, spelled] of walkNodes(dotted, path.rawPath, follow)) {
     let why: string | null
@@ -171,6 +169,7 @@ export async function makeDirectory(
   mkdir: (path: PathSpec, parents?: boolean) => Promise<void>,
   path: PathSpec,
   parents: boolean,
+  root: string,
   links: LinkView | null = null,
   probe: WalkProbe | null = walkProbeFor(path.virtual),
 ): Promise<string | null> {
@@ -179,7 +178,7 @@ export async function makeDirectory(
   // among them, or a link loop the walk refused the operand for, is met at
   // that name and GNU quotes it rather than the operand.
   if (parents && (path.dotted !== null || path.walkError === 'ELOOP')) {
-    const failed = await makeWalked(mkdir, path, path.dotted ?? path.virtual, links, probe)
+    const failed = await makeWalked(mkdir, path, path.dotted ?? path.virtual, root, links, probe)
     if (failed !== null) return failed
     // The walk has entered every name the spelling passes through, so the
     // operand is made by its resolved path alone: walking it again would ask
@@ -244,7 +243,7 @@ const mkdir: CommandFn = async (_accessor, paths, _texts, ctx) => {
       continue
     }
     const names = verbose ? await createdNames(p, parents, links, probe) : []
-    const failed = await makeDirectory(files.mkdir, p, parents, links, probe)
+    const failed = await makeDirectory(files.mkdir, p, parents, mountRoot(ctx), links, probe)
     if (failed !== null) {
       errors.push(failed)
       continue

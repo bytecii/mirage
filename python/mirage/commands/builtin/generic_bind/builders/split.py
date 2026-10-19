@@ -33,7 +33,7 @@ from mirage.commands.builtin.generic_bind.files import (
     command_files,
     resolve_or_empty,
 )
-from mirage.commands.builtin.utils.links import dispatch_of, mount_root
+from mirage.commands.builtin.utils.links import dispatch_of
 from mirage.commands.config import Context
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -110,7 +110,6 @@ async def split(
         suffix_start=suffix_start,
         additional_suffix=fl.as_str("additional_suffix") or "",
         separator=parse_separator(fl.as_str("separator")),
-        mount_prefix=mount_root(ctx),
         cwd=ctx.cwd.virtual,
     )
 

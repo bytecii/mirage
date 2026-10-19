@@ -5,7 +5,6 @@ from dataclasses import dataclass
 
 from mirage.commands.builtin.utils.links import links_of
 from mirage.commands.builtin.utils.paths import dispatch_stat, link_target
-from mirage.commands.builtin.utils.wrap import to_pathspec
 from mirage.commands.config import Context
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -16,9 +15,8 @@ from mirage.errors.fs import eloop, enoent, enotdir
 from mirage.errors.render import fs_error_line
 from mirage.io.types import ByteSource, IOResult
 from mirage.shell.bytes import encode_text
-from mirage.types import FileStat, FileType, PathSpec, StatFn, Visibility
+from mirage.types import FileType, PathSpec, StatFn, Visibility
 from mirage.utils.hidden import path_visible
-from mirage.utils.key_prefix import mount_prefix_of
 
 _MODES = {"canonicalize_existing": "e", "canonicalize_missing": "m"}
 _LINKS = {"logical": "L", "physical": "P", "strip": "s", "no_symlinks": "s"}
@@ -305,19 +303,12 @@ async def realpath_generic(
     ctx: Context,
     stat_fn: StatFn,
 ) -> tuple[ByteSource | None, IOResult]:
-    prefix = (
-        mount_prefix_of(paths[0].virtual, paths[0].vfs_path) if paths else ""
-    )
-
-    async def stat(path: PathSpec) -> FileStat:
-        return await stat_fn(to_pathspec(path.virtual, prefix))
-
     return await realpath(
         paths,
         stat=(
             functools.partial(dispatch_stat, ctx.vfs.dispatch)
             if ctx.vfs is not None
-            else stat
+            else stat_fn
         ),
         cwd=ctx.cwd.virtual,
         readlink=link_target(links_of(ctx)),

@@ -26,6 +26,7 @@ from mirage.io.spool import MEMORY_LIMIT, ByteSpool
 from mirage.io.stream import OutputStream, close_quietly, rechunk
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn
+from mirage.utils.key_prefix import mount_key
 
 # A `-o` reached a backend wired without a write op, which is a wiring
 # fault rather than anything the command line did wrong. The TypeScript
@@ -558,6 +559,7 @@ async def shuf_generic(
     output: PathSpec | None = None,
     write_bytes: Callable[[PathSpec, ByteSource], Awaitable[None]]
     | None = None,
+    root: str = "",
 ) -> tuple[ByteSource | None, IOResult]:
     sep = "\x00" if zero_terminated else "\n"
     rendered: ByteSource
@@ -577,7 +579,13 @@ async def shuf_generic(
         result = _range_lines(low, high, need, with_replacement)
         rendered = _render(result, sep)
     elif echo:
-        items = [p.mount_path for p in paths] if paths else list(texts)
+        # An operand -e echoes is named below the mount the command runs
+        # on, ``root``.
+        items = (
+            ["/" + mount_key(p.virtual, root) for p in paths]
+            if paths
+            else list(texts)
+        )
         result = _sample(items, count, with_replacement)
         rendered = _render(result, sep)
     else:

@@ -17,6 +17,7 @@ import { VFSName, type PathSpec } from '../../../types.ts'
 import type { Files } from '../../../workspace/files.ts'
 import type { Command, Context } from '../../config.ts'
 import { genericReading } from '../generic_bind/factory.ts'
+import { mountRoot } from '../utils/links.ts'
 
 /**
  * Stream `path` as successive ranged reads of the stored bytes. `/dev/zero`
@@ -38,7 +39,7 @@ async function* ranged(files: Files, path: PathSpec): AsyncIterable<Uint8Array> 
 // An operand read in ranges, except a descriptor under `/fd/`, which keeps
 // the dispatched stream. Mirrors Python's `_endless`.
 function endless(ctx: Context, path: PathSpec): AsyncIterable<Uint8Array> | null {
-  if (ctx.vfs === undefined || path.mountPath.startsWith('/fd/')) return null
+  if (ctx.vfs === undefined || path.virtual.startsWith(`${mountRoot(ctx)}/fd/`)) return null
   return ranged(ctx.vfs, path)
 }
 

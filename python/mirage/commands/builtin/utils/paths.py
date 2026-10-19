@@ -18,6 +18,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
 
+from mirage.commands.spec.flag_view import FlagBag
+from mirage.commands.spec.types import FlagValue
 from mirage.errors.constants import MISS_ERRORS
 from mirage.errors.fs import dot_walk_error, eexist, eloop, enoent
 from mirage.errors.render import operand_spelling
@@ -31,7 +33,6 @@ from mirage.types import (
     ReaddirFn,
     StatFn,
 )
-from mirage.utils.key_prefix import rekey
 from mirage.utils.path import (
     CycleError,
     dot_lookups,
@@ -206,6 +207,37 @@ async def stat_or_enoent(stat_path: StatPath, path: PathSpec) -> FileStat:
     return row
 
 
+def virtual_key(path: PathSpec) -> PathSpec:
+    """``path`` keyed by its whole virtual path, the shape a command's
+    paths take: the dispatcher routes each one to its mount, so no
+    command derives a mount from a path's key.
+
+    Args:
+        path (PathSpec): A path.
+    """
+    return replace(path, vfs_path=path.virtual.strip("/"))
+
+
+def virtual_flags(flags: dict[str, FlagValue]) -> dict[str, FlagValue]:
+    """A command's flags with every path value keyed by its whole virtual
+    path (``virtual_key``): a single path (awk -f) or a list of them
+    (repeated grep -f). Everything else passes through unchanged.
+
+    Args:
+        flags (dict[str, FlagValue]): the parsed flags.
+    """
+    keyed: dict[str, FlagValue] = FlagBag(flags)
+    for key, value in keyed.items():
+        if isinstance(value, PathSpec):
+            keyed[key] = virtual_key(value)
+        elif isinstance(value, list):
+            keyed[key] = [
+                virtual_key(item) if isinstance(item, PathSpec) else item
+                for item in value
+            ]
+    return keyed
+
+
 def spelled_from(path: PathSpec, operand: PathSpec) -> PathSpec:
     """``path`` spelled from its operand as typed, the way GNU names it.
 
@@ -217,18 +249,13 @@ def spelled_from(path: PathSpec, operand: PathSpec) -> PathSpec:
 
 
 def descendant_path(root: PathSpec, virtual: str) -> PathSpec:
-    """A path on ``root``'s mount, keyed and spelled the way ``root`` is.
+    """A path at, under or above ``root``, spelled the way ``root`` is.
 
     Args:
-        root (PathSpec): A path whose backend key is known.
-        virtual (str): The path to key, on the same mount.
+        root (PathSpec): The operand the path is reached from.
+        virtual (str): The path's virtual path.
     """
-    return spelled_from(
-        PathSpec.from_str_path(
-            virtual, rekey(root.virtual, root.vfs_path, virtual)
-        ),
-        root,
-    )
+    return spelled_from(PathSpec.from_str_path(virtual), root)
 
 
 async def entry_kind(stat: StatFn, path: PathSpec) -> tuple[bool, bool]:

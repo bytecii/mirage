@@ -25,7 +25,6 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.shell.bytes import encode_text
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 from mirage.utils.compress import GzipDataError, gunzip_stream
-from mirage.utils.key_prefix import mounted_path
 
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
@@ -90,7 +89,7 @@ def _decompressed(path: PathSpec, suffix: str) -> tuple[str, PathSpec] | None:
     cut = len(found)
     return (
         path.raw_path[:-cut] + tar,
-        mounted_path(path, path.mount_path[:-cut] + tar),
+        PathSpec.from_str_path(("/" + path.virtual.strip("/"))[:-cut] + tar),
     )
 
 
@@ -117,17 +116,19 @@ def _retries(
         else (suffix, *GZIP_RETRY_SUFFIXES)
     )
     typed = path.raw_path
+    here = "/" + path.virtual.strip("/")
     if not typed:
-        base = path.mount_path.rstrip("/") + "/"
+        base = here.rstrip("/") + "/"
         return [
-            replace(mounted_path(path, base + s), raw_path=s) for s in suffixes
+            replace(PathSpec.from_str_path(base + s), raw_path=s)
+            for s in suffixes
         ]
     if typed.rsplit("/", 1)[-1] in ("", ".", "..") or isinstance(
         missing, DotWalkMissing
     ):
         return []
     return [
-        replace(mounted_path(path, path.mount_path + s), raw_path=typed + s)
+        replace(PathSpec.from_str_path(here + s), raw_path=typed + s)
         for s in suffixes
     ]
 

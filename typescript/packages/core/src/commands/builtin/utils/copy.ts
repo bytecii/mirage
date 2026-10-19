@@ -29,7 +29,7 @@ import type { FsCondition } from '../../../errors/types.ts'
 export type BackendKeyFn = (path: PathSpec) => string
 
 export function backendKeyDefault(path: PathSpec): string {
-  return rstripSlash(path.mountPath)
+  return rstripSlash(path.virtual)
 }
 
 function childPath(parent: PathSpec, name: string): PathSpec {
@@ -82,7 +82,7 @@ export function typedName(src: PathSpec): string {
 export function landingPath(dst: PathSpec, src: PathSpec, dotdot = '..'): PathSpec {
   let typed = typedName(src)
   if (typed === '..') typed = dotdot
-  if (typed === '') typed = rstripSlash(src.mountPath).split('/').pop() ?? ''
+  if (typed === '') typed = rstripSlash(src.virtual).split('/').pop() ?? ''
   if (typed !== '.' && typed !== '..') return childPath(dst, typed)
   const base = dst.rawPath
   const shown = base === '' || base.endsWith('/') ? `${base}${typed}` : `${base}/${typed}`

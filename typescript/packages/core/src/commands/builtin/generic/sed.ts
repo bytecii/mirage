@@ -19,7 +19,7 @@ import { isStdin, stdinStream } from '../utils/stream.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 import { fsStrerror, isFsError, isStaleWrite } from '../../../errors/fs.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
 import { callerStream } from '../generic_bind/dispatch.ts'
@@ -42,7 +42,7 @@ import {
 import { SED_LINE_LENGTH, SedMachine, type SedFileContent, type SedInput } from '../sed_exec.ts'
 import { byteView, decodeText, encodeText, fromByteView, utf8Locale } from '../../../shell/bytes.ts'
 import { posixPhrase } from '../../../errors/posix.ts'
-import { dispatchOf, mountRoot } from '../utils/links.ts'
+import { dispatchOf } from '../utils/links.ts'
 
 type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
 type WriteBytes = (p: PathSpec, data: ByteSource) => Promise<void>
@@ -61,7 +61,6 @@ interface ScriptFiles {
 }
 
 function scriptFiles(ctx: Context, stream: Stream, write: WriteBytes): ScriptFiles {
-  const prefix = mountRoot(ctx)
   const spec = (name: string): PathSpec => {
     const resolved = resolvePath(name, ctx.cwd.virtual)
     if (ctx.vfs !== undefined) return PathSpec.fromStrPath(name, undefined, ctx.cwd)
@@ -70,7 +69,7 @@ function scriptFiles(ctx: Context, stream: Stream, write: WriteBytes): ScriptFil
       virtual: resolved,
       directory: slash >= 0 ? resolved.slice(0, slash + 1) : '/',
       resolved: true,
-      vfsPath: mountKey(resolved, prefix),
+      vfsPath: stripSlash(resolved),
     })
   }
   const dispatch = dispatchOf(ctx)
@@ -363,9 +362,6 @@ export async function sedGeneric(
   const inPlace = parsed.inPlace
   if (!inPlace) stream = stdinStream(stream, ctx.stdin)
   const pieces: SedScriptPiece[] = []
-  const firstPath = paths[0]
-  const scriptPrefix =
-    firstPath === undefined ? mountRoot(ctx) : mountPrefixOf(firstPath.virtual, firstPath.vfsPath)
   const origins = scriptOrigins(ctx.argv, parsed.scripts.length)
   for (const [index, [name, text]] of parsed.scripts.entries()) {
     const shown = origins?.[index] ?? null
@@ -373,7 +369,7 @@ export async function sedGeneric(
       pieces.push(shown === null ? { kind: 'expr', text } : { kind: 'file', text, name: shown })
       continue
     }
-    const spec = PathSpec.fromStrPath(text, mountKey(text, scriptPrefix))
+    const spec = PathSpec.fromStrPath(text)
     let body: string
     try {
       body = decodeText(await materialize(stream(spec)))
@@ -522,7 +518,6 @@ async function runInPlace(
  * `text` (script) slot, so recover it as a path operand here.
  */
 export function positionalAsPaths(texts: string[], ctx: Context): PathSpec[] {
-  const prefix = mountRoot(ctx)
   return texts.map((t) => {
     const resolved = resolvePath(t, ctx.cwd.virtual)
     const slash = resolved.lastIndexOf('/')
@@ -530,7 +525,7 @@ export function positionalAsPaths(texts: string[], ctx: Context): PathSpec[] {
       virtual: resolved,
       directory: slash >= 0 ? resolved.slice(0, slash + 1) : '/',
       resolved: true,
-      vfsPath: mountKey(resolved, prefix),
+      vfsPath: stripSlash(resolved),
     })
   })
 }

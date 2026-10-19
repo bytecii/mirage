@@ -41,6 +41,7 @@ from mirage.commands.builtin.types import SearchTerms
 from mirage.commands.builtin.utils.links import (
     dispatch_of,
     links_of,
+    mount_root,
     mounts_of,
 )
 from mirage.commands.builtin.utils.tree import before_full_scan
@@ -56,6 +57,7 @@ from mirage.shell.bytes import byte_view, utf8_locale
 from mirage.types import FileType, PathSpec
 from mirage.utils.encoding import bom_of
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
+from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import CycleError, glob_prefix_match
 from mirage.view.types import LinkView
 
@@ -395,6 +397,7 @@ async def search_reads(
         else None
     )
     links = links_of(ctx)
+    home = mount_root(ctx)
     fl = FlagView(ctx.flags, spec=SPECS[name])
     if not paths or (
         name == "rg" and (fl.as_bool("files") or fl.as_bool("type_list"))
@@ -462,6 +465,9 @@ async def search_reads(
                 raise
 
     async def narrowed(path: PathSpec) -> ByteSource | None:
+        # A hit and a searchable glob are keyed below the mount, as its
+        # backend answers them.
+        key = mount_key(path.virtual, home)
         if _linked(links, path.virtual):
             return None
         ruled_out = (
@@ -472,10 +478,10 @@ async def search_reads(
                 terms.reads_binary
                 and get_extension(path.virtual) in BINARY_EXTENSIONS
             )
-            and path.vfs_path.lower() not in hits
+            and key.lower() not in hits
             and (
                 searchable is None
-                or any(glob_prefix_match(path.vfs_path, g) for g in searchable)
+                or any(glob_prefix_match(key, g) for g in searchable)
             )
         )
         if ruled_out:

@@ -15,6 +15,7 @@
 from collections.abc import AsyncIterator
 
 from mirage.commands.builtin.generic_bind.factory import generic_reading
+from mirage.commands.builtin.utils.links import mount_root
 from mirage.commands.config import Context
 from mirage.core.dev.constants import ZERO_CHUNK_SIZE
 from mirage.types import PathSpec
@@ -51,7 +52,7 @@ def _endless(ctx: Context, path: PathSpec) -> AsyncIterator[bytes] | None:
         ctx (Context): the invocation's context.
         path (PathSpec): the operand.
     """
-    if ctx.vfs is None or path.mount_path.startswith("/fd/"):
+    if ctx.vfs is None or path.virtual.startswith(f"{mount_root(ctx)}/fd/"):
         return None
     return _ranged(ctx.vfs, path)
 

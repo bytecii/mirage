@@ -22,6 +22,7 @@ import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { fsStrerror, isFsError } from '../../../errors/fs.ts'
 import { mountKey } from '../../../utils/key_prefix.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
 import { stdinStream } from '../utils/stream.ts'
 import { delimited } from '../../../io/record_spool.ts'
@@ -510,7 +511,7 @@ export async function shufGeneric(
       : new PathSpec({
           virtual: parsed.output.virtual,
           directory: parsed.output.virtual,
-          vfsPath: mountKey(parsed.output.virtual, mountRoot(ctx)),
+          vfsPath: stripSlash(parsed.output.virtual),
           resolved: true,
           rawPath: parsed.output.rawPath,
         })
@@ -554,8 +555,9 @@ export async function shufGeneric(
     }
     out = rangeLines(low, high, Number(need), repeat)
   } else if (echoMode) {
-    const base = paths.length > 0 ? paths.map((p) => p.mountPath) : [...texts]
-    items = base
+    // An operand -e echoes is named below the mount the command runs on.
+    const root = mountRoot(ctx)
+    items = paths.length > 0 ? paths.map((p) => `/${mountKey(p.virtual, root)}`) : [...texts]
   } else {
     try {
       result = await sampleRecords(

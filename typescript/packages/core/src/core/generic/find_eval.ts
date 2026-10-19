@@ -189,9 +189,8 @@ export function evaluate(node: PredNode, entry: FindEntry, effects: Effects): bo
   }
 }
 
-// Display path for a mount-relative key, as `find` prints it. Mirrors
-// applyMountPrefix for a single key: the mount root maps to the bare
-// prefix, everything else joins with one slash.
+// Display path for a mount-relative key, as `find` prints it: the mount
+// root maps to the bare prefix, everything else joins with one slash.
 export function displayPath(prefix: string, key: string): string {
   if (!prefix) return key
   const rel = stripSlash(key)

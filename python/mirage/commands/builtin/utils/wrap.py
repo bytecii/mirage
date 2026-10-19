@@ -18,16 +18,13 @@ from typing import Any
 from mirage.commands.builtin.utils.operands import operand_name
 from mirage.errors.constants import MISS_ERRORS
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.key_prefix import mount_key
 from mirage.view.types import MountView
 
 
-def to_pathspec(path: Any, prefix: str = "") -> PathSpec:
+def to_pathspec(path: Any) -> PathSpec:
     if isinstance(path, PathSpec):
         return path
-    return PathSpec(
-        virtual=path, directory=path, vfs_path=mount_key(path, prefix)
-    )
+    return PathSpec(virtual=path, directory=path, vfs_path=path.strip("/"))
 
 
 def mount_parent_readdir(
@@ -148,22 +145,19 @@ def mount_parent_stat(
 async def call_readdir(
     readdir_fn: Callable[[PathSpec], Awaitable[list[str]]],
     path: str | PathSpec,
-    prefix: str = "",
 ) -> list[str]:
-    return await readdir_fn(to_pathspec(path, prefix))
+    return await readdir_fn(to_pathspec(path))
 
 
 async def call_stat(
     stat_fn: Callable[[PathSpec], Awaitable[FileStat]],
     path: str | PathSpec,
-    prefix: str = "",
 ) -> FileStat:
-    return await stat_fn(to_pathspec(path, prefix))
+    return await stat_fn(to_pathspec(path))
 
 
 async def call_read_bytes(
     read_fn: Callable[[PathSpec], Awaitable[bytes]],
     path: str | PathSpec,
-    prefix: str = "",
 ) -> bytes:
-    return await read_fn(to_pathspec(path, prefix))
+    return await read_fn(to_pathspec(path))

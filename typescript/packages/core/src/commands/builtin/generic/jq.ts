@@ -50,13 +50,11 @@ import { yieldBytes } from '../../../io/stream.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { isFsError } from '../../../errors/fs.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { type CommandFnResult, type Context } from '../../config.ts'
 import { helpPage, versionLine } from '../../spec/standard.ts'
 import { UsageError } from '../../errors.ts'
 import { isStdin, stdinStream } from '../utils/stream.ts'
 import { programFileRefusal, readProgramFile } from './program.ts'
-import { mountRoot } from '../utils/links.ts'
 
 type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
 
@@ -589,15 +587,6 @@ export class MainLoop {
   }
 }
 
-// Path flags arrive as resolved virtual-path strings, so a flag that
-// names a file builds its own PathSpec against the operands' mount.
-function pathSpecFactory(paths: readonly PathSpec[], ctx: Context): (value: string) => PathSpec {
-  const first = paths[0]
-  const mountPrefix =
-    first === undefined ? mountRoot(ctx) : mountPrefixOf(first.virtual, first.vfsPath)
-  return (value) => PathSpec.fromStrPath(value, mountKey(value, mountPrefix))
-}
-
 /** The file -f names, as the word typed when the bag kept it. */
 function programFileOf(fl: FlagView, toSpec: (value: string) => PathSpec): PathSpec | null {
   const raw = fl.raw('from_file')
@@ -613,7 +602,9 @@ export async function jqGeneric(
 ): Promise<CommandFnResult> {
   const readInput = stdinStream(stream, ctx.stdin)
   const fl = new FlagView(ctx.flags, specOf('jq'))
-  const toSpec = pathSpecFactory(paths, ctx)
+  // Path flags arrive as resolved virtual-path strings, so a flag that names
+  // a file builds its own PathSpec.
+  const toSpec = (value: string): PathSpec => PathSpec.fromStrPath(value)
   const programFile = programFileOf(fl, toSpec)
   // -f, --rawfile and --slurpfile route nothing (the executor's FILE_KEYS and
   // DISPATCH_FLAG_KEYS), so a file may sit on another mount than the operands: it

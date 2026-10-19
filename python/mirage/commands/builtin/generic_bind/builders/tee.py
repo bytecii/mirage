@@ -16,7 +16,7 @@ from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic.tee import tee_generic as generic_tee
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
 from mirage.commands.builtin.generic_bind.files import command_files
-from mirage.commands.builtin.utils.links import links_of
+from mirage.commands.builtin.utils.links import links_of, mount_root
 from mirage.commands.config import Context
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -45,6 +45,7 @@ async def tee(
         output_key=(lambda p: links.resolve(p.virtual))
         if links is not None
         else None,
+        root=mount_root(ctx),
     )
 
 

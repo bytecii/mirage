@@ -4,12 +4,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mirage.commands.builtin.generic.find import (
-    apply_mount_prefix,
-    parse_find_args,
-)
-from mirage.commands.builtin.generic.find import (
     find_walk_generic as stream_walk_find,
 )
+from mirage.commands.builtin.generic.find import parse_find_args
 from mirage.commands.config import Context
 from mirage.commands.errors import FindParseError
 from mirage.context.session_context import (
@@ -96,18 +93,6 @@ def test_parse_find_args_negation_builds_not_tree():
 def test_parse_find_args_or_builds_or_tree():
     args = parse_find_args(("-name", "*.txt", "-o", "-name", "*.py"))
     assert args.tree == Or([Name("*.txt"), Name("*.py")])
-
-
-@pytest.mark.parametrize(
-    "entries,prefix,expected",
-    [
-        (["/a.txt"], "", ["/a.txt"]),
-        (["/a.txt", "/dir/b.txt"], "/mnt", ["/mnt/a.txt", "/mnt/dir/b.txt"]),
-        (["a.txt"], "/mnt", ["/mnt/a.txt"]),
-    ],
-)
-def test_apply_mount_prefix(entries, prefix, expected):
-    assert apply_mount_prefix(entries, prefix) == expected
 
 
 def _root_spec() -> PathSpec:

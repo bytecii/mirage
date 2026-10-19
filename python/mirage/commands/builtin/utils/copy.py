@@ -35,7 +35,7 @@ def child_path(parent: PathSpec, name: str) -> PathSpec:
 
 
 def backend_key_default(path: PathSpec) -> str:
-    return path.mount_path.rstrip("/")
+    return path.virtual.rstrip("/")
 
 
 def copy_targets(
@@ -113,7 +113,7 @@ def landing_path(dst: PathSpec, src: PathSpec, dotdot: str = "..") -> PathSpec:
     if typed == "..":
         typed = dotdot
     if typed == "":
-        typed = src.mount_path.rstrip("/").rsplit("/", 1)[-1]
+        typed = src.virtual.rstrip("/").rsplit("/", 1)[-1]
     if typed not in (".", ".."):
         return child_path(dst, typed)
     shown = posixpath.join(dst.raw_path, typed)

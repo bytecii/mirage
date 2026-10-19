@@ -23,7 +23,6 @@ from mirage.types import (
     ReaddirFn,
 )
 from mirage.utils.fnmatch import fnmatch
-from mirage.utils.key_prefix import rekey
 from mirage.view.types import (
     LinkTargetStat,
     LinkView,
@@ -174,7 +173,7 @@ async def _walk_tree(
             virtual=entry,
             directory=entry,
             resolved=False,
-            vfs_path=rekey(path.virtual, path.vfs_path, entry),
+            vfs_path=entry.strip("/"),
         )
         crossing = entry in child_mounts and cross_readdir is not None
         if crossing:

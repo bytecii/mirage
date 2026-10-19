@@ -615,7 +615,8 @@ def command_files(
     # What the mount can do is the serving mount's to say: an option can
     # route the command to it with no operand there (`shuf -i 1-1
     # -o /ram/out` typed on another mount).
-    anchor = mount_root(ctx) + "/"
+    home = mount_root(ctx)
+    anchor = home + "/"
     mounts = mounts_of(ctx)
     ahead, noted = read_ahead(dispatch, paths)
 

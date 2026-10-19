@@ -17,6 +17,7 @@ from mirage.commands.builtin.generic.shuf import NO_WRITE_OP, parse_flags
 from mirage.commands.builtin.generic.shuf import shuf_generic as generic_shuf
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
 from mirage.commands.builtin.generic_bind.files import command_files
+from mirage.commands.builtin.utils.links import mount_root
 from mirage.commands.config import Context
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -84,6 +85,7 @@ async def _shuf(
         # Only ``-o`` writes, so a read-only backend still serves plain
         # shuf: without a write of its own it is refused at ``-o``.
         write_bytes=(files.write if files.answers("write") else None),
+        root=mount_root(ctx),
     )
 
 

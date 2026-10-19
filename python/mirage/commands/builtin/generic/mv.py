@@ -423,7 +423,7 @@ async def mv_generic(
         flags (MvFlags): Parsed mv flags.
         backend_key (Callable | None): Maps a path to its backend storage key
             for the same-file and into-own-subtree guards; defaults to the
-            normalized mount-relative path.
+            normalized virtual path.
         readdir (ReaddirFn | None): Directory lister for backup version
             scans and the ``-T`` empty-directory probe; the primitive
             strategy's own lister is used when None.

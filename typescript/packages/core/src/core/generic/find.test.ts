@@ -12,7 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it, vi } from 'vitest'
 import { runWithCacheManager } from '../../cache/context.ts'
 import { RAMFileCacheStore } from '../../cache/file/ram.ts'
@@ -202,12 +201,8 @@ describe('walkFind', () => {
       { '/mnt/x': ['/mnt/x/a.txt'] },
       { '/mnt/x': {}, '/mnt/x/a.txt': { size: 1 } },
     )
-    const root = new PathSpec({
-      virtual: '/mnt/x',
-      directory: '/mnt/x',
-      vfsPath: mountKey('/mnt/x', '/mnt/x'),
-    })
-    expect(await walkFind(root, deps, { name: 'x' })).toEqual(['/'])
+    const root = new PathSpec({ virtual: '/mnt/x', directory: '/mnt/x', vfsPath: 'mnt/x' })
+    expect(await walkFind(root, deps, { name: 'x' })).toEqual(['/mnt/x'])
   })
 
   it('matches empty files and dirs for -empty', async () => {
@@ -229,14 +224,10 @@ describe('walkFind', () => {
     expect(await walkFind(ROOT, deps, { empty: true })).toEqual(['/empty-dir', '/empty.txt'])
   })
 
-  it('strips the mount prefix from returned keys', async () => {
+  it('returns virtual paths under a mounted start point', async () => {
     const deps = makeDeps({ '/mnt/x': ['/mnt/x/a.txt'] }, { '/mnt/x/a.txt': { size: 1 } })
-    const root = new PathSpec({
-      virtual: '/mnt/x',
-      directory: '/mnt/x',
-      vfsPath: mountKey('/mnt/x', '/mnt/x'),
-    })
-    expect(await walkFind(root, deps)).toEqual(['/a.txt'])
+    const root = new PathSpec({ virtual: '/mnt/x', directory: '/mnt/x', vfsPath: 'mnt/x' })
+    expect(await walkFind(root, deps)).toEqual(['/mnt/x/a.txt'])
   })
 
   it('filters mtime using naive timestamps as UTC', async () => {

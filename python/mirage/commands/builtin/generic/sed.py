@@ -66,7 +66,6 @@ from mirage.shell.bytes import (
     utf8_locale,
 )
 from mirage.types import PathSpec, PolymorphicReadFn
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import resolve_path
 
 WriteBytes = Callable[..., Awaitable[None]]
@@ -86,7 +85,6 @@ class _ScriptFiles:
     write_bytes: WriteBytes | None
     dispatch: DispatchFn | None
     cwd: str
-    prefix: str
     caller: Caller
 
     def spec(self, name: str) -> PathSpec:
@@ -98,7 +96,7 @@ class _ScriptFiles:
             virtual=resolved,
             directory=resolved[: slash + 1] if slash >= 0 else "/",
             resolved=True,
-            vfs_path=mount_key(resolved, self.prefix),
+            vfs_path=resolved.strip("/"),
         )
 
     async def read(self, name: str) -> bytes:
@@ -340,7 +338,6 @@ async def sed(
     line_length: int = SED_LINE_LENGTH,
     dispatch: DispatchFn | None = None,
     cwd: str = "/",
-    prefix: str = "",
     utf8: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
     """Compile a script and run it over the operands, as GNU sed 4.9.
@@ -361,8 +358,6 @@ async def sed(
         dispatch (DispatchFn | None): the workspace dispatcher, for the
             files the script names.
         cwd (str): the directory those names resolve against.
-        prefix (str): this mount's prefix, for a name without a
-            dispatcher.
         utf8 (bool): a UTF-8 locale: the script and the input are
             characters rather than bytes.
     """
@@ -375,7 +370,6 @@ async def sed(
         write_bytes,
         dispatch,
         cwd,
-        prefix,
         current_caller(),
     )
     try:
@@ -643,19 +637,13 @@ def _positional_as_paths(
     """Treat positional operands as files (GNU rule when -e/-f give script).
 
     The arg parser routes the first bare arg into the positional ``text``
-    (script) slot, so recover it as a path operand carrying the mount
-    prefix.
+    (script) slot, so recover it as a path operand.
 
     Args:
         texts (list[str]): positional operands that are really files.
         cwd (PathSpec | str): current directory for relative resolution.
     """
-    if isinstance(cwd, PathSpec):
-        base = cwd.virtual
-        prefix = mount_prefix_of(cwd.virtual, cwd.vfs_path)
-    else:
-        base = cwd or "/"
-        prefix = ""
+    base = cwd.virtual if isinstance(cwd, PathSpec) else (cwd or "/")
     out: list[PathSpec] = []
     for t in texts:
         resolved = (
@@ -669,7 +657,7 @@ def _positional_as_paths(
                 virtual=resolved,
                 directory=resolved[: slash + 1] if slash >= 0 else "/",
                 resolved=True,
-                vfs_path=mount_key(resolved, prefix),
+                vfs_path=resolved.strip("/"),
             )
         )
     return out
