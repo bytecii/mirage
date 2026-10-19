@@ -137,3 +137,58 @@ async def test_unused_capture_groups_do_not_block_an_ordinary_search(
 def test_capture_memory_refusal_is_a_usage_error() -> None:
     with pytest.raises(UsageError, match="working memory"):
         open_rg("(a)" * 10000, False, _flags(replace="$1"))
+
+
+@pytest.mark.asyncio
+async def test_empty_progress_settles_final_counts_without_repeated_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    f = _flags(text=True, stats=True)
+    program = open_rg("needle", False, f)
+    tally = Tally()
+    calls = 0
+    original_metadata = program.stream.metadata
+
+    def metadata() -> bytes:
+        nonlocal calls
+        calls += 1
+        return original_metadata()
+
+    monkeypatch.setattr(program.stream, "metadata", metadata)
+    data = b"event=42 status=ok\n" * 10000
+
+    async def source() -> AsyncIterator[bytes]:
+        yield data
+
+    output = [
+        chunk
+        async for chunk in search_input(source(), program, f, "f", None, tally)
+    ]
+    assert output == []
+    assert tally == Tally(searched=len(data))
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_closing_after_visible_output_keeps_current_tally() -> None:
+    f = _flags(text=True, stats=True)
+    program = open_rg("needle", False, f)
+    tally = Tally()
+    closed = False
+
+    async def source() -> AsyncIterator[bytes]:
+        nonlocal closed
+        try:
+            yield b"needle\n" + b"x" * 64000 + b"\n"
+            raise AssertionError("read beyond the consumer's selected record")
+        finally:
+            closed = True
+
+    output = search_input(source(), program, f, "f", None, tally)
+    assert await anext(output) == b"needle\n"
+    assert tally.selected
+    assert tally.matches == 1
+    await output.aclose()
+    assert closed
+    assert tally.selected
+    assert tally.matched_lines == 1

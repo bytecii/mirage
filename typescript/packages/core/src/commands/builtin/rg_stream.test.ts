@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 
 import { materialize } from '../../io/types.ts'
 import { UsageError } from '../errors.ts'
@@ -142,4 +142,62 @@ it('reports a capture memory refusal as a usage error', async () => {
   const opening = openRg('(a)'.repeat(10000), false, flagsOf({ replace: '$1' }))
   await expect(opening).rejects.toBeInstanceOf(UsageError)
   await expect(opening).rejects.toThrow(/working memory/)
+})
+
+it('settles final counts without repeated metadata during empty progress', async () => {
+  const f = flagsOf({ text: true, stats: true })
+  const program = await openRg('needle', false, f)
+  const tally: Tally = { selected: false }
+  const metadata = vi.spyOn(program.stream, 'metadata')
+  const data = ENC.encode('event=42 status=ok\n'.repeat(10000))
+  async function* source(): AsyncIterable<Uint8Array> {
+    yield await Promise.resolve(data)
+  }
+  try {
+    const output = await materialize(searchInput(source(), program, f, 'f', null, tally))
+    expect(output.byteLength).toBe(0)
+    expect(tally).toEqual({
+      selected: false,
+      binary: false,
+      skipped: false,
+      matches: 0,
+      matchedLines: 0,
+      searched: data.byteLength,
+      nul: null,
+    })
+    expect(metadata).toHaveBeenCalledTimes(1)
+  } finally {
+    metadata.mockRestore()
+    program.stream.close()
+  }
+})
+
+it('keeps the current tally when the consumer closes after visible output', async () => {
+  const f = flagsOf({ text: true, stats: true })
+  const program = await openRg('needle', false, f)
+  const tally: Tally = { selected: false }
+  let closed = false
+  async function* source(): AsyncIterable<Uint8Array> {
+    try {
+      yield await Promise.resolve(ENC.encode('needle\n' + 'x'.repeat(64000) + '\n'))
+      throw new Error("read beyond the consumer's selected record")
+    } finally {
+      closed = true
+    }
+  }
+  const output = searchInput(source(), program, f, 'f', null, tally)
+  try {
+    const first = await output.next()
+    if (first.done === true) throw new Error('search ended before its selected record')
+    expect(DEC.decode(first.value)).toBe('needle\n')
+    expect(tally.selected).toBe(true)
+    expect(tally.matches).toBe(1)
+    await output.return(undefined)
+    expect(closed).toBe(true)
+    expect(tally.selected).toBe(true)
+    expect(tally.matchedLines).toBe(1)
+  } finally {
+    await output.return(undefined)
+    program.stream.close()
+  }
 })

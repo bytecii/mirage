@@ -5,10 +5,11 @@
 
 use std::ops::Deref;
 
-use grep_regex::RegexMatcherBuilder;
-use regex_automata::PatternID;
+use grep_regex::{CompiledNfa, LiteralFilters, RegexMatcherBuilder};
 use regex_automata::nfa::thompson::{NFA, State, WhichCaptures};
+use regex_automata::util::prefilter::Prefilter;
 use regex_automata::util::primitives::StateID;
+use regex_automata::{PatternID, Span};
 use serde::Serialize;
 
 use crate::StreamError;
@@ -115,6 +116,7 @@ pub(crate) struct SearchHints {
 
 pub(crate) struct Program {
     nfa: NFA,
+    filters: LiteralFilters,
     multiline: bool,
     cr_selects: bool,
     record_context: bool,
@@ -126,6 +128,7 @@ impl Program {
         if patterns.is_empty() {
             return Ok(Self {
                 nfa: NFA::never_match(),
+                filters: LiteralFilters::default(),
                 required_terms: None,
                 multiline: false,
                 cr_selects: false,
@@ -170,22 +173,26 @@ impl Program {
             CaptureRequirement::WholeMatch => WhichCaptures::Implicit,
             CaptureRequirement::All => WhichCaptures::All,
         };
-        let (nfa, non_matching, required_terms) =
-            builder.build_nfa(patterns, captures).map_err(|err| {
-                let mut message = err.to_string();
-                if message.contains("the literal") && message.contains("not allowed") {
-                    message.push_str("\n\nUse --multiline (-U) to match newline characters.");
-                }
-                if message.contains("look-around")
-                    || message.contains("backreferences are not supported")
-                {
-                    message.push_str("\n\nUse --pcre2 (-P) for look-around and backreferences.");
-                }
-                if message.contains("pattern contains \"\\0\"") {
-                    message.push_str("\n\nMatching NUL requires --text (-a).");
-                }
-                StreamError::new(message)
-            })?;
+        let CompiledNfa {
+            nfa,
+            non_matching_bytes: non_matching,
+            lookup_terms: required_terms,
+            literal_filters: filters,
+        } = builder.build_nfa(patterns, captures).map_err(|err| {
+            let mut message = err.to_string();
+            if message.contains("the literal") && message.contains("not allowed") {
+                message.push_str("\n\nUse --multiline (-U) to match newline characters.");
+            }
+            if message.contains("look-around")
+                || message.contains("backreferences are not supported")
+            {
+                message.push_str("\n\nUse --pcre2 (-P) for look-around and backreferences.");
+            }
+            if message.contains("pattern contains \"\\0\"") {
+                message.push_str("\n\nMatching NUL requires --text (-a).");
+            }
+            StreamError::new(message)
+        })?;
         SEARCH_MEMORY_LIMIT.check(&nfa)?;
         let terminator = if options.null_data { 0 } else { b'\n' };
         let multiline = options.multiline
@@ -193,6 +200,7 @@ impl Program {
                 || options.null_data && !non_matching.contains(b'\n'));
         Ok(Self {
             nfa,
+            filters,
             multiline,
             cr_selects: options.multiline
                 && !multiline
@@ -350,13 +358,19 @@ struct States {
 }
 
 impl States {
-    fn new(len: usize) -> Self {
+    fn new() -> Self {
         Self {
-            ids: Vec::with_capacity(len),
-            seen: Vec::with_capacity(len),
-            rows: Vec::with_capacity(len),
+            ids: Vec::new(),
+            seen: Vec::new(),
+            rows: Vec::new(),
             generation: 1,
         }
+    }
+
+    fn reserve(&mut self, len: usize) {
+        self.ids.reserve_exact(len);
+        self.seen.reserve_exact(len);
+        self.rows.reserve_exact(len);
     }
 
     fn initialize_one(&mut self) {
@@ -416,6 +430,7 @@ struct Closure {
 
 #[derive(Clone, Copy)]
 enum Phase {
+    Reject { cursor: usize },
     InitializeStates,
     InitializeSlots,
     Byte,
@@ -426,6 +441,44 @@ enum Phase {
     Emit { group: usize },
     Restart,
     Done,
+}
+
+enum Scan {
+    Hit(usize),
+    Continue(usize),
+    Exhausted,
+    UseExact,
+}
+
+fn scan_literals(
+    filter: &Prefilter,
+    haystack: &[u8],
+    cursor: usize,
+    budget: &mut usize,
+    prefix: bool,
+) -> Scan {
+    let longest = filter.max_needle_len();
+    if *budget < longest {
+        return Scan::UseExact;
+    }
+    let end = haystack.len().min(cursor.saturating_add(*budget));
+    let found = filter.find(haystack, Span::from(cursor..end));
+    *budget -= end - cursor;
+    let safe_end = if end == haystack.len() {
+        end
+    } else {
+        end - (longest - 1)
+    };
+    if let Some(found) = found
+        && (!prefix || end == haystack.len() || found.start < safe_end)
+    {
+        return Scan::Hit(found.start);
+    }
+    if end == haystack.len() {
+        Scan::Exhausted
+    } else {
+        Scan::Continue(safe_end)
+    }
 }
 
 pub(crate) struct Search {
@@ -446,29 +499,30 @@ pub(crate) struct Search {
     group_count: usize,
     matches: Growing<Match>,
     captures: Growing<Capture>,
+    seek_prefix: bool,
 }
 
 impl Search {
     fn new(program: &Program, haystack: Vec<u8>, all: bool) -> Self {
-        let states = program.nfa.states().len();
         Self {
             haystack,
             all,
-            phase: Phase::InitializeStates,
+            phase: Phase::Reject { cursor: 0 },
             from: 0,
             at: 0,
-            current: States::new(states),
-            next: States::new(states),
-            start_slots: Vec::with_capacity(program.nfa.group_info().slot_len()),
+            current: States::new(),
+            next: States::new(),
+            start_slots: Vec::new(),
             closure: None,
-            frames: Vec::with_capacity(states.saturating_mul(2)),
-            candidate: Vec::with_capacity(program.nfa.group_info().slot_len()),
+            frames: Vec::new(),
+            candidate: Vec::new(),
             has_candidate: false,
             last_end: None,
             building: None,
             group_count: program.nfa.group_info().group_len(PatternID::ZERO),
             matches: Growing::new(),
             captures: Growing::new(),
+            seek_prefix: true,
         }
     }
 
@@ -481,6 +535,30 @@ impl Search {
             rows: self.matches.take(),
             captures: self.captures.take(),
             group_count: self.group_count,
+        }
+    }
+    pub(crate) fn recycle_matches(&mut self, mut matches: Matches, byte_limit: usize) {
+        debug_assert!(self.matches.values.is_empty());
+        debug_assert!(self.captures.values.is_empty());
+        debug_assert!(self.matches.previous.is_none());
+        debug_assert!(self.captures.previous.is_none());
+        debug_assert_eq!(matches.group_count, self.group_count);
+        let capacity = matches
+            .rows
+            .capacity()
+            .checked_mul(std::mem::size_of::<Match>())
+            .and_then(|rows| {
+                matches
+                    .captures
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Capture>())
+                    .and_then(|captures| rows.checked_add(captures))
+            });
+        if capacity.is_some_and(|bytes| bytes <= byte_limit) {
+            matches.rows.clear();
+            matches.captures.clear();
+            self.matches.values = matches.rows;
+            self.captures.values = matches.captures;
         }
     }
     #[cfg(test)]
@@ -503,15 +581,48 @@ impl Search {
         self.building = None;
         self.matches.clear();
         self.captures.clear();
-        self.phase = Phase::InitializeStates;
+        self.seek_prefix = true;
+        self.phase = Phase::Reject { cursor: 0 };
     }
 
-    pub(crate) fn step(&mut self, program: &Program, budget: usize) -> bool {
-        for _ in 0..budget {
-            self.one(program);
-            if matches!(self.phase, Phase::Done) {
-                return true;
+    pub(crate) fn step(&mut self, program: &Program, budget: &mut usize) -> bool {
+        while *budget > 0 && !matches!(self.phase, Phase::Done) {
+            *budget -= 1;
+            if let Phase::Reject { cursor } = self.phase {
+                self.phase = match program
+                    .filters
+                    .required
+                    .as_ref()
+                    .map(|filter| scan_literals(filter, &self.haystack, cursor, budget, false))
+                {
+                    Some(Scan::Exhausted) => Phase::Done,
+                    Some(Scan::Continue(cursor)) => Phase::Reject { cursor },
+                    _ => Phase::InitializeStates,
+                };
+                continue;
             }
+            if matches!(self.phase, Phase::Byte)
+                && self.seek_prefix
+                && self.current.ids.is_empty()
+                && !self.has_candidate
+                && !program.nfa.is_always_start_anchored()
+                && self.at <= self.haystack.len()
+                && let Some(filter) = &program.filters.prefix
+            {
+                match scan_literals(filter, &self.haystack, self.at, budget, true) {
+                    Scan::Hit(at) => self.at = at,
+                    Scan::Continue(at) => {
+                        self.at = at;
+                        continue;
+                    }
+                    Scan::Exhausted => {
+                        self.phase = Phase::Done;
+                        continue;
+                    }
+                    Scan::UseExact => self.seek_prefix = false,
+                }
+            }
+            self.one(program);
         }
         matches!(self.phase, Phase::Done)
     }
@@ -576,7 +687,17 @@ impl Search {
 
     fn one(&mut self, program: &Program) {
         match self.phase {
+            Phase::Reject { .. } => unreachable!("literal rejection is byte-budgeted by step"),
             Phase::InitializeStates => {
+                if self.current.rows.is_empty() {
+                    let states = program.nfa.states().len();
+                    self.current.reserve(states);
+                    self.next.reserve(states);
+                    let slots = program.nfa.group_info().slot_len();
+                    self.start_slots.reserve_exact(slots);
+                    self.candidate.reserve_exact(slots);
+                    self.frames.reserve_exact(states.saturating_mul(2));
+                }
                 if self.current.rows.len() < program.nfa.states().len() {
                     self.current.initialize_one();
                     self.next.initialize_one();
@@ -810,6 +931,59 @@ mod tests {
     use grep_regex::RegexMatcherBuilder;
 
     #[test]
+    fn returned_matches_keep_capture_shape_and_clear_previous_rows() {
+        let program = rg_matcher::Program::with_options(
+            &["(a)(b)?".to_owned()],
+            rg_matcher::Options::default(),
+        )
+        .unwrap();
+        let mut search = program.start(b"ab a".to_vec(), true);
+        while !search.step(&program, &mut 7) {}
+        let matches = search.take_matches();
+        assert_eq!(matches.group_count, 3);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches.capture(0, 2), Some((1, 2)));
+        assert_eq!(matches.capture(1, 2), None);
+        search.recycle_matches(matches, 96 * 1024);
+        search.reset(b"a ab".to_vec(), true);
+        while !search.step(&program, &mut 1) {}
+        let matches = search.take_matches();
+        assert_eq!(matches.group_count, 3);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches.capture(0, 0), Some((0, 1)));
+        assert_eq!(matches.capture(0, 1), Some((0, 1)));
+        assert_eq!(matches.capture(0, 2), None);
+        assert_eq!(matches.capture(1, 0), Some((2, 4)));
+        assert_eq!(matches.capture(1, 1), Some((2, 3)));
+        assert_eq!(matches.capture(1, 2), Some((3, 4)));
+        search.recycle_matches(matches, 0);
+        assert_eq!(search.matches.values.capacity(), 0);
+        assert_eq!(search.captures.values.capacity(), 0);
+        search.reset(b"z".to_vec(), true);
+        while !search.step(&program, &mut 1) {}
+        assert!(search.take_matches().is_empty());
+    }
+
+    #[test]
+    fn returned_result_storage_uses_one_combined_capacity_limit() {
+        let program =
+            rg_matcher::Program::with_options(&["a".to_owned()], rg_matcher::Options::default())
+                .unwrap();
+        let mut search = program.start(b"a".to_vec(), false);
+        while !search.step(&program, &mut 7) {}
+        let mut matches = search.take_matches();
+        matches.rows.reserve(4096);
+        matches.captures.reserve(4096);
+        let rows = matches.rows.capacity() * std::mem::size_of::<rg_matcher::Match>();
+        let captures = matches.captures.capacity() * std::mem::size_of::<rg_matcher::Capture>();
+        let limit = rows.max(captures);
+        assert!(rows + captures > limit);
+        search.recycle_matches(matches, limit);
+        assert_eq!(search.matches.values.capacity(), 0);
+        assert_eq!(search.captures.values.capacity(), 0);
+    }
+
+    #[test]
     fn capture_cleanup_has_no_per_match_destructor() {
         assert!(!std::mem::needs_drop::<rg_matcher::Match>());
     }
@@ -876,37 +1050,199 @@ mod tests {
                 true
             })
             .unwrap();
-        let program = rg_matcher::Program::with_options(&sources, options).unwrap();
-        let mut search = program.start(hay.to_vec(), true);
-        let mut steps = 0;
-        while !search.step(&program, budget) {
-            steps += 1;
-            assert!(
-                steps < 20_000_000,
-                "search stalled for {patterns:?}, {hay:?}"
+        for disabled in [false, true] {
+            let mut program = rg_matcher::Program::with_options(&sources, options).unwrap();
+            if disabled {
+                program.filters = grep_regex::LiteralFilters::default();
+            }
+            let mut search = program.start(hay.to_vec(), true);
+            let mut steps = 0;
+            while !search.step(&program, &mut { budget }) {
+                steps += 1;
+                assert!(
+                    steps < 20_000_000,
+                    "search stalled for {patterns:?}, {hay:?}"
+                );
+            }
+            assert_eq!(
+                search.matches(),
+                expected.iter().map(|&(found, _)| found).collect::<Vec<_>>(),
+                "patterns={patterns:?}, hay={hay:?}, options={options:?}"
             );
+            let matches = search.take_matches();
+            let actual = matches
+                .iter()
+                .enumerate()
+                .map(|(index, &found)| {
+                    (
+                        found,
+                        (0..matches.group_count)
+                            .map(|group| matches.capture(index, group))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            assert_eq!(search.haystack(), hay);
+            assert_eq!(search.take_haystack(), hay);
         }
-        assert_eq!(
-            search.matches(),
-            expected.iter().map(|&(found, _)| found).collect::<Vec<_>>(),
-            "patterns={patterns:?}, hay={hay:?}, options={options:?}"
+    }
+
+    #[test]
+    fn literal_filters_preserve_exact_search_across_windows() {
+        let haystacks = [
+            b"xxxabcdef b\n".to_vec(),
+            [vec![b'x'; 16_381], b"abcdef b".to_vec()].concat(),
+            b"event=123 user=user_0042 status=fail\nevent=456 status=ok\n".repeat(3),
+            b"user=user_0001 status=fail\n".repeat(128),
+            "needle é É K kneedle Kneedle\r\nfoo\r".as_bytes().to_vec(),
+            b"\xffneedle\0needle\n".to_vec(),
+            Vec::new(),
+        ];
+        for pattern in [
+            "abcdef|b",
+            "(abcdef|b)(x)?",
+            r"event=[0-9]+.*status=fail",
+            r"user=(user_[0-9]+).*status=fail",
+            r"status=fail[^\n]*\nevent=",
+            r"\b(needle)\b",
+            r"(?-u:\xFF)needle",
+            r"(?i:K|k)needle",
+            r"^foo(?:bar)?$",
+            r"(?:needle|)",
+            r"\r",
+        ] {
+            for hay in &haystacks {
+                for budget in [1, 7, 17, 16_384] {
+                    compare(
+                        &[pattern],
+                        hay,
+                        rg_matcher::Options {
+                            multiline: true,
+                            crlf: true,
+                            ..rg_matcher::Options::default()
+                        },
+                        budget,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_scan_defers_hits_in_the_overlap_fringe() {
+        let filter = regex_automata::util::prefilter::Prefilter::new(
+            regex_automata::MatchKind::LeftmostFirst,
+            &["abcdef", "b"],
+        )
+        .unwrap();
+        let mut cursor = 0;
+        loop {
+            let mut budget = 6;
+            match rg_matcher::scan_literals(&filter, b"xxxabcdef", cursor, &mut budget, true) {
+                rg_matcher::Scan::Continue(next) => {
+                    assert!(next > cursor);
+                    cursor = next;
+                }
+                rg_matcher::Scan::Hit(at) => {
+                    assert_eq!(at, 3);
+                    break;
+                }
+                _ => panic!("the full prefix must remain reachable"),
+            }
+        }
+    }
+
+    #[test]
+    fn required_scan_is_bounded_and_precedes_scratch_initialization() {
+        let program = rg_matcher::Program::with_options(
+            &[r"event=[0-9]+.*status=fail".to_owned()],
+            rg_matcher::Options::default(),
+        )
+        .unwrap();
+        let filter = program.filters.required.as_ref().unwrap();
+        assert_eq!(filter.max_needle_len(), b"status=fail".len());
+        assert!(
+            filter
+                .find(b"event=1 status=ok", regex_automata::Span::from(0..17))
+                .is_none()
         );
-        let matches = search.take_matches();
-        let actual = matches
-            .iter()
-            .enumerate()
-            .map(|(index, &found)| {
-                (
-                    found,
-                    (0..matches.group_count)
-                        .map(|group| matches.capture(index, group))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-        assert_eq!(search.haystack(), hay);
-        assert_eq!(search.take_haystack(), hay);
+        let mut search = program.start(vec![b'x'; 128 * 1024], true);
+        let mut polls = 0;
+        loop {
+            let mut budget = 16_384;
+            let complete = search.step(&program, &mut budget);
+            polls += 1;
+            assert!(polls < 20);
+            assert!(search.current.rows.is_empty());
+            assert_eq!(search.current.rows.capacity(), 0);
+            if complete {
+                assert!(search.matches().is_empty());
+                assert!(search.step(&program, &mut 0));
+                break;
+            }
+            assert_eq!(budget, 0);
+        }
+        assert!(polls > 1);
+        search.reset(b"event=1 status=fail".to_vec(), true);
+        let mut budget = 16_384;
+        assert!(search.step(&program, &mut budget));
+        assert!(budget > 0);
+        assert_eq!(search.matches().len(), 1);
+    }
+
+    #[test]
+    fn optional_filters_respect_remaining_compilation_memory() {
+        let mut accepted = 0;
+        for pattern in ["needle", "abcdef|b", "(a|aa)+b?", r"(?i:needle)", ".*"] {
+            for limit in [128, 1024, 4096, 64 * 1024, 1024 * 1024] {
+                let Ok(program) = rg_matcher::Program::with_options(
+                    &[pattern.to_owned()],
+                    rg_matcher::Options {
+                        regex_size_limit: Some(limit),
+                        ..rg_matcher::Options::default()
+                    },
+                ) else {
+                    continue;
+                };
+                accepted += 1;
+                let bytes: usize = [&program.filters.prefix, &program.filters.required]
+                    .into_iter()
+                    .flatten()
+                    .map(|filter| filter.memory_usage())
+                    .sum();
+                assert!(bytes <= 64 * 1024);
+                assert!(bytes <= limit.saturating_sub(program.nfa.memory_usage()));
+            }
+        }
+        assert!(accepted > 5);
+    }
+
+    #[test]
+    fn hard_exact_search_remains_cooperative_when_required_literals_occur() {
+        for multiline in [false, true] {
+            let mut alternatives = (1..=16).map(|len| "a".repeat(len)).collect::<Vec<_>>();
+            if multiline {
+                alternatives.push(r"\n".to_owned());
+            }
+            let pattern = format!("^({})+b?$", alternatives.join("|"));
+            let program = rg_matcher::Program::with_options(
+                &[pattern],
+                rg_matcher::Options {
+                    multiline,
+                    ..rg_matcher::Options::default()
+                },
+            )
+            .unwrap();
+            let haystack = [vec![b'a'; 4096], b"!\n".to_vec()].concat();
+            let mut search = program.start(haystack, true);
+            let mut budget = 16_384;
+            assert!(!search.step(&program, &mut budget));
+            assert_eq!(budget, 0);
+            assert!(!search.current.rows.is_empty());
+            while !search.step(&program, &mut 16_384) {}
+            assert!(search.matches().is_empty());
+        }
     }
 
     #[test]
@@ -1060,16 +1396,16 @@ mod tests {
         assert_eq!(program.capture_index("word"), Some(1));
         assert_eq!(program.capture_names().collect::<Vec<_>>(), [("word", 1)]);
         let mut search = program.start(b"aa ab aa".to_vec(), false);
-        while !search.step(&program, 1) {}
+        while !search.step(&program, &mut 1) {}
         assert_eq!(search.matches().len(), 1);
         search.take_matches();
         search.take_haystack();
         search.reset(b"baaa".to_vec(), false);
-        while !search.step(&program, 1) {}
+        while !search.step(&program, &mut 1) {}
         assert_eq!((search.matches()[0].start, search.matches()[0].end), (1, 4));
         let empty = rg_matcher::Program::with_options(&[], rg_matcher::Options::default()).unwrap();
         let mut search = empty.start(b"anything".to_vec(), true);
-        while !search.step(&empty, 1) {}
+        while !search.step(&empty, &mut 1) {}
         assert!(search.matches().is_empty());
     }
 
@@ -1178,7 +1514,7 @@ mod tests {
             let program =
                 rg_matcher::Program::with_options(&[pattern.to_owned()], options).unwrap();
             let mut search = program.start(b"fooa barb fooab ADA ada\n".to_vec(), true);
-            while !search.step(&program, 1) {}
+            while !search.step(&program, &mut 1) {}
             if let Some(hints) = &program.required_terms {
                 for found in search.matches() {
                     let text = &search.haystack()[found.start..found.end];
@@ -1409,7 +1745,7 @@ mod tests {
         )
         .unwrap();
         let mut search = program.start(vec![b'a'; 1_000_000], true);
-        while !search.step(&program, 4096) {}
+        while !search.step(&program, &mut 4096) {}
         let mut matches = search.take_matches();
         assert_eq!(matches.len(), 1_000_001);
         assert_eq!(matches.captures.len(), 2_000_002);
@@ -1428,10 +1764,10 @@ mod tests {
             .map_or(0, |values| values.len())
             < 524_288
         {
-            assert!(!search.step(&program, 4096));
+            assert!(!search.step(&program, &mut 4096));
         }
         search.reset(b"x".to_vec(), true);
-        while !search.step(&program, 4096) {}
+        while !search.step(&program, &mut 4096) {}
         assert_eq!(search.take_matches().len(), 2);
     }
 
@@ -1477,7 +1813,7 @@ mod tests {
             rg_matcher::Program::with_options(&[pattern], rg_matcher::Options::default()).unwrap();
         let mut search = program.start(b"a".to_vec(), false);
         let mut calls = 0;
-        while !search.step(&program, 1) {
+        while !search.step(&program, &mut 1) {
             calls += 1;
             assert!(calls < 5_000_000);
         }
