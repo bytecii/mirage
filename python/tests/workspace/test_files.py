@@ -466,6 +466,31 @@ class TestFreshStat:
             await ws.close()
 
     @pytest.mark.asyncio
+    async def test_the_stat_timeout_never_cuts_a_reconcile_short(self):
+        vfs = RAMVFS()
+        vfs.caches_reads = True
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            mount = ws.mount("/data")
+            mount.command_limits["stat"] = Limit(timeout_seconds=0.1)
+            await ws.vfs.write("/data/f.txt", b"old")
+            await ws.cache.set("/data/f.txt", b"old", fingerprint="v1")
+            manager = mount.cache_manager
+            assert manager is not None
+            keep = manager.keep_version
+
+            async def slow_keep(path, version):
+                await asyncio.sleep(0.3)
+                await keep(path, version)
+
+            manager.keep_version = slow_keep
+            row = await ws.vfs.stat("/data/f.txt", fresh=True)
+            assert row.size == 3
+            assert await ws.cache.fingerprint("/data/f.txt") == "v1"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
     async def test_fresh_stat_follows_a_link_to_current_metadata(self):
         vfs = RAMVFS()
         ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)

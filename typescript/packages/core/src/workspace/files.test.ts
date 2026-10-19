@@ -512,6 +512,28 @@ describe('fresh stat', () => {
     }
   })
 
+  it('never lets the stat timeout cut a reconcile short', async () => {
+    const ws = new Workspace({ '/data': cachingRam() }, { mode: MountMode.WRITE })
+    try {
+      const mount = ws.mount('/data')
+      mount.commandLimits.set('stat', new Limit({ timeoutSeconds: 0.1 }))
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.cache.set('/data/f.txt', new TextEncoder().encode('old'), { fingerprint: 'v1' })
+      const manager = mount.cacheManager
+      if (manager === null) throw new Error('no cache manager')
+      const keep = manager.keepVersion.bind(manager)
+      manager.keepVersion = async (path, version) => {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        await keep(path, version)
+      }
+      const row = await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      expect(row.size).toBe(3)
+      expect(await ws.cache.fingerprint('/data/f.txt')).toBe('v1')
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('follows a link to current metadata', async () => {
     const vfs = new RAMVFS()
     const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })

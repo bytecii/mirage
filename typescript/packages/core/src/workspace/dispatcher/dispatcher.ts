@@ -51,7 +51,7 @@ import {
   noXattr,
   walkRefusal,
 } from '../../errors/fs.ts'
-import { type FsError } from '../../errors/types.ts'
+import { CommandTimeoutError, type FsError } from '../../errors/types.ts'
 import { Policies, PolicyDenied } from '../../policy/index.ts'
 import type { Decisions } from '../../policy/decisions.ts'
 import { Boundary } from '../../policy/boundary.ts'
@@ -1706,10 +1706,11 @@ export class Dispatcher {
   /**
    * Run a fresh stat under its path's writer hold, so no local write to the
    * path lands between the backend's answer and its reconcile. The wait for
-   * the hold counts against the stat's own timeout, since a write the clock
-   * gave up on keeps the path until its call settles, and a waiter past the
-   * deadline leaves the queue rather than running late. Mirrors Python's
-   * Dispatcher._fresh_call.
+   * the hold is bounded by the stat's own timeout, since a write the clock
+   * gave up on keeps the path until its call settles; a waiter past it leaves
+   * the queue rather than running late. Once admitted, the backend call keeps
+   * its own timeout and the reconcile runs to its end under the hold. Mirrors
+   * Python's Dispatcher._fresh_call.
    */
   private async freshCall(
     call: Call,
@@ -1719,19 +1720,31 @@ export class Dispatcher {
     mode: MountMode,
   ): Promise<[unknown, PathSpec | null, readonly unknown[]]> {
     const key = `${String(this.storeId(vfs))}:${mountKey(call.path.virtual, rstripSlash(mount.prefix))}`
+    const seconds = mount.opTimeout('stat')
     const expired = new AbortController()
+    let admitted = false
+    const timer =
+      seconds !== null && seconds > 0
+        ? setTimeout(() => {
+            if (!admitted) expired.abort()
+          }, seconds * 1000)
+        : undefined
     try {
-      return await runWithTimeout(
-        this.state.writers.withLock(
-          key,
-          () => this.callBackend(call, mount, vfs, scope, mode),
-          expired.signal,
-        ),
-        mount.opTimeout('stat'),
-        'stat',
+      return await this.state.writers.withLock(
+        key,
+        () => {
+          admitted = true
+          return this.callBackend(call, mount, vfs, scope, mode)
+        },
+        expired.signal,
       )
+    } catch (err) {
+      if (expired.signal.aborted && seconds !== null) {
+        throw new CommandTimeoutError('stat', seconds)
+      }
+      throw err
     } finally {
-      expired.abort()
+      clearTimeout(timer)
     }
   }
 

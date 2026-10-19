@@ -1953,8 +1953,11 @@ class Dispatcher:
         """Run a fresh stat under its path's writer hold.
 
         No local write to the path lands between the backend's answer and
-        its reconcile. The wait for the hold counts against the stat's
-        own timeout: a write the clock gave up on may still hold the path.
+        its reconcile. The wait for the hold is bounded by the stat's own
+        timeout, since a write the clock gave up on may still hold the
+        path; once admitted, the backend call keeps its own timeout and
+        the reconcile runs to its end under the hold, so a deadline never
+        stops it between dropping a version and keeping it.
 
         Args:
             call (_Call): the admitted fresh stat.
@@ -1962,12 +1965,13 @@ class Dispatcher:
         """
         prefix = mount.prefix.rstrip("/")
         key = f"{id(mount.vfs)}:{mount_key(call.path.virtual, prefix)}"
-
-        async def held() -> Any:
-            async with self._writers.with_lock(key):
-                return await self._call(call, mount, self._filler(call, mount))
-
-        return await run_with_timeout(held(), mount.op_timeout("stat"), "stat")
+        async with AsyncExitStack() as held:
+            await run_with_timeout(
+                held.enter_async_context(self._writers.with_lock(key)),
+                mount.op_timeout("stat"),
+                "stat",
+            )
+            return await self._call(call, mount, self._filler(call, mount))
 
     async def _visible_files(
         self, mount: MountEntry, call: _Call
