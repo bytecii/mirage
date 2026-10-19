@@ -485,7 +485,10 @@ export class Workspace {
       this.registry.decisions,
     )
     this.registry.setReconciler(this.dispatcher.reconciler)
-    this.registry.setDispatch(this.dispatcher.dispatch)
+    this.registry.setDispatch(
+      this.dispatcher.dispatch,
+      (owner) => this.dispatcher.forSession(owner).dispatch,
+    )
     // The file cache is a hidden store (attached above), never a mount. Arg-less
     // commands and root listing resolve against a neutral root anchor: reuse the
     // user's `/` mount if they gave one, else add a plain empty RAM mount at `/`.

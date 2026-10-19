@@ -265,7 +265,7 @@ async function levelMatches(
       resolved: false,
     })
     try {
-      const matches = await expandGlob(registry.dispatch, owner, [spec], access)
+      const matches = await expandGlob(registry.dispatchFor(access), owner, [spec], access)
       // A descent step yields children, so a match that is the parent
       // itself is not one. A backend asked to list a path that is really
       // a file answers with that file, which walked back out as a
@@ -373,7 +373,7 @@ async function walk(
     const gathered: [string, string, boolean][] = []
     for (const [dir, spelled] of level) {
       if (seg === '.' || seg === '..') {
-        if (await isDirectory(registry, mount, links, dir)) {
+        if (await isDirectory(registry, mount, links, dir, access)) {
           const real = links !== null ? links.follow(dir) : dir
           gathered.push([seg === '..' ? parent(real) : dir, joinSpelling(spelled, seg), false])
         }
@@ -431,6 +431,7 @@ async function isDirectory(
   mount: MountEntry,
   links: NamespaceLinks | null,
   virtual: string,
+  access?: SessionAccess,
 ): Promise<boolean> {
   let real = virtual
   if (links !== null) {
@@ -444,7 +445,7 @@ async function isDirectory(
   const owner = mountOf(registry, real, mount)
   const prefix = rstripSlash(owner.prefix)
   if (rstripSlash(real) === prefix) return true
-  const dispatch = registry.dispatch
+  const dispatch = registry.dispatchFor(access)
   if (dispatch === null) return false
   let row: unknown
   try {
@@ -565,13 +566,18 @@ export async function resolveGlobs(
           // to `xa.txt` lost its first match to that ambiguity. The
           // directory-shaped spec has no literal to reinstate, so an
           // empty list means no match and every spec returned is one.
-          const own = await expandGlob(registry.dispatch, mount, [withPrefix.dir], access)
+          const own = await expandGlob(
+            registry.dispatchFor(access),
+            mount,
+            [withPrefix.dir],
+            access,
+          )
           resolved = mergeNamespace(own, extra, directory, registry, mount)
         }
         if (dirsOnly) {
           const kept: PathSpec[] = []
           for (const p of resolved) {
-            if (await isDirectory(registry, mount, links, p.virtual)) kept.push(p)
+            if (await isDirectory(registry, mount, links, p.virtual, access)) kept.push(p)
           }
           resolved = kept
         }

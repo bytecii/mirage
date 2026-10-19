@@ -118,6 +118,7 @@ export class MountRegistry {
   private cacheStore: FileCache | null = null
   private reconciler: ReadReconciler | null = null
   private dispatchFn: DispatchFn | null = null
+  private dispatchAsFn: ((owner: SessionAccess) => DispatchFn) | null = null
   // The world's workspace runtime, set by Workspace after construction.
   // Catch-all when its captures are empty; explicit captures make
   // unclaimed commands an admission failure (126).
@@ -175,9 +176,25 @@ export class MountRegistry {
     return this.dispatchFn
   }
 
-  /** Wire in the workspace's dispatcher. Mirrors Python's `set_dispatch`. */
-  setDispatch(dispatch: DispatchFn): void {
+  /**
+   * The workspace's dispatcher bound to `owner`, the ambient one without. On
+   * the browser's fallback storage the ambient session is whichever line ran
+   * last, so a glob lists as its own line's session only through a dispatch
+   * bound to it. Python's task context keeps each line's session, so it has no
+   * twin.
+   */
+  dispatchFor(owner?: SessionAccess): DispatchFn | null {
+    if (owner === undefined || this.dispatchAsFn === null) return this.dispatchFn
+    return this.dispatchAsFn(owner)
+  }
+
+  /**
+   * Wire in the workspace's dispatcher, and how to bind it to a session.
+   * Mirrors Python's `set_dispatch`.
+   */
+  setDispatch(dispatch: DispatchFn, dispatchAs?: (owner: SessionAccess) => DispatchFn): void {
     this.dispatchFn = dispatch
+    this.dispatchAsFn = dispatchAs ?? null
   }
 
   /**
