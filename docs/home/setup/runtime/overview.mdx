@@ -103,9 +103,13 @@ mount visible to the runtime capturing `python3`. They check that Python can
 read a workspace file and write one back:
 
 ```bash
-printf 'hello\n' > /data/input.txt
-python3 -c 'from pathlib import Path; text = Path("/data/input.txt").read_text(); Path("/data/output.txt").write_text(text.upper()); print(text, end="")'
-cat /data/output.txt
+(
+  scratch=$(mktemp /data/mirage-check.XXXXXX) || exit
+  trap 'rm -f -- "$scratch"' EXIT
+  printf 'hello\n' > "$scratch" &&
+  MIRAGE_CHECK_FILE="$scratch" python3 -c 'import os; from pathlib import Path; path = Path(os.environ["MIRAGE_CHECK_FILE"]); text = path.read_text(); path.write_text(text.upper()); print(text, end="")' &&
+  cat "$scratch"
+)
 # hello
 # HELLO
 ```
