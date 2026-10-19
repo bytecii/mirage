@@ -371,7 +371,7 @@ export async function changeOwner(
     }
     describe(name, stat, !(await own(link, true)))
   }
-  for (const target of await expandOperands(namespace, operands)) {
+  for (const target of await expandOperands(namespace, dispatch, operands)) {
     const typed = target.rawPath
     if (!follow && namespace.isLink(target.virtual)) {
       await ownLink(target, typed)

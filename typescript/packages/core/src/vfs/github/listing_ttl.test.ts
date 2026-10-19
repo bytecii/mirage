@@ -170,7 +170,7 @@ describe('github listings under a shared view', () => {
     }
   })
 
-  it('lets a glob in the refill gap answer on its own', async () => {
+  it('has a glob wait on a refill in progress as a listing does', async () => {
     const w = await wsOf(await vfsOf(), { policy: ReadPolicy.BOUNDED, ttl: 600 })
     let first: Promise<string> | undefined
     let glob: Promise<string> | undefined
@@ -184,12 +184,13 @@ describe('github listings under a shared view', () => {
       first = out(w, 'ls /gh/docs', s0)
       expect(await settleWithin(gate.wiped, 2000)).toBe('done')
       glob = out(w, 'echo /gh/docs/*', s1)
-      expect(await settleWithin(glob, 5000)).toBe('done')
-      expect(await glob).toBe('/gh/docs/a.txt /gh/docs/b.txt\n')
+      const early = await settleWithin(glob, 20)
       gate.release()
       expect(await first).toBe(OLD_LS)
-      // The first ls kept its listing before the wipe it waits in, so the
-      // glob answers from it.
+      expect(await glob).toBe('/gh/docs/a.txt /gh/docs/b.txt\n')
+      // The glob lists through the dispatcher, so it waits on the refill the
+      // first ls holds and answers from what that one kept.
+      expect(early).toBe('pending')
       expect(delta(before)).toEqual([0, 1, 0])
     } finally {
       gate?.release()
@@ -378,13 +379,12 @@ describe('github listings respect the mount ttl', () => {
     const vfs = await vfsOf()
     const w = await wsOf(vfs, { policy: ReadPolicy.BOUNDED, ttl: 2 })
     try {
-      const mount = w.mount('/gh')
-      const glob = mount.glob.bind(mount)
-      mount.glob = async (path, index) => {
-        const found = await glob(path, index)
+      const readdir = vfs.readdir.bind(vfs)
+      vi.spyOn(vfs, 'readdir').mockImplementationOnce(async (path, handed) => {
+        const found = await readdir(path, handed)
         vi.setSystemTime(Date.now() + 3000)
         return found
-      }
+      })
       expect(await out(w, 'echo /gh/*/')).toBe('/gh/docs/\n')
       vi.restoreAllMocks()
       gh.set('docs/c.txt', 'charlie\n')

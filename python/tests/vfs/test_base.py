@@ -37,7 +37,6 @@ from mirage.types import (
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.ram.ram import RAMVFS
 from mirage.vfs.ram.store import RAMStore
-from mirage.workspace.mount import MountEntry
 from mirage.workspace.mount.read_policy import check_read_capability
 from tests.fixtures.driver_ops import ops
 from tests.fixtures.vfs_io import served
@@ -295,16 +294,9 @@ def test_prompts_set():
 
 @pytest.mark.asyncio
 async def test_glob_walks_readdir():
-    mount = MountEntry("/", make_vfs())
-    spec = PathSpec(
-        vfs_path="guides/quick*",
-        virtual="/guides/quick*",
-        directory="/guides",
-        pattern="quick*",
-        resolved=False,
-    )
-    matches = await mount.expand_glob([spec], "")
-    assert [m.virtual for m in matches] == ["/guides/quickstart.md"]
+    ws = Workspace({"/wiki/": make_vfs()}, mode=MountMode.READ)
+    result = await ws.shell("echo /wiki/guides/quick*")
+    assert await result.stdout_str() == "/wiki/guides/quickstart.md\n"
 
 
 @pytest.mark.asyncio
@@ -338,7 +330,7 @@ async def test_workspace_execution_end_to_end():
 
 
 def test_a_plugin_serves_its_reads_at_the_dispatcher():
-    assert served(make_vfs()) == {"glob", "read", "readdir", "stat"}
+    assert served(make_vfs()) == {"read", "readdir", "stat"}
 
 
 def test_a_script_registered_vfs_is_named_in_the_read_refusal():

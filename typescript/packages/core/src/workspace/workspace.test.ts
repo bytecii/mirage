@@ -24,9 +24,6 @@ import {
   type RedisIndexConfig,
 } from '../cache/index/config.ts'
 import { RedisIndexCacheStore } from '../cache/index/redis.ts'
-import { IndexView } from '../cache/index/view.ts'
-import { mountKey, mountPrefixOf } from '../utils/key_prefix.ts'
-import { globNameMatches, globPattern } from '../utils/glob_walk.ts'
 import { CLI } from '../commands/cli/types.ts'
 import { IOResult } from '../io/types.ts'
 import { vfsCall } from '../vfs/call.ts'
@@ -45,7 +42,9 @@ import { RAMVFS } from '../vfs/ram/ram.ts'
 import type { WorkspaceBinding } from '../runtime/binding.ts'
 import { LanguageRuntime } from '../runtime/language.ts'
 import type { MountResolver } from '../runtime/resolver.ts'
-import type { RunResult } from '../runtime/types.ts'
+import type { DispatchFn, RunResult } from '../runtime/types.ts'
+import type { IndexCacheStore } from '../cache/index/store.ts'
+import type { Handed } from '../vfs/types.ts'
 import { getTestParser } from '../../tests/workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace/workspace.ts'
 import { Mount } from './mount/spec.ts'
@@ -57,6 +56,25 @@ class MockVFS extends BaseVFS {
   override close(): Promise<void> {
     this.closes++
     return Promise.resolve()
+  }
+}
+
+// The dispatcher a workspace wired into its registry.
+function dispatchOf(ws: Workspace): DispatchFn {
+  const dispatch = ws.registry.dispatch
+  if (dispatch === null) throw new Error('no dispatcher wired')
+  return dispatch
+}
+
+// A RAM VFS whose listing is handed the store it runs under, and lists
+// nothing until `listing` lets it.
+class ListingIndexRAM extends RAMVFS {
+  override readonly handed = { readdir: ['index'] } as const
+  listing: (index: IndexCacheStore | undefined) => Promise<void> = () => Promise.resolve()
+
+  override async readdir(_path: PathSpec, handed?: Handed): Promise<FileStat[]> {
+    await this.listing(handed?.index)
+    return []
   }
 }
 
@@ -84,22 +102,9 @@ describe('Workspace lifecycle', () => {
       ])
       await ws.cache.set('/data/file', bytes.encode('old'))
       ws.addMount('/data', replacement, MountMode.WRITE)
-      const mount = ws.mount('/data')
-      const derived = mount.glob.bind(mount)
-      mount.glob = async (path, index) => {
-        const parent = path.directory.replace(/\/$/, '')
-        const listing = await shared.listDir(parent === '' ? '/' : parent)
-        if (listing.entries == null) return derived(path, index)
-        const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-        return listing.entries
-          .filter((key) =>
-            globNameMatches(key.split('/').at(-1) ?? '', globPattern(path.pattern ?? '*')),
-          )
-          .map((key) => PathSpec.fromStrPath(key, mountKey(key, prefix)))
-      }
       try {
         if (action === 'metadata') {
-          const expanded = await expandOperands(ws.namespace, [
+          const expanded = await expandOperands(ws.namespace, dispatchOf(ws), [
             new PathSpec({
               virtual: '/data/*.txt',
               directory: '/data/',
@@ -1182,26 +1187,25 @@ it('unmount drains metadata globs and their index writes', async () => {
     resume = resolve
   })
   let closed = false
-  const vfs = new RAMVFS()
+  const vfs = new ListingIndexRAM()
   const ws = new Workspace({ '/data': vfs })
   await ws.resolve('/data')
   const index = ws.mount('/data').indexStore
-  ws.mount('/data').glob = async (_path, index) => {
+  vfs.listing = async (handed) => {
     enter()
     await release
     expect(closed).toBe(false)
-    if (index === undefined) throw new Error('missing index')
-    await index.setDir('/data', [
+    if (handed === undefined) throw new Error('missing index')
+    await handed.setDir('/data', [
       ['late', new FileStat({ name: 'late', type: FileType.FILE, fingerprint: 'late' })],
     ])
-    return []
   }
   const closeVfs = vfs.close.bind(vfs)
   vi.spyOn(vfs, 'close').mockImplementation(async () => {
     closed = true
     await closeVfs()
   })
-  const expanding = expandOperands(ws.namespace, [
+  const expanding = expandOperands(ws.namespace, dispatchOf(ws), [
     new PathSpec({
       virtual: '/data/*',
       directory: '/data/',
@@ -1228,50 +1232,6 @@ it('unmount drains metadata globs and their index writes', async () => {
   } finally {
     resume()
     await Promise.allSettled([expanding, ...(removing === undefined ? [] : [removing])])
-    await ws.close()
-  }
-})
-
-it('hands glob a lock-held view it can write through', async () => {
-  const vfs = new RAMVFS()
-  // RAM defaults to ttl 0; keep the written row live for the assertion.
-  const ws = new Workspace({ '/data': vfs }, { index: { ttl: 600 } })
-  await ws.resolve('/data')
-  const raw = ws.mount('/data').indexStore
-  let seen: unknown = undefined
-  let wrote: unknown = 'not called'
-  ws.mount('/data').glob = async (_path, index) => {
-    seen = index
-    if (seen instanceof IndexView) {
-      wrote = await Promise.race([
-        seen
-          .setDir('/data', [
-            ['row', new FileStat({ name: 'row', type: FileType.FILE, fingerprint: 'row' })],
-          ])
-          .then(() => 'done'),
-        new Promise((resolve) => {
-          setTimeout(() => {
-            resolve('timeout')
-          }, 1000)
-        }),
-      ])
-    }
-    return []
-  }
-  try {
-    await expandOperands(ws.namespace, [
-      new PathSpec({
-        virtual: '/data/*',
-        directory: '/data/',
-        vfsPath: '*',
-        pattern: '*',
-        resolved: false,
-      }),
-    ])
-    expect(seen).toBeInstanceOf(IndexView)
-    expect(wrote).toBe('done')
-    expect((await raw.listDir('/data')).entries).toEqual(['/data/row'])
-  } finally {
     await ws.close()
   }
 })

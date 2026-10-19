@@ -75,7 +75,7 @@ export async function handleChmod(
   const report = verbosity(fl)
   const errors: string[] = []
   const out: string[] = []
-  for (const target of await expandOperands(namespace, parsed.paths)) {
+  for (const target of await expandOperands(namespace, dispatch, parsed.paths)) {
     const found = await resolveOperand(namespace, dispatch, 'chmod', target, errors)
     if (found === null) {
       if (report === 'verbose')

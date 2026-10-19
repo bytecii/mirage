@@ -42,7 +42,6 @@ import { STDIN_DASH_COMMANDS, STDIN_DASH_LEADING } from '../../commands/spec/con
 import { hasInjectedHelp, hasInjectedVersion } from '../../commands/spec/standard.ts'
 import { ROOT_CWD } from '../../commands/constants.ts'
 import type { OpKwargs, SessionAccess } from '../../view/types.ts'
-import { makeResolveGlob } from '../../utils/glob_walk.ts'
 import {
   appendByRewrite,
   expectOffset,
@@ -80,6 +79,7 @@ import { uuid7 } from '../../utils/ids.ts'
 import { Activity } from '../../utils/activity.ts'
 import type { BaseVFS } from '../../vfs/base.ts'
 import type { Accessor } from '../../accessor/base.ts'
+import type { DirListing } from '../../types.ts'
 import {
   type Limit,
   type Producer,
@@ -88,7 +88,6 @@ import {
   type SetAttrFields,
   type WalkProbe,
   DEFAULT_READ_SPEC,
-  DirListing,
   FileStat,
   WritePolicy,
   FileType,
@@ -264,16 +263,6 @@ export interface MountInit {
   vfsRef?: string | null
 }
 
-// A VFS's listing as the paths a glob walks, listed bare with no mount to
-// keep its rows: each row names a child of `path`. Mirrors Python's
-// `_listed_paths`.
-async function listedPaths(vfs: BaseVFS, path: PathSpec): Promise<string[]> {
-  const listed = await vfs.readdir(path, {})
-  const rows = listed instanceof DirListing ? listed.entries : listed
-  const base = rstripSlash((path.pattern !== null ? path.dir : path).virtual)
-  return rows.map((row) => `${base}/${row.name}`)
-}
-
 // What the walk guard proves an operand's `.` and `..` with: the
 // dispatcher's stat and link follow, bound around the handler. No session
 // files (a mount driven directly) binds nothing. Mirrors the Python
@@ -439,52 +428,6 @@ export class MountEntry {
   }
 
   /**
-   * Expand glob words through the VFS's `readdir`, one pattern spec at a
-   * time; a VFS with no `readdir` leaves every word as typed. The mount
-   * stamps each word's mount-relative key before the walk sees it, since
-   * the key is the placement's to know, and keeps the VFS retained while
-   * the walk reads metadata.
-   */
-  async expandGlob(
-    paths: readonly PathSpec[],
-    prefix: string,
-    access?: SessionAccess,
-  ): Promise<PathSpec[]> {
-    if (!this.vfs.supports('readdir')) return [...paths]
-    return this.use(async () => {
-      const manager = this.cacheManager
-      if (manager === null) return this.runGlob(paths, prefix, this.indexStore, access)
-      return manager.mutation(async () => {
-        await this.ensureReady()
-        return this.runGlob(paths, prefix, manager.scopeIndexLocked(this.indexStore), access)
-      })
-    })
-  }
-
-  private async runGlob(
-    paths: readonly PathSpec[],
-    prefix: string,
-    index: IndexCacheStore,
-    access?: SessionAccess,
-  ): Promise<PathSpec[]> {
-    const out: PathSpec[] = []
-    for (const p of paths) {
-      const spec = prefix
-        ? new PathSpec({
-            virtual: p.virtual,
-            directory: p.directory,
-            ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-            resolved: p.resolved,
-            vfsPath: mountKey(p.virtual, prefix),
-            rawPath: p.rawPath,
-          })
-        : p
-      out.push(...(await this.glob(spec, index, access)))
-    }
-    return out
-  }
-
-  /**
    * The VFS as the owner of `access` sees it: the device mount's view of that
    * session's descriptors, or the history view of its commands, which a
    * browser call cannot find any other way.
@@ -509,19 +452,6 @@ export class MountEntry {
     const accessor = this.viewFor(access).accessor
     if (!(accessor instanceof RAMAccessor)) return false
     return pipeBelow(accessor, norm('/' + mountKey(path, rstripSlash(this.prefix))))
-  }
-
-  /** Expand one pattern, keyed below the mount, through the VFS's `readdir` and `stat`. */
-  glob(path: PathSpec, index?: IndexCacheStore, access?: SessionAccess): Promise<PathSpec[]> {
-    const vfs = this.viewFor(access)
-    const store = index ?? this.index
-    return makeResolveGlob(
-      this.lists ? (p) => this.listed(p, store) : (p) => listedPaths(vfs, p),
-      vfs.maxGlobMatches,
-      this.lists ? (p) => this.statAt(store, p) : (p) => vfs.stat(p, {}),
-      undefined,
-      access,
-    )([path])
   }
 
   /** Metadata access bound to this mount's ownership. */
@@ -824,9 +754,9 @@ export class MountEntry {
    * window and all, and the first answer that is not null wins. The rest
    * is the dispatcher's own shape around the VFS's functions: a read takes a
    * window, `append` and `pwrite` are a rewrite where the VFS only writes
-   * whole files, `mkdir` refuses a taken name first, and `glob` walks
-   * `readdir`. Only a method marked `@vfsCall` is reachable by name, and a
-   * custom one is handed the scope and the op's positional arguments.
+   * whole files, and `mkdir` refuses a taken name first. Only a method
+   * marked `@vfsCall` is reachable by name, and a custom one is handed the
+   * scope and the op's positional arguments.
    * Mirrors Python's `MountEntry._callers`.
    */
   callers(name: string, filetype: string | null, vfs: BaseVFS = this.vfs): OpCall[] {
@@ -850,9 +780,6 @@ export class MountEntry {
         )
       }
       return levels
-    }
-    if (name === 'glob') {
-      return vfs.supports('readdir') ? [(scope, _args, kw) => this.glob(scope, kw.index)] : []
     }
     if (name === 'write' && vfs.supports('write')) {
       return [(scope, args, kw) => this.writeSource(vfs, scope, writeSource(args), false, kw)]
@@ -1738,9 +1665,9 @@ export class MountEntry {
    *
    * A pattern operand travels to the handler whole. The handler resolves it
    * once, through its files, which is where the namespace facts (links,
-   * nested mount roots, a trailing slash) are in view; the VFS's glob hook
-   * serves the shell tier and cannot see them, so expanding here would lose
-   * what the handler needs. Python's dispatcher never expands either. The
+   * nested mount roots, a trailing slash) are in view, so expanding here
+   * would lose what the handler needs. Python's dispatcher never expands
+   * either. The
    * working directory carries this mount's key. Mirrors Python's
    * MountEntry._command_ctx.
    */

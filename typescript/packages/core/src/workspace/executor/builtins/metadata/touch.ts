@@ -126,7 +126,7 @@ export async function handleTouch(
   const noCreate = fl.asBool('no_create')
 
   const errors: string[] = []
-  for (const target of await expandOperands(namespace, operands)) {
+  for (const target of await expandOperands(namespace, dispatch, operands)) {
     if (fl.asBool('no_dereference') && namespace.isLink(target.virtual)) {
       await setattrLink(dispatch, target, { mtime: stamp })
       continue

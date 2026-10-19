@@ -20,6 +20,7 @@ from mirage.types import PathSpec
 from mirage.vfs.postgres import PostgresVFS
 from mirage.vfs.postgres.config import PostgresConfig
 from mirage.workspace import Workspace
+from mirage.workspace.expand.globs import expand_glob
 from tests.fixtures.vfs_io import vfs_over
 
 
@@ -43,5 +44,5 @@ async def test_resolve_glob_unresolved_no_pattern(accessor, index):
         pattern=None,
     )
     ws = Workspace({"/": vfs_over(PostgresVFS, accessor)})
-    result = await ws._registry.mount_for("/").expand_glob([p], "")
+    result = await expand_glob(ws.dispatch, ws._registry.mount_for("/"), [p])
     assert result == [p]

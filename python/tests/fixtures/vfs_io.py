@@ -70,7 +70,6 @@ DISPATCH_OPS = (
     "read",
     "readdir",
     "stat",
-    "glob",
     "write",
     "append",
     "pwrite",
@@ -130,31 +129,13 @@ def render(vfs: BaseVFS, filetype: str, fn: Callable[..., Any]) -> BaseVFS:
     return vfs
 
 
-def override_glob(mount: MountEntry, fn: Callable[..., Any]) -> MountEntry:
-    """Replace how one ``mount`` expands a glob pattern.
-
-    ``fn`` takes the accessor in front and the pattern spec, as the glob
-    op's handler did; the mount stamps the spec's key before calling it.
-
-    Args:
-        mount (MountEntry): the mount to change.
-        fn (Callable[..., Any]): the replacement.
-    """
-
-    async def glob(path: PathSpec, index: Any = None) -> Any:
-        return await fn(mount.vfs.accessor, path, index=index)
-
-    mount._glob = glob  # type: ignore[method-assign]
-    return mount
-
-
 def replaces(
     name: str, filetype: str | None = None
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a test function as a replacement for a VFS function.
 
     Args:
-        name (str): the function it replaces (``glob`` for the mount's).
+        name (str): the function it replaces.
         filetype (str | None): the extension a ``read`` replacement
             renders.
     """
@@ -180,8 +161,6 @@ def install(mount: MountEntry, fns: list[Callable[..., Any]]) -> MountEntry:
         marked = getattr(fn, "replaces", None)
         if marked is None:
             commands.append(fn)
-        elif marked[0] == "glob":
-            override_glob(mount, fn)
         elif marked[1] is not None:
             render(mount.vfs, marked[1], fn)
         else:

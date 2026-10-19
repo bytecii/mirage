@@ -123,7 +123,9 @@ async def test_expand_operands_globs():
     glob_spec = replace(
         PathSpec.from_str_path("/data/*.txt"), pattern="*.txt", resolved=False
     )
-    expanded = await expand_operands(namespace, [glob_spec, "/data/c.md"])
+    expanded = await expand_operands(
+        namespace, ws.dispatch, [glob_spec, "/data/c.md"]
+    )
     virtuals = sorted(p.virtual for p in expanded)
     assert virtuals == ["/data/a.txt", "/data/b.txt", "/data/c.md"]
 

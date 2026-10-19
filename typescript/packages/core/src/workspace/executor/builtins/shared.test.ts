@@ -134,7 +134,9 @@ describe('builtins/shared: expandOperands', () => {
       resolved: false,
       vfsPath: '*.txt',
     })
-    const expanded = await expandOperands(ws.namespace, [globSpec, '/data/c.md'])
+    const dispatch = ws.registry.dispatch
+    if (dispatch === null) throw new Error('no dispatcher wired')
+    const expanded = await expandOperands(ws.namespace, dispatch, [globSpec, '/data/c.md'])
     expect(expanded.map((p) => p.virtual).sort()).toEqual([
       '/data/a.txt',
       '/data/b.txt',

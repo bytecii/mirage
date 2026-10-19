@@ -17,7 +17,6 @@ import errno
 import io
 import os
 import threading
-from fnmatch import fnmatchcase
 from uuid import uuid4
 
 import pytest
@@ -27,7 +26,6 @@ from mirage.cache.index.config import (
     LookupStatus,
     RedisIndexConfig,
 )
-from mirage.cache.index.view import IndexView
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.config import Command
 from mirage.commands.spec import Argument, CommandSpec
@@ -49,7 +47,6 @@ from mirage.types import (
     PathSpec,
 )
 from mirage.utils.abort import MirageAbortError
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.vfs.call import vfs_call
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.types import Effect
@@ -60,7 +57,7 @@ from mirage.workspace.mount.namespace import RAMNamespaceStore
 from mirage.workspace.mount.spec import Mount
 from mirage.workspace.snapshot import to_state_dict
 from mirage.workspace.types import ExecutionNode
-from tests.fixtures.vfs_io import override, override_glob
+from tests.fixtures.vfs_io import override
 
 _RELEASE: list[asyncio.Event] = []
 
@@ -120,27 +117,11 @@ async def test_first_mount_access_prepares_expansion(action):
         ],
     )
     ws.add_mount("/data", replacement, MountMode.WRITE)
-    mount = ws.mount("/data")
-    walk = mount._glob
-
-    async def glob(accessor, path, *, index=None, **kwargs):
-        # The listing the ancestor's mount recorded for this directory,
-        # which must not be served stale here.
-        listing = await shared.list_dir(path.directory.rstrip("/") or "/")
-        if listing.entries is not None:
-            prefix = mount_prefix_of(path.virtual, path.vfs_path)
-            return [
-                PathSpec.from_str_path(key, mount_key(key, prefix))
-                for key in listing.entries
-                if fnmatchcase(key.rsplit("/", 1)[-1], path.pattern or "*")
-            ]
-        return await walk(path, index=index)
-
-    override_glob(mount, glob)
     try:
         if action == "metadata":
             expanded = await expand_operands(
                 ws._namespace,
+                ws.dispatch,
                 [
                     PathSpec(
                         virtual="/data/*.txt",
@@ -1008,11 +989,11 @@ async def test_unmount_drains_metadata_glob_and_its_index_writes(monkeypatch):
         closed = True
         await close_vfs()
 
-    async def glob(accessor, path, **kwargs):
+    async def readdir(accessor, path, *, index, **kwargs):
         entered.set()
         await release.wait()
         assert not closed
-        await raw.set_dir(
+        await index.set_dir(
             "/data",
             [
                 (
@@ -1025,11 +1006,12 @@ async def test_unmount_drains_metadata_glob_and_its_index_writes(monkeypatch):
         )
         return []
 
-    override_glob(ws.mount("/data"), glob)
+    override(vfs, "readdir", readdir)
     monkeypatch.setattr(vfs, "close", close)
     expanding = asyncio.create_task(
         expand_operands(
             ws._namespace,
+            ws.dispatch,
             [
                 PathSpec(
                     virtual="/data/*",
@@ -1060,41 +1042,6 @@ async def test_unmount_drains_metadata_glob_and_its_index_writes(monkeypatch):
             *([] if removing is None else [removing]),
             return_exceptions=True,
         )
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_a_glob_writes_its_listing_through_a_lock_held_view(monkeypatch):
-    vfs = RAMVFS()
-    ws = Workspace({"/data": vfs}, index=IndexConfig(ttl=600))
-    raw = ws.mount("/data").index_store
-    handed = []
-
-    async def glob(accessor, path, *, index=None, **kwargs):
-        handed.append(index)
-        await asyncio.wait_for(
-            index.set_dir(
-                "/data",
-                [
-                    (
-                        "seen",
-                        FileStat(
-                            name="seen", type=FileType.FILE, fingerprint="seen"
-                        ),
-                    )
-                ],
-            ),
-            1,
-        )
-        return []
-
-    override_glob(ws.mount("/data"), glob)
-    try:
-        result = await asyncio.wait_for(ws.shell("echo /data/*"), 5)
-        assert (result.exit_code, result.stdout) == (0, b"/data/*\n")
-        assert [type(index) for index in handed] == [IndexView]
-        assert (await raw.list_dir("/data")).entries == ["/data/seen"]
-    finally:
         await ws.close()
 
 

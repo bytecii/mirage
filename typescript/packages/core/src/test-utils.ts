@@ -24,6 +24,7 @@ import { type FileStat, MountMode, type PathSpec } from './types.ts'
 import { BaseVFS } from './vfs/base.ts'
 import { RAMVFS } from './vfs/ram/ram.ts'
 import { stripSlash } from './utils/slash.ts'
+import { makeResolveGlob } from './utils/glob_walk.ts'
 import type { Accessor } from './accessor/base.ts'
 import { runWithMountGate } from './context/session_context.ts'
 import { MountEntry } from './workspace/mount/mount.ts'
@@ -124,8 +125,9 @@ class MountedVFS {
     return this.call('stat', path) as Promise<FileStat>
   }
 
+  /** Expand a pattern over this VFS's listings, as a shell glob walks them. */
   glob(path: PathSpec): Promise<PathSpec[]> {
-    return this.call('glob', path) as Promise<PathSpec[]>
+    return makeResolveGlob((p) => this.readdir(p), this.vfs.maxGlobMatches)([path])
   }
 
   async write(path: PathSpec, data: Uint8Array): Promise<void> {

@@ -95,7 +95,7 @@ async def handle_chmod(
     report = verbosity(fl)
     errors: list[str] = []
     out: list[str] = []
-    for target in await expand_operands(namespace, parsed.paths):
+    for target in await expand_operands(namespace, dispatch, parsed.paths):
         found = await resolve_operand(
             namespace, dispatch, "chmod", target, errors
         )

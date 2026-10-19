@@ -18,6 +18,7 @@ from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io import IOResult
 from mirage.policy import PolicyDenied
+from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.types import PathSpec, word_text
 from mirage.utils.path import resolve_path
@@ -29,6 +30,7 @@ from mirage.workspace.executor.builtins.constants import (
 from mirage.workspace.executor.builtins.types import Result
 from mirage.workspace.executor.command.flags import option_error, parse_flags
 from mirage.workspace.executor.command.types import ParsedCommand
+from mirage.workspace.expand.globs import expand_glob
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.types import ExecutionNode
 
@@ -191,12 +193,15 @@ def split_value_flags(
 
 async def expand_operands(
     namespace: Namespace,
+    dispatch: DispatchFn,
     operands: Sequence[str | PathSpec],
 ) -> list[PathSpec]:
-    """Coerce operands to PathSpec and expand glob patterns per mount.
+    """Coerce operands to PathSpec and expand glob patterns per mount,
+    through the dispatcher's listings.
 
     Args:
         namespace (Namespace): addressing authority (mount lookup).
+        dispatch (DispatchFn): op dispatcher the patterns list through.
         operands (Sequence[str | PathSpec]): positional operands.
     """
     out: list[PathSpec] = []
@@ -207,11 +212,11 @@ async def expand_operands(
             else PathSpec.from_str_path(str(item))
         )
         if spec.pattern:
-            mount = namespace.mount_for(spec.virtual)
-            expanded = await mount.expand_glob(
-                [spec], mount.prefix.rstrip("/")
+            out.extend(
+                await expand_glob(
+                    dispatch, namespace.mount_for(spec.virtual), [spec]
+                )
             )
-            out.extend(p for p in expanded if isinstance(p, PathSpec))
             continue
         out.append(spec)
     return out

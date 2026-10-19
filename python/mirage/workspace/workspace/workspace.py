@@ -466,6 +466,7 @@ class Workspace:
             admit_write=self._admit_write,
         )
         self._registry.set_reconciler(self._dispatcher.reconciler)
+        self._registry.set_dispatch(self._dispatcher.dispatch)
         self._events = EventManager(self._registry)
 
         specs = normalize_mounts(

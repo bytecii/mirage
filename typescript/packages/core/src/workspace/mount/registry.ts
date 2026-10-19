@@ -21,6 +21,7 @@ import type { SessionState } from '../session/session.ts'
 import { noMount } from '../../errors/fs.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import type { Runtime } from '../../runtime/base.ts'
+import type { DispatchFn } from '../../runtime/types.ts'
 import type { WorkspaceRuntime } from '../../runtime/workspace.ts'
 import type { FileCache } from '../../cache/file/mixin.ts'
 import type { Evicted } from '../../cache/index/config.ts'
@@ -61,11 +62,6 @@ interface ReadReconciler {
   mayServeListing(mount: MountEntry, folder: string, version: string | null): Promise<boolean>
   onGone(gone: readonly Evicted[], excluded?: readonly string[]): Promise<void>
 }
-
-// The stat the dispatcher itself runs for a mount's VFS: its registry op,
-// behind the dispatcher's fence. A trailing-slash glob classifies a match
-// with it, the twin of python's owner.call("stat").
-type OpStat = (mount: MountEntry, path: PathSpec) => Promise<unknown>
 
 export const DEV_PREFIX = '/dev/'
 
@@ -121,7 +117,7 @@ export class MountRegistry {
   private defaultWrite: WritePolicy = WritePolicy.UNCONDITIONAL
   private cacheStore: FileCache | null = null
   private reconciler: ReadReconciler | null = null
-  private opStatFn: OpStat | null = null
+  private dispatchFn: DispatchFn | null = null
   // The world's workspace runtime, set by Workspace after construction.
   // Catch-all when its captures are empty; explicit captures make
   // unclaimed commands an admission failure (126).
@@ -170,14 +166,18 @@ export class MountRegistry {
     this.reconciler = reconciler
   }
 
-  // Null until the workspace wires its dispatcher in; a bare registry (no
-  // workspace behind it) uses the mount's registered stat operation.
-  get opStat(): OpStat | null {
-    return this.opStatFn
+  /**
+   * The workspace's dispatcher, which a shell glob lists and stats through;
+   * null until the workspace wires it in, and for a bare registry with no
+   * workspace behind it. Mirrors Python's `MountRegistry.dispatch`.
+   */
+  get dispatch(): DispatchFn | null {
+    return this.dispatchFn
   }
 
-  setOpStat(stat: OpStat): void {
-    this.opStatFn = stat
+  /** Wire in the workspace's dispatcher. Mirrors Python's `set_dispatch`. */
+  setDispatch(dispatch: DispatchFn): void {
+    this.dispatchFn = dispatch
   }
 
   /**

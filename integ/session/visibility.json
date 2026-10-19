@@ -173,6 +173,18 @@
         "stdout": "",
         "stderr": "/data/sessvis/ghost/new.txt: No such file or directory\n"
       }
+    },
+    {
+      "id": "vis_shell_glob_never_matches_hidden",
+      "seq": 921017,
+      "targets": ["ram", "disk", "redis", "opfs", "s3", "s3-prefix", "gridfs"],
+      "session": "narrowed",
+      "command": "echo /data/sessvis/* /data/sessvis/*/*; for f in /data/sessvis/*; do echo \"$f\"; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/sessvis/pub.txt /data/sessvis/*/*\n/data/sessvis/pub.txt\n",
+        "stderr": ""
+      }
     }
   ]
 }

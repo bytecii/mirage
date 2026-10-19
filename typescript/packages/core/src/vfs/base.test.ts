@@ -189,7 +189,7 @@ function commandNames(vfs: BaseVFS): Set<string> {
   )
 }
 
-const DISPATCH_OPS = ['read', 'readdir', 'stat', 'glob', 'write', 'unlink', 'mkdir', 'rename']
+const DISPATCH_OPS = ['read', 'readdir', 'stat', 'write', 'unlink', 'mkdir', 'rename']
 
 function served(vfs: BaseVFS): Set<string> {
   const mount = new MountEntry({ prefix: '/', vfs })
@@ -351,7 +351,7 @@ describe('a plug-in VFS', () => {
   })
 
   it('serves its reads at the dispatcher', () => {
-    expect(served(makeVfs())).toEqual(new Set(['glob', 'read', 'readdir', 'stat']))
+    expect(served(makeVfs())).toEqual(new Set(['read', 'readdir', 'stat']))
   })
 
   it('declares the FSKit and snapshot flags it was given', () => {

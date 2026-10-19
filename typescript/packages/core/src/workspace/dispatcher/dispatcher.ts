@@ -2795,29 +2795,6 @@ export class Dispatcher {
   }
 
   /**
-   * The stat this dispatcher runs for one mount's VFS, behind the same
-   * fence as its own probes (mode, revision pins, index kwargs), with no
-   * namespace follow or visibility filter: the caller has resolved the
-   * path already. The path's filetype is stamped as dispatch stamps it,
-   * so an op registered for one filetype answers here too. A
-   * trailing-slash glob classifies a match with it, the twin of Python's
-   * `owner.call("stat")`, so a trailing-slash glob and `stat` read
-   * the same op table.
-   */
-  opStat(mount: MountEntry, path: PathSpec): Promise<unknown> {
-    const filetype = getExtension(path.virtual)
-    return this.fencedCall(
-      mount.vfs,
-      mount.prefix,
-      mount.mode,
-      'stat',
-      path,
-      undefined,
-      filetype !== null ? { filetype } : {},
-    )
-  }
-
-  /**
    * Whether a rename's source stats as a directory.
    *
    * Only a directory can carry hidden content into view, so the reveal
