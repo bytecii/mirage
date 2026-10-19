@@ -62,12 +62,12 @@ from mirage.observe.context import OpTimer, active_recorder
 from mirage.observe.record import OpRecord
 from mirage.types import FileStat, MountMode, PathSpec, ReadPolicy, ReadSpec
 from mirage.utils.filetype import get_extension
+from mirage.utils.loader import load_attr
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.gdocs.doc_entry import make_filename as doc_filename
 from mirage.vfs.gdocs.gdocs import GDocsVFS
 from mirage.vfs.gsheets.sheet_entry import make_filename as sheet_filename
 from mirage.vfs.gslides.slide_entry import make_filename as slide_filename
-from mirage.vfs.loader import load_attr
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.registry import REGISTRY, build_vfs, known_vfs_names
 from mirage.workspace import Workspace

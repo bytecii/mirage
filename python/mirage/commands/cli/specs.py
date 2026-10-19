@@ -16,7 +16,7 @@ import importlib.metadata
 import logging
 
 from mirage.commands.cli.types import CLI
-from mirage.vfs.loader import load_attr
+from mirage.utils.loader import load_attr
 
 logger = logging.getLogger(__name__)
 

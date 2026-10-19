@@ -393,7 +393,7 @@ export type { AppleContainerConfig } from './runtime/sandbox/apple_container/con
 export { SSHRuntime } from './runtime/sandbox/ssh/runtime.ts'
 export type { SSHRuntimeConfig } from './runtime/sandbox/ssh/config.ts'
 export { buildVfs, knownVfsNames, registerVfs, type VFSFactory } from './vfs/registry.ts'
-export { MODULE_SUFFIXES, isModulePath, loadAttr, splitRef } from './vfs/loader.ts'
+export { MODULE_SUFFIXES, isModulePath, loadAttr, splitRef } from './utils/loader.ts'
 export {
   absolutizeScripts,
   checkWorkspaceConfig,

@@ -21,7 +21,7 @@ import { VFSConfigError } from '@struktoai/mirage-core/vfs/errors'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import type { DiskVFSOptions } from './disk/disk.ts'
-import { loadAttr } from './loader.ts'
+import { loadAttr } from '../utils/loader.ts'
 import type { RedisVFSOptions } from './redis/redis.ts'
 
 /**

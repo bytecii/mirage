@@ -48,11 +48,11 @@ from mirage.types import (
     ReadSpec,
     WritePolicy,
 )
+from mirage.utils.loader import SCRIPT_MODULE_NAME, load_backend_class
 from mirage.utils.ranges import slice_window
 from mirage.vfs import registry as vfs_registry
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.errors import VFSConfigError
-from mirage.vfs.loader import SCRIPT_MODULE_NAME, load_backend_class
 from mirage.vfs.minio import MinIOConfig, MinIOVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.registry import build_vfs, register_vfs

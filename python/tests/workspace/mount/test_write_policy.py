@@ -22,8 +22,8 @@ import pytest
 
 from mirage.core.s3.driver import _connect
 from mirage.types import MountMode, WritePolicy
+from mirage.utils.loader import load_attr
 from mirage.vfs.base import BaseVFS
-from mirage.vfs.loader import load_attr
 from mirage.vfs.registry import REGISTRY, known_vfs_names
 from mirage.vfs.s3 import S3VFS, S3Config
 from mirage.workspace.mount.errors import WritePolicyError
