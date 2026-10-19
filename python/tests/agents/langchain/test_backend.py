@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from mirage import RAMVFS, MountMode, Workspace
 from mirage.agents.agno import MirageToolkit
 from mirage.agents.langchain import LangchainWorkspace
+from mirage.commands.cli.builtin.git import GIT
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.spec.types import CommandSpec
 from mirage.concurrency.limiter import run_blocking
@@ -90,7 +91,42 @@ async def main():
     assert (await (await next_call).stdout_str()).strip() == "next"
     await ws.close()
 
-if mode == "borrowed_context":
+if mode in ("git", "git_thread"):
+    ws.register_cli("git", GIT)
+    setup = (
+        "git init -q /repo && cd /repo && echo one > a.txt && "
+        "git add a.txt && git commit -m seed"
+    )
+    command = "git -C /repo cat-file tree HEAD > /tree"
+
+    def check_next():
+        result = sync("test -s /tree && echo next")
+        text = result.output if kind == "langchain" else result
+        assert text.strip() == "next", text
+
+    if mode == "git":
+        try:
+            sync(setup)
+            result = sync(command)
+            if kind == "langchain":
+                assert result.exit_code == 0, result.output
+            check_next()
+        finally:
+            asyncio.run(ws.close())
+    else:
+        async def git_tool():
+            try:
+                result = await ws.shell(setup, session_id="s")
+                assert result.exit_code == 0, await result.stderr_str()
+                result = await asyncio.to_thread(sync, command)
+                if kind == "langchain":
+                    assert result.exit_code == 0, result.output
+                await asyncio.to_thread(check_next)
+            finally:
+                await ws.close()
+
+        asyncio.run(git_tool())
+elif mode == "borrowed_context":
     async def borrowed_context():
         owner = asyncio.get_running_loop()
         await ws.shell("echo seed", session_id="s")
@@ -257,6 +293,8 @@ else:
         "fuse_first",
         "cancel_cleanup",
         "cancel_blocking",
+        "git",
+        "git_thread",
     ],
 )
 def test_contended_sync_adapter_in_bounded_process(kind, mode):

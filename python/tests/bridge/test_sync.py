@@ -189,6 +189,41 @@ async def test_run_async_from_sync_with_current_loop_does_not_deadlock():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_loop", [False, True])
+async def test_temporary_loop_reads_do_not_invalidate_foreground_owner(
+    explicit_loop,
+):
+    bridge = SyncBridge()
+    owner = asyncio.get_running_loop()
+    bridge.observe()
+
+    async def read():
+        bridge.observe()
+        bridge.attach()
+        return asyncio.get_running_loop()
+
+    assert (
+        run_async_from_sync(read(), owner if explicit_loop else None)
+        is not owner
+    )
+    assert bridge._loop is owner
+    assert not bridge._ambiguous
+    assert await asyncio.to_thread(bridge.run, value, "value") == 7
+
+
+def test_temporary_loop_read_does_not_claim_a_foreground_owner():
+    bridge = SyncBridge()
+
+    async def read():
+        bridge.observe()
+        bridge.attach()
+        return 7
+
+    assert run_async_from_sync(read()) == 7
+    assert bridge._loop is None
+
+
+@pytest.mark.asyncio
 async def test_adapter_bridge_rejects_owner_without_constructing_coroutine():
     bridge = SyncBridge()
     bridge.observe()

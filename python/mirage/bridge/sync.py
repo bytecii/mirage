@@ -33,7 +33,7 @@ async def _await_result(awaitable: Awaitable[T]) -> T:
 
 
 def _run_in_new_loop(awaitable: Awaitable[T]) -> T:
-    return asyncio.run(_await_result(awaitable))
+    return asyncio.run(on_auxiliary_loop(partial(_await_result, awaitable)))
 
 
 def run_async_from_sync(
@@ -50,7 +50,8 @@ def run_async_from_sync(
     connection pool needs to still be closable at the end.
 
     Git's synchronous object readers also rely on the current-loop fallback
-    for independent reads. This fallback cannot safely wait on shared async
+    for independent reads. Temporary loops are auxiliary to the caller's
+    foreground owner. This fallback cannot safely wait on shared async
     locks; workspace agent adapters use ``SyncBridge`` instead.
 
     Args:
@@ -91,11 +92,11 @@ async def _invoke(factory: Callable[[], Awaitable[T]]) -> T:
 
 
 async def on_auxiliary_loop(factory: Callable[[], Awaitable[T]]) -> T:
-    """Run a FUSE callback without claiming foreground adapter ownership.
+    """Run an internal callback without claiming foreground ownership.
 
     Args:
         factory (Callable[[], Awaitable[T]]): deferred callback on its
-            independent service loop.
+            temporary bridge loop or independent FUSE service loop.
     """
     token = AUXILIARY_LOOP.set(True)
     try:
@@ -114,8 +115,8 @@ class SyncBridge:
 
     Foreground calls establish ownership without changing the dispatcher's
     threading contract. A synchronous application or context gets one loop
-    thread, whose lifetime ends with the workspace. Auxiliary FUSE callbacks
-    never replace that foreground owner.
+    thread, whose lifetime ends with the workspace. Auxiliary bridge reads
+    and FUSE callbacks never replace that foreground owner.
     """
 
     def __init__(self) -> None:
