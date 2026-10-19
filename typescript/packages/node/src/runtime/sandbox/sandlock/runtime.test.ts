@@ -15,13 +15,22 @@
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PathSpec } from '@struktoai/mirage-core/types'
+import { MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
 import type { Context } from '@struktoai/mirage-core/commands/config'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DiskVFS } from '../../../vfs/disk/disk.ts'
+import { Workspace } from '../../../workspace.ts'
 import { SandlockRuntime } from './runtime.ts'
 
 const DEC = new TextDecoder()
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'x' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
 interface Capture {
   argv: string[]
   env: Record<string, string>
@@ -138,5 +147,26 @@ else {
     controller.abort()
     await checked
     await runtime.close()
+  })
+
+  it.each(RESTRICTIONS)('refuses every line under a session restriction', async (profile) => {
+    const runtime = new SandlockRuntime({ captures: ['tool'] })
+    const ws = new Workspace(
+      { '/data': new DiskVFS({ root: dir }) },
+      { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+    )
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+        127,
+        '',
+        "sandlock: runtime cannot enforce this session's file restrictions\n",
+      ])
+      const other = await ws.session('other')
+      expect((await other.shell('tool run')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
   })
 })

@@ -18,7 +18,10 @@ import { tmpdir, userInfo } from 'node:os'
 import type * as Os from 'node:os'
 import { join } from 'node:path'
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
-import { PathSpec } from '@struktoai/mirage-core/types'
+import { MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { SSHVFS } from '../../../vfs/ssh/ssh.ts'
+import { Workspace } from '../../../workspace.ts'
 import { describe, expect, it, vi } from 'vitest'
 import { SSHRuntime } from './runtime.ts'
 import type { Ssh2Sdk } from './sdk.ts'
@@ -259,3 +262,34 @@ it('reconnects after the previous client closes', async () => {
   expect(made.at(-1)).not.toBe(first)
   await runtime.close()
 })
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'x' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
+
+it.each(RESTRICTIONS)(
+  'refuses a line with no mount type under a session restriction',
+  async (profile) => {
+    const runtime = new FakeSSHRuntime({ config: { host: 'box' } })
+    const ws = new Workspace(
+      { '/data': new SSHVFS({ host: 'box' }) },
+      { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+    )
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+        127,
+        '',
+        "ssh: runtime cannot enforce this session's file restrictions\n",
+      ])
+      expect(runtime.calls).toEqual([])
+      const other = await ws.session('other')
+      expect((await other.shell('tool run')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  },
+)

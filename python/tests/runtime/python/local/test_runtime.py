@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from mirage import RAMVFS, MountMode, Workspace
+from mirage import RAMVFS, DiskVFS, MountMode, Workspace
 from mirage.commands.config import Context
 from mirage.runtime.python import LocalRuntime
 from mirage.runtime.types import Program, RunResult
@@ -519,5 +519,49 @@ async def test_external_streams_infinite_pipes_and_closes_children(line):
         assert result.exit_code == 0, await result.stderr_str()
         assert await result.stdout_str() == "y\n"
         assert not runtime._children
+    finally:
+        await ws.close()
+
+
+class RecordingLocalRuntime(LocalRuntime):
+    """A local runtime that records the programs it would run."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.programs: list[Program] = []
+
+    async def interpret(self, engine, program, ctx):
+        self.programs.append(program)
+        return RunResult(stdout=b"ran\n", stderr=None, exit_code=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"paths": {"hide": ["/data/secret"]}},
+        {"commands": {"deny": [{"paths": ["/data/secret"], "reason": "x"}]}},
+        {"mounts": {"/data": "r"}},
+    ],
+)
+async def test_a_session_restriction_refuses_every_program(tmp_path, profile):
+    runtime = RecordingLocalRuntime()
+    ws = Workspace(
+        {"/data": DiskVFS(str(tmp_path))},
+        mode=MountMode.EXEC,
+        profiles={"agent": profile},
+        runtimes=[runtime, "workspace"],
+    )
+    try:
+        agent = await ws.session("agent", profile="agent")
+        result = await agent.shell("python3 -c pass")
+        assert (result.exit_code, result.stdout, result.stderr) == (
+            127,
+            b"",
+            b"local: runtime cannot enforce this session's file restrictions\n",
+        )
+        assert runtime.programs == []
+        other = await ws.session("other")
+        assert (await other.shell("python3 -c pass")).stdout == b"ran\n"
     finally:
         await ws.close()

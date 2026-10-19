@@ -14,6 +14,7 @@
 
 import pytest
 
+from mirage import RAMVFS, MountMode, Workspace
 from mirage.runtime.sandbox.constants import stdin_redirect
 from mirage.runtime.sandbox.daytona import DaytonaRuntime, sdk
 
@@ -144,3 +145,32 @@ async def test_missing_sdk_fails_with_install_hint(monkeypatch):
     runtime = DaytonaRuntime(config={"sandbox_id": "sb-live"})
     with pytest.raises(ImportError, match="mirage-ai\\[daytona\\]"):
         await runtime.connect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"paths": {"hide": ["/data/secret"]}},
+        {"commands": {"deny": [{"paths": ["/data/secret"], "reason": "x"}]}},
+        {"mounts": {"/data": "r"}},
+    ],
+)
+async def test_a_session_restriction_refuses_every_line(profile):
+    runtime = DaytonaRuntime(config={"sandbox_id": "sb-77"})
+    ws = Workspace(
+        {"/data": RAMVFS()},
+        mode=MountMode.EXEC,
+        profiles={"agent": profile},
+        runtimes=[runtime, "workspace"],
+    )
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert (result.exit_code, result.stdout, result.stderr) == (
+        127,
+        b"",
+        b"daytona: runtime cannot enforce this session's file restrictions\n",
+    )
+    assert FakeClient.fetched == []
+    assert (await (await ws.session("other")).shell("tool run")).exit_code == 0
+    await ws.close()

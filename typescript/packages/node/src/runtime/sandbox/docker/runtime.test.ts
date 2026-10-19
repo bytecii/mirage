@@ -17,7 +17,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
 import type { RuntimeOptions } from '@struktoai/mirage-core/runtime/config'
+import type { SandboxPipe } from '@struktoai/mirage-core/runtime/types'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
+import { MountMode } from '@struktoai/mirage-core/types'
 import { describe, expect, it } from 'vitest'
+import { Workspace } from '../../../workspace.ts'
 import type { DockerConfig } from './config.ts'
 import { DockerRuntime } from './runtime.ts'
 
@@ -190,4 +195,108 @@ describe.skipIf(process.platform === 'win32')('DockerRuntime pipe', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
   })
+})
+
+// A container that answers its mount table and takes sshfs pipes.
+class MountingDockerRuntime extends FakeDockerRuntime {
+  readonly table = new Map<string, string>()
+
+  protected override docker(
+    args: string[],
+    stdin: Uint8Array | null = null,
+  ): Promise<DockerResult> {
+    if (args[args.length - 1] !== 'cat /proc/mounts') return super.docker(args, stdin)
+    this.calls.push([args.slice(), stdin])
+    const rows = [...this.table].map(([p, t]) => `src ${p} ${t} rw 0 0\n`).join('')
+    return Promise.resolve({ stdout: ENC.encode(rows), stderr: new Uint8Array(), code: 0 })
+  }
+
+  override openPipe(command: string): Promise<SandboxPipe> {
+    this.table.set([...command.matchAll(/'([^']*)'|(\S+)/g)][6]?.[1] ?? '', 'fuse.sshfs')
+    let end: () => void = () => undefined
+    const reader = new ReadableStream<Uint8Array>({
+      start(controller) {
+        end = () => {
+          controller.close()
+        }
+      },
+    })
+    return Promise.resolve({
+      reader,
+      writer: { write: () => undefined, end: () => undefined },
+      stop: () => {
+        end()
+        return Promise.resolve()
+      },
+    })
+  }
+}
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'sealed' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
+
+function restricted(runtime: DockerRuntime, profile: SessionProfile): Workspace {
+  return new Workspace(
+    { '/data': new RAMVFS() },
+    { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+  )
+}
+
+function ran(runtime: FakeDockerRuntime, line: string): boolean {
+  return runtime.calls.some(([args]) => args[args.length - 1] === line)
+}
+
+describe('DockerRuntime under session restrictions', () => {
+  it.each(RESTRICTIONS)('refuses a line with no mount type', async (profile) => {
+    const runtime = makeRuntime({ config: { container: 'c' } })
+    const ws = restricted(runtime, profile)
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stderr)]).toEqual([
+        127,
+        "docker: runtime cannot enforce this session's file restrictions\n",
+      ])
+      expect(runtime.calls).toEqual([])
+      expect((await (await ws.session('other')).shell('tool run')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it.each(RESTRICTIONS)('refuses a line on fuse mounts', async (profile) => {
+    const runtime = new MountingDockerRuntime({ config: { container: 'c', mountType: 'fuse' } })
+    const ws = restricted(runtime, profile)
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stderr)]).toEqual([
+        1,
+        "docker: /data is not served through the dispatcher, out of reach of this session's rules\n",
+      ])
+      expect(ran(runtime, 'tool run')).toBe(false)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it.each(RESTRICTIONS)(
+    'serves a restricted session its files over ssh mounts',
+    async (profile) => {
+      const runtime = new MountingDockerRuntime({ config: { container: 'c', mountType: 'ssh' } })
+      const ws = restricted(runtime, profile)
+      try {
+        const agent = await ws.session('agent', { profile: 'agent' })
+        const result = await agent.shell('tool run')
+        expect(result.exitCode).toBe(0)
+        expect(Object.fromEntries(runtime.table)).toEqual({ '/data': 'fuse.sshfs' })
+        expect(ran(runtime, 'tool run')).toBe(true)
+      } finally {
+        await ws.close()
+      }
+    },
+  )
 })

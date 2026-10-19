@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from mirage import RAMVFS, MountMode, Workspace
 from mirage.commands.config import Context
 from mirage.runtime.sandbox.smolvm import SmolvmRuntime
 from mirage.types import PathSpec
@@ -163,3 +164,34 @@ async def test_process_refuses_a_stopped_vm_and_empty_argv():
     with pytest.raises(RuntimeError, match="not running"):
         await runtime.execute([], ["node"], Context(), kind="process")
     assert len(runtime.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"paths": {"hide": ["/data/secret"]}},
+        {"commands": {"deny": [{"paths": ["/data/secret"], "reason": "x"}]}},
+        {"mounts": {"/data": "r"}},
+    ],
+)
+async def test_a_session_restriction_refuses_a_line_with_no_mount_type(
+    profile,
+):
+    runtime = FakeSmolvmRuntime(config={"machine": "vm"})
+    ws = Workspace(
+        {"/data": RAMVFS()},
+        mode=MountMode.EXEC,
+        profiles={"agent": profile},
+        runtimes=[runtime, "workspace"],
+    )
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert (result.exit_code, result.stdout, result.stderr) == (
+        127,
+        b"",
+        b"smolvm: runtime cannot enforce this session's file restrictions\n",
+    )
+    assert runtime.calls == []
+    assert (await (await ws.session("other")).shell("tool run")).exit_code == 0
+    await ws.close()
