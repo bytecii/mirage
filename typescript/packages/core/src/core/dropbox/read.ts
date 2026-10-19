@@ -12,29 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { fileEntry } from '../hierarchy/probe.ts'
 import type { DropboxAccessor } from '../../accessor/dropbox.ts'
 import { publishRead, writesConditioned } from '../../cache/context.ts'
 import { record, recordStream, startOp } from '../../observe/context.ts'
-import { type FileStat, FileType, type PathSpec } from '../../types.ts'
+import { type FileStat, type PathSpec } from '../../types.ts'
 import { DropboxApiError, dropboxDownload, dropboxDownloadStream } from './client.ts'
 import { MISS_SUMMARIES, NOT_FILE_SUMMARY, RESULT_HEADER } from './constants.ts'
 import { resultOf, resultToken } from './fingerprint.ts'
 import { dropboxPathOf } from './paths.ts'
-import { stripSlash } from '../../utils/slash.ts'
 import { eisdir, enoent } from '../../errors/fs.ts'
 import { windowFor } from '../../utils/ranges.ts'
-
-/**
- * What is at the file `path`, as its parent's listing named it. Throws ENOENT
- * when nothing is there and EISDIR when a folder is. Mirrors Python's
- * `file_entry`.
- */
-export function fileEntry(path: PathSpec, entry: FileStat | null | undefined): FileStat {
-  if (stripSlash(path.vfsPath) === '') throw eisdir(path.virtual)
-  if (entry === null || entry === undefined) throw enoent(path.virtual)
-  if (entry.type === FileType.DIRECTORY) throw eisdir(path.virtual)
-  return entry
-}
 
 /**
  * What a download Dropbox refused means, or null. Only a miss is ENOENT (a

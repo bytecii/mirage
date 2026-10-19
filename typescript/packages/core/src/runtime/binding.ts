@@ -15,7 +15,6 @@
 import type { Context } from '../commands/config.ts'
 import { compareCodePoints } from '../utils/sort.ts'
 import { captureSessionContext } from '../context/session_context.ts'
-import { captureExecutionContext } from '../execution/context.ts'
 import type { OpKwargs } from '../view/types.ts'
 import { isGlob, showHead } from '../utils/hidden.ts'
 import { PathSpec } from '../types.ts'
@@ -128,7 +127,7 @@ export function captureBinding(
     restrictedMounts?: readonly string[]
     dispatch?: DispatchFn
   } = {},
-  scope = new ContextScope([...captureSessionContext(), captureExecutionContext()]),
+  scope = new ContextScope(captureSessionContext()),
 ): RuntimeContext {
   const given = views.dispatch ?? binding.dispatch
   const dispatch = given === null ? null : scope.wrap(given)

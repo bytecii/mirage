@@ -29,6 +29,7 @@ from mirage.commands.builtin.generic.crossmount.types import (
 from mirage.commands.builtin.generic.du import du, leaves_of, parse_flags
 from mirage.commands.builtin.generic_bind.dispatch import run_dispatch
 from mirage.commands.builtin.utils.links import mount_view
+from mirage.commands.builtin.utils.paths import virtual_key
 from mirage.commands.config import Context
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -156,7 +157,7 @@ async def run_du(
     records: list[PathRecord] = []
     for index, path in enumerate(paths):
         if present[index]:
-            target = replace(path, vfs_path=path.virtual.strip("/"))
+            target = virtual_key(path)
             targets.append(target)
             measured[target] = found[index]
             records += [PathRecord(target, index), *found[index]]

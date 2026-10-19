@@ -29,6 +29,7 @@ from mirage.types import (
     ReadSpec,
     WritePolicy,
 )
+from mirage.utils.path import norm_dir
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.history import HISTORY_PREFIX
 from mirage.vfs.ram import RAMVFS
@@ -199,7 +200,6 @@ def install_mounts(
     specs: list[MountSpec],
     index: IndexConfig | None,
     default_mode: MountMode,
-    default_read: ReadSpec,
 ) -> bool:
     """Mount every spec, adding an implicit scratch root if none claims /.
 
@@ -218,7 +218,6 @@ def install_mounts(
         index (IndexConfig | None): the workspace's index config, or
             None for a per-mount RAM store.
         default_mode (MountMode): mode for the implicit root.
-        default_read (ReadSpec): read policy for the implicit root.
 
     Returns:
         bool: whether the root mount was synthesized.
@@ -313,8 +312,7 @@ async def unmount(
     Raises:
         ValueError: the prefix names a permanent mount.
     """
-    stripped = prefix.strip("/")
-    norm = "/" + stripped + "/" if stripped else "/"
+    norm = norm_dir(prefix)
     if norm == "/":
         raise ValueError(f"cannot unmount the virtual root: {prefix!r}")
     if norm == "/dev/":

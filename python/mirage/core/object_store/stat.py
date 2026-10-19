@@ -17,7 +17,7 @@ from mirage.errors.fs import enoent
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils import key_prefix as kp
 from mirage.utils.filetype import content_type_for_path
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 
 
 def make_stat(driver: ObjectStoreDriver[A, C]) -> StatFn[A]:
@@ -29,12 +29,7 @@ def make_stat(driver: ObjectStoreDriver[A, C]) -> StatFn[A]:
 
     async def stat(accessor: A, path_spec: PathSpec) -> FileStat:
         virtual = path_spec.virtual
-        original_prefix = mount_prefix_of(
-            path_spec.virtual, path_spec.vfs_path
-        )
-        path = path_spec.virtual
-        if original_prefix and path.startswith(original_prefix):
-            path = path[len(original_prefix) :] or "/"
+        path = raw_path_of(path_spec)
 
         # A trailing slash signals the caller treats the path as a
         # directory. These stores allow an object at key "csv" AND deeper

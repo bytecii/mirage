@@ -3,49 +3,13 @@ from dataclasses import dataclass
 
 from mirage.commands.builtin.constants import GZIP_SUFFIX
 from mirage.commands.builtin.generic.decompress import decompress_inputs
-from mirage.commands.builtin.utils.links import LinkResolver, link_resolver
+from mirage.commands.builtin.utils.links import link_resolver
 from mirage.commands.config import Context
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
-
-
-async def gunzip(
-    paths: list[PathSpec],
-    *,
-    read_bytes: PolymorphicReadFn,
-    write_bytes: Callable[..., Awaitable[None]],
-    unlink: Callable[..., Awaitable[None]],
-    stat: StatFn | None = None,
-    stdin: ByteSource | None = None,
-    keep: bool = False,
-    force: bool = False,
-    to_stdout: bool = False,
-    test_only: bool = False,
-    quiet: bool = False,
-    suffix: str = GZIP_SUFFIX,
-    resolver: LinkResolver | None = None,
-) -> tuple[ByteSource | None, IOResult]:
-    return await decompress_inputs(
-        paths,
-        read=read_bytes,
-        write=write_bytes,
-        unlink=unlink,
-        stat=stat,
-        stdin=stdin,
-        keep=keep,
-        force=force,
-        quiet=quiet,
-        suffix=suffix,
-        to_stdout=to_stdout,
-        test_only=test_only,
-        resolver=resolver,
-    )
-
-
-__all__ = ["gunzip"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,18 +45,18 @@ async def gunzip_generic(
     stat: StatFn | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     parsed = parse_flags(ctx.flags)
-    return await gunzip(
+    return await decompress_inputs(
         paths,
-        read_bytes=read_bytes,
-        write_bytes=write_bytes,
+        read=read_bytes,
+        write=write_bytes,
         unlink=unlink,
         stat=stat,
         stdin=ctx.stdin,
         keep=parsed.keep,
         force=parsed.force,
-        to_stdout=parsed.to_stdout,
-        test_only=parsed.test_only,
         quiet=parsed.quiet,
         suffix=parsed.suffix,
+        to_stdout=parsed.to_stdout,
+        test_only=parsed.test_only,
         resolver=link_resolver(ctx),
     )

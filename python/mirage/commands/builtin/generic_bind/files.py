@@ -98,7 +98,6 @@ class CommandFiles:
         write (Callable): ``write(path, data)``.
         append (Callable): ``append(path, data)``.
         pwrite (Callable): ``pwrite(path, data, offset)``.
-        create (Callable): ``create(path)``.
         mkdir (Callable): ``mkdir(path, parents=False)``.
         unlink (Callable): ``unlink(path)``.
         rmdir (Callable): ``rmdir(path)``.
@@ -145,7 +144,6 @@ class CommandFiles:
     write: Callable[[PathSpec, ByteSource], Awaitable[None]]
     append: Callable[[PathSpec, ByteSource], Awaitable[None]]
     pwrite: Callable[[PathSpec, bytes, int], Awaitable[None]]
-    create: Callable[[PathSpec], Awaitable[None]]
     mkdir: Callable[..., Awaitable[None]]
     unlink: Callable[[PathSpec], Awaitable[None]]
     rmdir: Callable[[PathSpec], Awaitable[None]]
@@ -720,9 +718,6 @@ def command_files(
     async def pwrite(path: PathSpec, data: bytes, offset: int) -> None:
         await call("pwrite", path, data=data, offset=offset)
 
-    async def create(path: PathSpec) -> None:
-        await call("create", path)
-
     async def mkdir(path: PathSpec, parents: bool = False) -> None:
         await call("mkdir", path, parents=parents)
 
@@ -833,7 +828,6 @@ def command_files(
         write=write,
         append=append,
         pwrite=pwrite,
-        create=create,
         mkdir=mkdir,
         unlink=unlink,
         rmdir=rmdir,

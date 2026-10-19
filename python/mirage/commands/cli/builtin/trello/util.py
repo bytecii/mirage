@@ -12,15 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import functools
-
-from mirage.commands.builtin.utils.stream import (
-    resolve_text_input as _resolve_text_input,
-)
+from mirage.commands.builtin.utils.stream import read_stdin_async
 from mirage.commands.config import Context
 from mirage.commands.spec.flag_view import FlagView
 from mirage.types import PathSpec
-from mirage.workspace.files import Files
 
 
 def file_operand(fl: FlagView, name: str) -> PathSpec | None:
@@ -51,19 +46,6 @@ def required_flag(fl: FlagView, name: str) -> str:
     return value
 
 
-async def _read_file(flag: str, vfs: Files | None, path: PathSpec) -> bytes:
-    """Read one ``--*_file`` operand through the session's files.
-
-    Args:
-        flag (str): the flag's spelling, for the refusal.
-        vfs (Files | None): the session's files, None outside a workspace.
-        path (PathSpec): the operand.
-    """
-    if vfs is None:
-        raise ValueError(f"{flag} needs a workspace to read files from")
-    return await vfs.read(path)
-
-
 async def resolve_text_input(
     ctx: Context,
     fl: FlagView,
@@ -85,11 +67,15 @@ async def resolve_text_input(
         file (str): the file flag, e.g. ``desc_file``.
         error_message (str): raised when nothing gives the text.
     """
-    return await _resolve_text_input(
-        functools.partial(_read_file, f"--{file}"),
-        ctx.vfs,
-        inline_text=fl.as_str(value),
-        file_path=file_operand(fl, file),
-        stdin=ctx.stdin,
-        error_message=error_message,
-    )
+    inline = fl.as_str(value)
+    if inline is not None:
+        return inline
+    path = file_operand(fl, file)
+    if path is not None:
+        if ctx.vfs is None:
+            raise ValueError(f"--{file} needs a workspace to read files from")
+        return (await ctx.vfs.read(path)).decode(errors="replace")
+    raw = await read_stdin_async(ctx.stdin)
+    if raw is not None:
+        return raw.decode(errors="replace")
+    raise ValueError(error_message)

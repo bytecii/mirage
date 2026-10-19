@@ -200,9 +200,9 @@ def cross(request, tmp_path):
     if "gdrive" in pair:
         gd_pairs = []
         if m1.ptype == "gdrive":
-            gd_pairs.append((m1.vfs._token_manager, m1.gdrive))
+            gd_pairs.append((m1.vfs.accessor.token_manager, m1.gdrive))
         if m2.ptype == "gdrive":
-            gd_pairs.append((m2.vfs._token_manager, m2.gdrive))
+            gd_pairs.append((m2.vfs.accessor.token_manager, m2.gdrive))
         stack.enter_context(patch_gdrive(*gd_pairs))
 
     with stack:

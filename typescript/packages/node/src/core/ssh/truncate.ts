@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { enotsup } from '@struktoai/mirage-core/errors/fs'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { joinRoot, openForWrite, stripPrefix } from './utils.ts'
+import { joinRoot, openForWrite } from './utils.ts'
 
 export async function truncate(
   accessor: SSHAccessor,
@@ -28,7 +29,7 @@ export async function truncate(
   if (noCreate) throw enotsup('ssh', 'truncate --no-create', p)
   const timer = startOp()
   const sftp = await accessor.sftp()
-  const remote = joinRoot(accessor.config.root ?? '/', stripPrefix(p))
+  const remote = joinRoot(accessor.config.root ?? '/', rawPathOf(p))
   const handle = await openForWrite(sftp, remote, p)
   try {
     await new Promise<void>((resolveFn, rejectFn) => {

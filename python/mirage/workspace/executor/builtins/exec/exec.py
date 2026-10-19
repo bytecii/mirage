@@ -585,7 +585,7 @@ async def _route(
     if target == CLOSED:
         await discard_streams(data)
     else:
-        await _append(dispatch, session, target, data)
+        await _append(dispatch, target, data)
     return None, None, False
 
 
@@ -735,14 +735,11 @@ async def _routed(
     return failed
 
 
-async def _append(
-    dispatch: DispatchFn, session: SessionState, target: str, data: ByteSource
-) -> None:
+async def _append(dispatch: DispatchFn, target: str, data: ByteSource) -> None:
     """Append bytes to an `exec` target, or drop them if it is closed.
 
     Args:
         dispatch (DispatchFn): op dispatcher.
-        session (SessionState): shell session state.
         target (str): the target path, or `""` for a closed stream.
         data (bytes): the bytes to write.
     """

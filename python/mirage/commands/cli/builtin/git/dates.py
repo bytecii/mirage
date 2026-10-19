@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import NamedTuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from mirage.commands.builtin.utils.constants import MONTHS
 from mirage.commands.builtin.utils.strftime import gnu_strftime, winning_pad
 from mirage.commands.cli.builtin.git.errors import (
     DateFormatColonError,
@@ -41,20 +42,6 @@ from mirage.utils.timezone import (
 logger = logging.getLogger(__name__)
 
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-MONTHS = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-)
 
 
 # git's test clock: when set, the moment relative and human dates count

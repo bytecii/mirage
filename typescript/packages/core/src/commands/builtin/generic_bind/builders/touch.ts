@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult } from '../../../../io/types.ts'
+import { operandsIo } from '../../utils/operands.ts'
 import { fsStrerror, isFsError } from '../../../../errors/fs.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
@@ -21,8 +21,6 @@ import type { GenericCommand } from '../adapter.ts'
 import { commandFiles } from '../files.ts'
 import { UsageError } from '../../../errors.ts'
 import { usageHint } from '../../../spec/usage.ts'
-
-const ENC = new TextEncoder()
 
 const touch: CommandFn = async (_accessor, paths, _texts, ctx) => {
   const files = commandFiles(ctx, paths)
@@ -44,8 +42,7 @@ const touch: CommandFn = async (_accessor, paths, _texts, ctx) => {
       errors.push(`touch: cannot touch '${p.virtual}': ${String(fsStrerror(err))}`)
     }
   }
-  const stderr = errors.length > 0 ? ENC.encode(errors.join('\n') + '\n') : null
-  return [null, new IOResult({ stderr, exitCode: errors.length > 0 ? 1 : 0 })]
+  return [null, operandsIo(errors.map((line) => `${line}\n`).join(''))]
 }
 
 export const BUILDER: GenericCommand = {

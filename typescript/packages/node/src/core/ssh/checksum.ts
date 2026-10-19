@@ -12,10 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { singleQuote } from '@struktoai/mirage-core/utils/quote'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { joinRoot, stripPrefix } from './utils.ts'
+import { joinRoot } from './utils.ts'
 
 export const SUMS: Readonly<Record<string, readonly [string, number]>> = {
   md5: ['md5sum', 32],
@@ -42,7 +43,7 @@ export async function checksum(
   const tool = Object.hasOwn(SUMS, algorithm) ? SUMS[algorithm] : undefined
   if (tool === undefined) return null
   const [name, width] = tool
-  const remote = joinRoot(accessor.config.root ?? '/', stripPrefix(p))
+  const remote = joinRoot(accessor.config.root ?? '/', rawPathOf(p))
   let status: number | null
   let out: Uint8Array
   let err: Uint8Array

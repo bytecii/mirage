@@ -16,7 +16,8 @@ from collections.abc import Awaitable
 from typing import Protocol, TypeVar
 
 from mirage.accessor.base import Accessor
-from mirage.types import DirListing, FileStat, PathSpec
+from mirage.errors.fs import eisdir, enoent
+from mirage.types import DirListing, FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key, mount_prefix_of, mounted_path
 
 A = TypeVar("A", bound=Accessor)
@@ -56,6 +57,26 @@ def rows_of(listed: list[FileStat] | DirListing) -> list[FileStat]:
         listed (list[FileStat] | DirListing): a readdir's answer.
     """
     return listed.entries if isinstance(listed, DirListing) else listed
+
+
+def file_entry(path: PathSpec, entry: FileStat | None) -> FileStat:
+    """What is at the file ``path``, as its parent's listing named it.
+
+    Args:
+        path (PathSpec): the file.
+        entry (FileStat | None): what is at the path.
+
+    Raises:
+        FileNotFoundError: nothing is there.
+        IsADirectoryError: a folder is.
+    """
+    if not path.mount_path.strip("/"):
+        raise eisdir(path.virtual)
+    if entry is None:
+        raise enoent(path.virtual)
+    if entry.type is FileType.DIRECTORY:
+        raise eisdir(path.virtual)
+    return entry
 
 
 async def row_at(

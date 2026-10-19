@@ -43,3 +43,7 @@ class DropboxAccessor(Accessor):
         self.config = config
         self.token_manager = token_manager
         self.root_path = normalize_dropbox_root_path(config.root_path)
+
+    async def close(self) -> None:
+        """Drain the token manager's connection pool. Idempotent."""
+        await self.token_manager.close()

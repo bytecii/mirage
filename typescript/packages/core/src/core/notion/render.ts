@@ -14,15 +14,15 @@
 
 type Json = Record<string, unknown>
 
-function asObject(value: unknown): Json {
+export function asObject(value: unknown): Json {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Json) : {}
 }
 
-function asArray(value: unknown): unknown[] {
+export function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
 }
 
-function strOf(record: Json, key: string): string {
+export function strOf(record: Json, key: string): string {
   const value = record[key]
   return typeof value === 'string' ? value : ''
 }

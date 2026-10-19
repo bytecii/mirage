@@ -13,14 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { missingOperandError } from '../../../spec/usage.ts'
-import { IOResult } from '../../../../io/types.ts'
 import type { LinkView } from '../../../../view/types.ts'
 import { FileType, PathSpec } from '../../../../types.ts'
 import { fsStrerror, isFsError } from '../../../../errors/fs.ts'
 import { respelled } from '../../../../utils/key_prefix.ts'
 import { CycleError, resolvePath } from '../../../../utils/path.ts'
 import { rstripSlash } from '../../../../utils/slash.ts'
-import { formatRecords } from '../../utils/output.ts'
+import { formatOptionalRecords } from '../../utils/output.ts'
+import { operandsIo } from '../../utils/operands.ts'
 import { linkLocation, linksOf, mountRoot } from '../../utils/links.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
@@ -148,15 +148,7 @@ const rmdir: CommandFn = async (_accessor, paths, _texts, ctx) => {
       break
     }
   }
-  const out = lines.length > 0 ? formatRecords(lines) : null
-  const stderr = errors.length > 0 ? new TextEncoder().encode(errors.join('\n') + '\n') : undefined
-  return [
-    out,
-    new IOResult({
-      exitCode: errors.length > 0 ? 1 : 0,
-      ...(stderr !== undefined ? { stderr } : {}),
-    }),
-  ]
+  return [formatOptionalRecords(lines), operandsIo(errors.map((line) => `${line}\n`).join(''))]
 }
 
 export const BUILDER: GenericCommand = {

@@ -3,6 +3,7 @@ import { splitBacktickRegion } from '../../shell/backticks.ts'
 import { shellJoin } from '../../shell/join.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { getFunctionName } from '../../shell/helpers.ts'
+import { treeRoot } from '../../shell/parse/heredoc/prefix.ts'
 import type { SessionState } from '../session/session.ts'
 
 /**
@@ -35,13 +36,6 @@ export interface Frame {
   readonly text: string
   readonly base: number
   readonly parent: Occurrence | null
-}
-
-/** The root of the tree a node belongs to. */
-export function rootOf(node: TSNodeLike): TSNodeLike {
-  let root = node
-  while (root.parent !== null && root.parent !== undefined) root = root.parent
-  return root
 }
 
 /**
@@ -123,7 +117,7 @@ function definitionOrigin(
   }
   // Nodes are fresh objects per read, so the trees are told apart by their
   // roots' ids.
-  if (rootOf(definition).id === line.id) return definedAt(definition, handed)
+  if (treeRoot(definition).id === line.id) return definedAt(definition, handed)
   const name = getFunctionName(definition)
   const site = session.functionSites.get(name)
   if (site === undefined || site.source !== session.functions[name]) return null

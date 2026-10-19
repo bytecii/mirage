@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toHex } from '../../../../utils/hex.ts'
 import { specOf } from '../../../../commands/spec/builtins.ts'
 import { FlagView } from '../../../../commands/spec/flag_view.ts'
 import { parseCommand, parseToKwargs } from '../../../../commands/spec/parser.ts'
@@ -45,7 +46,7 @@ export function encodeValue(value: Uint8Array, encoding: string | null): Uint8Ar
     chosen = body.length >= unprintable * 8 ? 'text' : 'base64'
   }
   if (chosen === 'hex') {
-    return encodeText('0x' + [...value].map((b) => b.toString(16).padStart(2, '0')).join(''))
+    return encodeText('0x' + toHex(value))
   }
   if (chosen === 'base64') return encodeText('0s' + encodeBase64(value))
   const out: number[] = [0x22]

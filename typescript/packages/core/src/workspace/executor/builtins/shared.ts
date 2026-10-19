@@ -27,6 +27,7 @@ import { optionError, parseFlags } from '../command/flags.ts'
 import type { ParsedCommand } from '../command/types.ts'
 import { COUNT_WORD_RE, IDENTIFIER_RE } from './constants.ts'
 import type { Result } from './types.ts'
+import { scopePath } from './scope.ts'
 import { decodeText, encodeText } from '../../../shell/bytes.ts'
 
 interface ResultInit {
@@ -105,16 +106,6 @@ export function parseLine(
 }
 
 /**
- * A non-path operand's text (a mode or owner spec the classifier may have
- * wrapped as a path).
- *
- * @param arg - a classified command part.
- */
-export function operandText(arg: string | PathSpec): string {
-  return arg instanceof PathSpec ? arg.virtual : arg
-}
-
-/**
  * A path operand as an absolute virtual path.
  *
  * @param arg - a classified command part.
@@ -153,7 +144,7 @@ export function splitValueFlags(
   while (i < args.length) {
     const arg = args[i]
     if (arg === undefined) break
-    const s = operandText(arg)
+    const s = scopePath(arg)
     if (parsing && s === '--') {
       parsing = false
       i += 1

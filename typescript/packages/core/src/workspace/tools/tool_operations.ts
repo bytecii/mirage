@@ -78,7 +78,7 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 
-async function ensureParents(vfs: Files, path: string): Promise<void> {
+export async function ensureParents(vfs: Files, path: string): Promise<void> {
   const parent = gnuDirname(path)
   if (parent === '/' || parent === '' || parent === '.') return
   if (await vfs.exists(parent)) return

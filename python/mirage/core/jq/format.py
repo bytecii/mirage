@@ -12,8 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import replace
-
 from mirage.core.jq.codec import run_codec
 from mirage.core.jq.types import JqError, JqHalt, JqOptions, JqRun
 from mirage.errors.fs import fs_strerror
@@ -38,20 +36,6 @@ def _config(
         "separator": separator,
         "check_only": check_only,
     }
-
-
-async def dump_text(text: str, opts: JqOptions) -> str:
-    """Lay out a compact evaluator dump without converting numeric literals.
-
-    Args:
-        text (str): compact evaluator output.
-        opts (JqOptions): resolved output options.
-    """
-    plain = replace(opts, raw_output=False, seq=False)
-    config = _config(plain, separator=False, check_only=False)
-    return b"".join(
-        [part async for part in run_codec("jq_format", config, text.encode())]
-    ).decode()
 
 
 async def format_one(text: str, opts: JqOptions) -> bytes:

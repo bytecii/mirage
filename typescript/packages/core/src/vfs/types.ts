@@ -79,7 +79,7 @@ export type SearchOp<A extends Accessor = Accessor> = (
   query: SearchQuery,
 ) => Promise<[string, string][] | null>
 
-/** Optional batch callback preserves ranking and limits across scopes. */
+/** Batch callback that preserves ranking and limits across scopes. */
 export type SearchManyOp<A extends Accessor = Accessor> = (
   accessor: A,
   paths: PathSpec[],
@@ -89,5 +89,5 @@ export type SearchManyOp<A extends Accessor = Accessor> = (
 /** Optional resource search, what the `search` command asks. */
 export interface SearchOps<A extends Accessor = Accessor> {
   search: SearchOp<A>
-  searchMany?: SearchManyOp<A>
+  searchMany: SearchManyOp<A>
 }

@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { quoteString, type FetchedMessage } from '../../../../core/email/client.ts'
+import { MONTHS } from '@struktoai/mirage-core/commands/builtin/utils/constants'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 // himalaya's search DSL: 3 operators (and, or, not) and 8 conditions
@@ -31,21 +32,6 @@ const FLAGS: Record<string, string> = {
   draft: 'DRAFT',
   deleted: 'DELETED',
 }
-const IMAP_MONTHS = [
-  'Jan',
-  'Feb',
-  'Mar',
-  'Apr',
-  'May',
-  'Jun',
-  'Jul',
-  'Aug',
-  'Sep',
-  'Oct',
-  'Nov',
-  'Dec',
-]
-
 type SortKind = (typeof SORT_KINDS)[number]
 
 export class QueryError extends Error {}
@@ -135,7 +121,7 @@ function imapDate(text: string): Date {
 
 function formatDate(value: Date): string {
   const day = String(value.getUTCDate()).padStart(2, '0')
-  const month = IMAP_MONTHS[value.getUTCMonth()] ?? 'Jan'
+  const month = MONTHS[value.getUTCMonth()] ?? 'Jan'
   return `${day}-${month}-${String(value.getUTCFullYear())}`
 }
 

@@ -408,7 +408,6 @@ async def execute_command(
             execute_fn,
             node,
             parts,
-            name,
             context,
             stdin,
             call_stack,
@@ -456,7 +455,6 @@ async def _dispatch_command_body(
     execute_fn: ExecuteFn,
     node,
     parts,
-    name,
     context: EvaluationContext,
     stdin,
     call_stack,
@@ -715,10 +713,7 @@ async def _run_argv(
         # ── run ────────────────────────────────────
         # The admitted command's gate is bound for its run and reset after,
         # so its own I/O can ask about the entries the gate did not see and
-        # a nested line binds its own (see ``Admitted``). The workspace's
-        # policies bind in the same window, whether or not a gate judged the
-        # line, so the command tier's policy guard can fire pre_vfs for the
-        # backend I/O a handler performs.
+        # a nested line binds its own (see ``Admitted``).
         # A post method reads what the command did: its file records,
         # gathered as it runs and as its output drains, and its result
         # node, settled once the output has drained.
@@ -728,14 +723,11 @@ async def _run_argv(
             await policies.wants_for("post_command", sid)
         )
         watched = judging or await policies.wants_for("post_execute", sid)
-        # The command's own layer of the caller: the policies its file
-        # calls consult and, once admitted, its gate.
+        # The command's own layer of the caller: once admitted, its gate.
         outer = current_caller()
         token = bind_caller(
             dataclasses.replace(
-                outer,
-                policies=policies,
-                gate=admitted if admitted is not None else outer.gate,
+                outer, gate=admitted if admitted is not None else outer.gate
             )
         )
         try:

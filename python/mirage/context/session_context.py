@@ -49,7 +49,6 @@ if TYPE_CHECKING:
     from mirage.observe.context import Recorder
     from mirage.observe.record import OpRecord
     from mirage.policy.decisions import Decisions, HandOff
-    from mirage.policy.policies import Policies
     from mirage.policy.types import DryRun, EntryGate, VfsExplanation
     from mirage.shell.console import JobConsole
     from mirage.shell.types import Redirect
@@ -126,8 +125,6 @@ class Caller:
             -exec) runs in.
         call (tuple[Decisions, HandOff, str] | None): the call an
             op-level answer covers: its ledger, hand-off and session.
-        policies (Policies | None): the policies a command's file calls
-            consult.
         policy_read (bool): whether the call is a policy program's own
             read.
         stop (asyncio.Event | None): the running line's stop signal.
@@ -174,7 +171,6 @@ class Caller:
     ) = None
     program: SessionState | None = None
     call: tuple[Decisions, HandOff, str] | None = None
-    policies: Policies | None = None
     policy_read: bool = False
     stop: asyncio.Event | None = None
     write_held: bool = False

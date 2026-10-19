@@ -12,16 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { joinRoot, openForWrite, stripPrefix } from './utils.ts'
+import { joinRoot, openForWrite } from './utils.ts'
 
 export async function create(accessor: SSHAccessor, path: PathSpec): Promise<void> {
   const timer = startOp()
   const sftp = await accessor.sftp()
-  const remote = joinRoot(accessor.config.root ?? '/', stripPrefix(path))
+  const remote = joinRoot(accessor.config.root ?? '/', rawPathOf(path))
   const handle = await openForWrite(sftp, remote, path, 'w')
   await new Promise<void>((resolveFn, rejectFn) => {
     sftp.close(handle, (err) => {

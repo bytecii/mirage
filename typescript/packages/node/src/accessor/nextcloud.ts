@@ -1,7 +1,7 @@
 import type { Operator } from 'opendal'
 import { Accessor } from '@struktoai/mirage-core/accessor/index'
 import { VFSName } from '@struktoai/mirage-core/types'
-import { loadOptionalPeer } from '../optional_peer.ts'
+import { loadOptionalPeer } from '@struktoai/mirage-core/utils/optional_peer'
 import type { NextcloudConfig } from '../vfs/nextcloud/config.ts'
 
 export class NextcloudAccessor extends Accessor {

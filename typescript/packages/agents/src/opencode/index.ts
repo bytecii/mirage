@@ -12,11 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ensureParents } from '@struktoai/mirage-core/workspace/tools/tool_operations'
 import { tool, type Plugin, type ToolContext, type ToolDefinition } from '@opencode-ai/plugin'
 import type { Workspace } from '@struktoai/mirage-node'
-import type { Files } from '@struktoai/mirage-core/workspace/files'
 import { encodeBase64 } from '@struktoai/mirage-core/utils/base64'
-import { gnuDirname } from '@struktoai/mirage-core/utils/path'
 import { FileVersionTracker } from '@struktoai/mirage-core/workspace/tools/file_version'
 import { Session } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { readWorkspaceFile } from '@struktoai/mirage-core/workspace/tools/read_file'
@@ -44,18 +43,6 @@ function isResolver(ws: WsLike): ws is WsResolver {
 
 async function resolveWs(ws: WsLike, ctx: ToolContext): Promise<Workspace> {
   return isResolver(ws) ? ws(ctx) : ws
-}
-
-async function ensureParent(vfs: Files, path: string): Promise<void> {
-  const parent = gnuDirname(path)
-  if (parent === '/' || parent === '' || parent === '.') return
-  if (await vfs.exists(parent)) return
-  await ensureParent(vfs, parent)
-  try {
-    await vfs.mkdir(parent)
-  } catch (err) {
-    if (!(await vfs.exists(parent))) throw err
-  }
 }
 
 function errMsg(err: unknown): string {
@@ -136,7 +123,7 @@ export function mirageTools(
       const w = await resolveWs(ws, ctx)
       const versions = trackerFor(trackers, w, ctx, staleWriteProtection, sessionId)
       try {
-        await ensureParent(versions.vfs, filePath)
+        await ensureParents(versions.vfs, filePath)
         await versions.write(filePath, content)
         return `Wrote ${String(content.length)} bytes to ${filePath}`
       } catch (err) {

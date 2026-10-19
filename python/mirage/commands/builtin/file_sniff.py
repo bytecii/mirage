@@ -42,9 +42,7 @@ def format_file_result(
     return f"{path}: {desc}"
 
 
-def detect_file_type(
-    path: str, header: bytes, s: FileStat
-) -> ContentType | str:
+def detect_file_type(header: bytes, s: FileStat) -> ContentType | str:
     if s.content is not None and s.content != ContentType.BINARY:
         return s.content
     for sig, ftype in MAGIC_SIGNATURES:

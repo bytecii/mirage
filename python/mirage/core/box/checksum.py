@@ -17,7 +17,7 @@ from mirage.cache.context import writes_conditioned
 from mirage.core.box.api import get_file_info
 from mirage.core.box.constants import SHA1
 from mirage.core.box.fingerprint import read_token, token_of
-from mirage.core.box.read import file_entry
+from mirage.core.hierarchy.probe import file_entry
 from mirage.observe.context import record, start_op
 from mirage.types import FileStat, PathSpec
 

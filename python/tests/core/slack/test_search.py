@@ -23,7 +23,6 @@ from mirage.core.slack.config import SlackConfig
 from mirage.core.slack.search import (
     MAX_PAGES,
     _search_facts,
-    search_files,
     search_messages,
 )
 from tests.core.slack.conftest import SEARCHER, FakeSlack
@@ -55,21 +54,6 @@ async def test_search_messages_forwards_explicit_count_and_page():
     params = fake_get.call_args.kwargs["params"]
     assert params["count"] == 50
     assert params["page"] == 3
-
-
-@pytest.mark.asyncio
-async def test_search_files_calls_correct_endpoint():
-    accessor = SlackAccessor(SlackConfig(token="xoxb", search_token="xoxp"))
-    with patch(
-        "mirage.core.slack.search.slack_get",
-        new_callable=AsyncMock,
-        return_value={"ok": True, "files": {"matches": []}},
-    ) as mock:
-        await search_files(accessor, "report")
-    args, kwargs = mock.call_args
-    assert args[1] == "search.files"
-    assert kwargs["params"]["query"] == "report"
-    assert "token" not in kwargs
 
 
 @pytest.mark.asyncio

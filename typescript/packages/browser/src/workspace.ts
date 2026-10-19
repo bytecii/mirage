@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+import { decodeBase64 } from '@struktoai/mirage-core/utils/base64'
 import { createShellParser } from '@struktoai/mirage-core/shell/parse'
 import type { ShellParser } from '@struktoai/mirage-core/shell/parse'
 import { Workspace as CoreWorkspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
@@ -25,32 +26,13 @@ import { ENGINE_WASM_BASE64, GRAMMAR_WASM_BASE64 } from './generated/wasm.ts'
 
 let cachedParser: Promise<ShellParser> | null = null
 
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64)
-  const len = bin.length
-  const bytes = new Uint8Array(len)
-  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i)
-  return bytes
-}
-
 function loadShellParser(): Promise<ShellParser> {
   if (cachedParser !== null) return cachedParser
   cachedParser = createShellParser({
-    engineWasm: base64ToBytes(ENGINE_WASM_BASE64),
-    grammarWasm: base64ToBytes(GRAMMAR_WASM_BASE64),
+    engineWasm: decodeBase64(ENGINE_WASM_BASE64),
+    grammarWasm: decodeBase64(GRAMMAR_WASM_BASE64),
   })
   return cachedParser
-}
-
-function randomSessionId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  const bytes = new Uint8Array(16)
-  crypto.getRandomValues(bytes)
-  let hex = ''
-  for (const b of bytes) hex += b.toString(16).padStart(2, '0')
-  return `session-${hex}`
 }
 
 export class Workspace extends CoreWorkspace {
@@ -63,7 +45,6 @@ export class Workspace extends CoreWorkspace {
   constructor(mounts: Record<string, MountSpec>, options: WorkspaceOptions = {}) {
     super(mounts, {
       ...options,
-      sessionId: options.sessionId ?? randomSessionId(),
       shellParserFactory: options.shellParserFactory ?? loadShellParser,
     })
   }

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ensureParents } from '@struktoai/mirage-core/workspace/tools/tool_operations'
 import type { Workspace } from '@struktoai/mirage-node'
 import type { ExecuteResult } from '@struktoai/mirage-core/workspace/workspace/types'
 import type { Files } from '@struktoai/mirage-core/workspace/files'
@@ -32,7 +33,6 @@ import type {
   WriteResult,
 } from 'deepagents'
 import { ioToExecuteResponse, ioToFileInfos, ioToGrepMatches } from './convert.ts'
-import { gnuDirname } from '@struktoai/mirage-core/utils/path'
 import { decode, replaceText } from '@struktoai/mirage-core/workspace/tools/io_text'
 
 const TEXT_EXTENSIONS = new Set([
@@ -78,18 +78,6 @@ const TEXT_EXTENSIONS = new Set([
 function shellQuote(s: string): string {
   if (/^[A-Za-z0-9_./-]+$/.test(s)) return s
   return `'${s.replaceAll(`'`, `'\\''`)}'`
-}
-
-async function ensureParent(vfs: Files, path: string): Promise<void> {
-  const parent = gnuDirname(path)
-  if (parent === '/' || parent === '' || parent === '.') return
-  if (await vfs.exists(parent)) return
-  await ensureParent(vfs, parent)
-  try {
-    await vfs.mkdir(parent)
-  } catch (err) {
-    if (!(await vfs.exists(parent))) throw err
-  }
 }
 
 function extOf(path: string): string {
@@ -227,7 +215,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     if (await this.vfs.exists(filePath)) {
       return { error: `Error: file '${filePath}' already exists` }
     }
-    await ensureParent(this.vfs, filePath)
+    await ensureParents(this.vfs, filePath)
     await this.vfs.write(filePath, content)
     return { path: filePath }
   }
@@ -293,7 +281,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
   ): Promise<FileUploadResponse[]> {
     const results: FileUploadResponse[] = []
     for (const [path, data] of files) {
-      await ensureParent(this.vfs, path)
+      await ensureParents(this.vfs, path)
       await this.vfs.write(path, data)
       results.push({ path, error: null })
     }

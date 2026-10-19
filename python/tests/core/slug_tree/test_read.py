@@ -1,19 +1,13 @@
 import pytest
 
-from mirage.core.slug_tree.read import file_entry
-from mirage.core.slug_tree.rows import folder_row
-from mirage.types import FileStat, FileType
-
-from .conftest import spec
+from mirage.core.slug_tree.read import join_lines
 
 
-def test_file_entry_answers_a_file_and_refuses_the_rest():
-    row = FileStat(name="quickstart", type=FileType.FILE)
+async def _parts():
+    for part in ("a", "b", "c"):
+        yield part
 
-    assert file_entry(spec("/knowledge/guides/quickstart"), row) is row
-    with pytest.raises(IsADirectoryError):
-        file_entry(spec("/knowledge/guides"), folder_row("guides"))
-    with pytest.raises(IsADirectoryError):
-        file_entry(spec("/knowledge"), None)
-    with pytest.raises(FileNotFoundError):
-        file_entry(spec("/knowledge/guides/missing"), None)
+
+@pytest.mark.asyncio
+async def test_join_lines_puts_a_newline_between_parts():
+    assert b"".join([c async for c in join_lines(_parts())]) == b"a\nb\nc"

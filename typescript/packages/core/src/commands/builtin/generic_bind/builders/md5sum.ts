@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { md5sumGeneric } from '../../generic/md5sum.ts'
+import { checksumGeneric } from '../../generic/checksum.ts'
 import type { CommandFn } from '../../../config.ts'
 import type { GenericCommand } from '../adapter.ts'
 import { commandFiles, dirAwareStat, dirAwareStream, resolveOrEmpty } from '../files.ts'
@@ -20,10 +20,11 @@ import { commandFiles, dirAwareStat, dirAwareStream, resolveOrEmpty } from '../f
 const md5sum: CommandFn = async (_accessor, paths, _texts, ctx) => {
   const files = commandFiles(ctx, paths)
   const resolved = await resolveOrEmpty(files, paths)
-  return md5sumGeneric(
+  return checksumGeneric(
     resolved,
     ctx,
     dirAwareStream(files, ctx),
+    'md5sum',
     dirAwareStat(files, ctx),
     files.answers('checksum') ? files.checksum : undefined,
   )

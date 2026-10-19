@@ -811,7 +811,7 @@ export class Dispatcher {
       if (owner === null) throw enoent(call.path)
       const writeCall = CALLS.get('write')
       if (writeCall === undefined) throw new Error('missing write call definition')
-      await this.admit(call, owner, this.boundary(owner), writeCall)
+      await this.admit(call, this.boundary(owner), writeCall)
       memoryAnswered(report)
       return [null, new IOResult()]
     }
@@ -885,7 +885,7 @@ export class Dispatcher {
       }
       const mark = declared(owner.vfs.constructor, name) ?? CALLS.get(name) ?? null
       if (mark === null) throw enotsup(owner.vfs.name, name, call.path)
-      await this.admit(call, owner, boundary, mark)
+      await this.admit(call, boundary, mark)
       if (looksUp) {
         await mkdirOnReadOnly(
           dispatchStat(this.dispatch),
@@ -1163,7 +1163,7 @@ export class Dispatcher {
     const mark = declared(owner.vfs.constructor, 'search') ?? CALLS.get('search') ?? null
     if (mark === null) throw enotsup(owner.vfs.name, 'search', first.path)
     const boundary = this.boundary(owner)
-    for (const call of calls) await this.admit(call, owner, boundary, mark)
+    for (const call of calls) await this.admit(call, boundary, mark)
     await owner.ensureReady()
     const result = await owner.searchMany(
       calls.map((call) => call.path.virtual),
@@ -1659,12 +1659,7 @@ export class Dispatcher {
    * of the mount that owns it. A copy only reads its source. Mirrors
    * Python's Dispatcher._admit.
    */
-  private async admit(
-    call: Call,
-    mount: MountEntry,
-    boundary: Boundary,
-    mark: VfsCall,
-  ): Promise<void> {
+  private async admit(call: Call, boundary: Boundary, mark: VfsCall): Promise<void> {
     // A function the VFS declares a write is judged as one, whatever its
     // name: the POSIX names are known here, a custom one only to the VFS
     // that defines it.
@@ -1993,7 +1988,7 @@ export class Dispatcher {
               mount.runWithWriteRevisions(async () => {
                 const pending = Promise.resolve(
                   name === 'setattr'
-                    ? this.applySetattr(mount, vfs, scope, p, opKwargs)
+                    ? this.applySetattr(mount, scope, p, opKwargs)
                     : mount.callKeyed(name, scope, fullArgs, opKwargs, this.access),
                 )
                 onCall?.(pending)
@@ -3435,7 +3430,6 @@ export class Dispatcher {
    */
   private async applySetattr(
     mount: MountEntry,
-    vfs: BaseVFS,
     scope: PathSpec,
     p: PathSpec,
     kwargs: OpKwargs,
@@ -3490,11 +3484,6 @@ export class Dispatcher {
         ? { mtime: typeof mtime === 'string' ? new Date(mtime).getTime() / 1000 : mtime }
         : {}),
     })
-  }
-
-  /** Drop the whole file cache (post-remote-line invalidation). */
-  async clearFileCache(): Promise<void> {
-    await this.cache.clear()
   }
 
   /**

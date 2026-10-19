@@ -46,7 +46,7 @@ from mirage.types import (
     ReadSpec,
     WritePolicy,
 )
-from mirage.utils.path import owner_prefix
+from mirage.utils.path import norm_dir, owner_prefix
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.dev import DevVFS
 from mirage.workspace.cli import CLIRegistry
@@ -342,8 +342,7 @@ class MountRegistry:
                 supplies itself, as the reserved /dev mount does.
         """
         self.check_vfs_available(vfs)
-        stripped = prefix.strip("/")
-        norm_prefix = "/" + stripped + "/" if stripped else "/"
+        norm_prefix = norm_dir(prefix)
         for existing in self._mounts:
             if existing.prefix == norm_prefix:
                 raise ValueError(f"duplicate mount prefix: {norm_prefix!r}")
@@ -392,8 +391,7 @@ class MountRegistry:
         Args:
             prefix (str): mount prefix.
         """
-        stripped = prefix.strip("/")
-        norm_prefix = "/" + stripped + "/" if stripped else "/"
+        norm_prefix = norm_dir(prefix)
         if norm_prefix == DEV_PREFIX:
             raise ValueError(
                 f"cannot unmount reserved prefix: {norm_prefix!r}"
@@ -441,8 +439,7 @@ class MountRegistry:
         the registration spelling ("/data", "data/") finds the stored
         "/data/" entry (mirrors the TS twin).
         """
-        stripped = prefix.strip("/")
-        norm = "/" + stripped + "/" if stripped else "/"
+        norm = norm_dir(prefix)
         for m in self._mounts if include_hidden else self.visible_mounts():
             if m.prefix == norm:
                 return m
@@ -477,8 +474,7 @@ class MountRegistry:
         Args:
             path (str): parent path to scan beneath.
         """
-        stripped = path.strip("/")
-        norm = "/" + stripped + "/" if stripped else "/"
+        norm = norm_dir(path)
         out: list[MountEntry] = []
         for m in self.visible_mounts():
             if m.prefix == norm:

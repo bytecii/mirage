@@ -19,7 +19,7 @@ from mirage.accessor.mem0 import Mem0Accessor
 from mirage.core.mem0.read import read as _read
 from mirage.core.mem0.read import read_stream as _read_stream
 from mirage.core.mem0.readdir import readdir as _readdir
-from mirage.core.mem0.search import search_many, search_resource
+from mirage.core.mem0.search import search_many
 from mirage.core.mem0.stat import stat as _stat
 from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.utils.ranges import slice_window
@@ -69,7 +69,7 @@ class Mem0VFS(BaseVFS):
     async def search(
         self, path: PathSpec, query: SearchQuery
     ) -> list[tuple[str, str]] | None:
-        return await search_resource(self.accessor, path, query)
+        return await search_many(self.accessor, [path], query)
 
     async def search_many(
         self, paths: list[PathSpec], query: SearchQuery

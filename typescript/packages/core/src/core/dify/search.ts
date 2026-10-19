@@ -209,11 +209,3 @@ export async function searchMany(
     mountPrefix: prefix,
   })
 }
-
-export function searchResource(
-  accessor: DifyAccessor,
-  path: PathSpec,
-  query: SearchQuery,
-): Promise<[string, string][]> {
-  return searchMany(accessor, [path], query)
-}

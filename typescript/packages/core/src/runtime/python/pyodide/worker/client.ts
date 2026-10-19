@@ -19,7 +19,6 @@ import { classify } from '../../../../errors/classify.ts'
 import { CommandTimeoutError } from '../../../../errors/types.ts'
 import type { Context } from '../../../../commands/config.ts'
 import { captureSessionContext } from '../../../../context/session_context.ts'
-import { captureExecutionContext } from '../../../../execution/context.ts'
 import { ContextScope } from '../../../../utils/context_scope.ts'
 import type { RunResult } from '../../../types.ts'
 import type { RuntimeFiles } from '../../../files.ts'
@@ -172,7 +171,7 @@ export class PyodideWorkerClient {
     if (this.failure !== null) throw this.failure
     const signal = ctx.signal
     // The run's context, replayed for each call the guest makes.
-    const scope = new ContextScope([...captureSessionContext(), captureExecutionContext()])
+    const scope = new ContextScope(captureSessionContext())
     const responses = new Set<Promise<void>>()
     const processes = new GuestProcessTable(ctx, files)
     const cap = request.config.maxMemory ?? null

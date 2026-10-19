@@ -1051,8 +1051,3 @@ class Policies:
         """
         action, limit, _ = await self._fire("post_execute", ctx)
         return action, limit
-
-
-def get_op_policies() -> Policies | None:
-    """The policies bound to the running command, None outside one."""
-    return current_caller().policies

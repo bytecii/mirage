@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { sleep } from '../../utils/abort.ts'
 import { type ByteWindow, rangeHeader, windowOf } from '../../utils/ranges.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import { chunks } from '../../io/cooperative.ts'
@@ -192,12 +193,6 @@ export interface ApiRequestOptions {
   fetchFn?: typeof fetch | undefined
 }
 
-function sleep(seconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, seconds * 1000)
-  })
-}
-
 /**
  * Whether a server-supplied delay is one we can actually wait out. NaN and
  * infinity are unusable (`setTimeout` silently clamps both to 1ms, turning
@@ -285,7 +280,7 @@ export async function apiRequest(
     } catch (err) {
       // a rejection is connection-level: HTTP errors resolve normally
       if (retry.retryTransport === true && attempt < retry.maxRetries) {
-        await sleep(Math.min(2 ** attempt, retry.maxBackoff))
+        await sleep(Math.min(2 ** attempt, retry.maxBackoff) * 1000)
         attempt += 1
         continue
       }
@@ -295,7 +290,7 @@ export async function apiRequest(
       const text = await response.text()
       const retryable = retry.retryable === undefined || retry.retryable(response.status, text)
       if (retryable && attempt < retry.maxRetries) {
-        await sleep(retryDelay(response, text, attempt, retry))
+        await sleep(retryDelay(response, text, attempt, retry) * 1000)
         attempt += 1
         continue
       }

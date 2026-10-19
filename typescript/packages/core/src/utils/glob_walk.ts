@@ -85,14 +85,14 @@ export function hasGlobPrefix(pattern: string): boolean {
  * character literally, so the marks are restored here: `'*'ab*` asks for
  * names starting with a real star.
  */
-export function globPrefix(pattern: string | null | undefined, access?: SessionAccess): string {
+export function globPrefix(pattern: string | null | undefined): string {
   if (!pattern) return ''
   let metaIndex = -1
   for (const ch of GLOB_CHARS) {
     const idx = pattern.indexOf(ch)
     if (idx !== -1 && (metaIndex === -1 || idx < metaIndex)) metaIndex = idx
   }
-  const opener = extglobActive(access) ? pattern.search(EXTGLOB_RE) : -1
+  const opener = extglobActive() ? pattern.search(EXTGLOB_RE) : -1
   if (opener !== -1 && (metaIndex === -1 || opener < metaIndex)) metaIndex = opener
   if (metaIndex === -1) return ''
   return unmarkGlobs(pattern.slice(0, metaIndex))

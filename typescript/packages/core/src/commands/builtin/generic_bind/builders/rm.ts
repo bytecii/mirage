@@ -12,12 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult } from '../../../../io/types.ts'
 import { FileType, type FileStat, type PathSpec } from '../../../../types.ts'
 import { walk } from '../../generic/cp.ts'
 import { removeTree, rmWithoutOperands } from '../../generic/rm_cmd.ts'
-import { formatRecords } from '../../utils/output.ts'
-import { mountPoints } from '../../utils/operands.ts'
+import { formatOptionalRecords } from '../../utils/output.ts'
+import { mountPoints, operandsIo } from '../../utils/operands.ts'
 import { removalLines } from '../../utils/verbose.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
@@ -151,15 +150,7 @@ const rm: CommandFn = async (_accessor, paths, _texts, ctx) => {
     }
     if (verbose) lines.push(...entryLines)
   }
-  const out = lines.length > 0 ? formatRecords(lines) : null
-  const stderr = errors.length > 0 ? new TextEncoder().encode(errors.join('\n') + '\n') : undefined
-  return [
-    out,
-    new IOResult({
-      exitCode: errors.length > 0 ? 1 : 0,
-      ...(stderr !== undefined ? { stderr } : {}),
-    }),
-  ]
+  return [formatOptionalRecords(lines), operandsIo(errors.map((line) => `${line}\n`).join(''))]
 }
 
 export const BUILDER: GenericCommand = {

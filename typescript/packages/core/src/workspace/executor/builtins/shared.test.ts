@@ -31,7 +31,6 @@ import {
   isCountWord,
   isValidName,
   ok,
-  operandText,
   readonlyRefusal,
   recordDelimiter,
   refusal,
@@ -84,11 +83,6 @@ describe('builtins/shared: the result triple', () => {
 })
 
 describe('builtins/shared: operands and flags', () => {
-  it('operandText unwraps a PathSpec the classifier wrapped', () => {
-    expect(operandText(PathSpec.fromStrPath('/data/644'))).toBe('/data/644')
-    expect(operandText('644')).toBe('644')
-  })
-
   it('absPath resolves a relative operand against the cwd', () => {
     expect(absPath(PathSpec.fromStrPath('/data/f.txt'), '/tmp')).toBe('/data/f.txt')
     expect(absPath('f.txt', '/data')).toBe('/data/f.txt')

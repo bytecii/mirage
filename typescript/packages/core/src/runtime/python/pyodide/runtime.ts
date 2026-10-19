@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { captureSessionContext } from '../../../context/session_context.ts'
-import { captureExecutionContext } from '../../../execution/context.ts'
 import type { Context } from '../../../commands/config.ts'
 import type { PathSpec } from '../../../types.ts'
 import { ContextScope } from '../../../utils/context_scope.ts'
@@ -266,7 +265,7 @@ export class PyodideRuntime extends PythonRuntime<undefined> {
       this.capped(runtime, await runtime.runOne(program, ctx, binding))
     if (this.sync === undefined && (ctx.processes?.depth ?? 0) > 0)
       return this.withFreshRuntime(execute)
-    const scope = new ContextScope([...captureSessionContext(), captureExecutionContext()])
+    const scope = new ContextScope(captureSessionContext())
     return this.schedule(() =>
       this.withPermit(() => scope.run(() => this.withFreshRuntime(execute)), ctx.signal),
     )

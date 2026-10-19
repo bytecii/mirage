@@ -6,7 +6,7 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.chroma.read import read as _read
 from mirage.core.chroma.read import read_stream as _read_stream
 from mirage.core.chroma.search import files_containing as _files_containing
-from mirage.core.chroma.search import search_many, search_resource
+from mirage.core.chroma.search import search_many
 from mirage.core.chroma.stat import stat as _stat
 from mirage.core.chroma.tree import CHROMA_TREE
 from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
@@ -65,7 +65,7 @@ class ChromaVFS(BaseVFS):
     async def search(
         self, path: PathSpec, query: SearchQuery
     ) -> list[tuple[str, str]] | None:
-        return await search_resource(self.accessor, path, query)
+        return await search_many(self.accessor, [path], query)
 
     async def files_containing(
         self,

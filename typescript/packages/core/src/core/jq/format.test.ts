@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { jqRunTexts } from './eval.ts'
-import { dumpText, errorReport, formatOne, haltReport, loadFailure, printable } from './format.ts'
+import { errorReport, formatOne, haltReport, loadFailure, printable } from './format.ts'
 import { jqOptions, type JqOptions } from './types.ts'
 import { eacces, eisdir, enoent } from '../../errors/fs.ts'
 
@@ -117,12 +117,14 @@ describe('formatOne', () => {
 
   it('lays out a value nested as deep as jq reads', async () => {
     const deep = '['.repeat(300) + '1.000' + ']'.repeat(300)
-    const pretty = await dumpText(deep, PRETTY)
+    const pretty = DEC.decode(await formatOne(deep, PRETTY))
     expect(pretty.startsWith('[\n  [\n    [')).toBe(true)
     expect(pretty.includes(`\n${' '.repeat(600)}1.000\n`)).toBe(true)
     const nested = '{"b":'.repeat(300) + '{"a":1}' + '}'.repeat(300)
     expect(
-      (await dumpText(nested, jqOptions({ compact: true, sortKeys: true }))).split('"b"'),
+      DEC.decode(await formatOne(nested, jqOptions({ compact: true, sortKeys: true }))).split(
+        '"b"',
+      ),
     ).toHaveLength(301)
   })
 
@@ -132,8 +134,8 @@ describe('formatOne', () => {
       // jq compares keys as UTF-8 bytes, which is code point order.
       const text = '{"é":1,"z":2,"a\\"":3,"😀":4,"ｚ":5,"\\u0001":6}'
       const ordered = '{"\\u0001":6,"a\\"":3,"z":2,"é":1,"ｚ":5,"😀":4}'
-      expect(await dumpText(text, jqOptions({ compact, sortKeys: true }))).toBe(
-        await dumpText(ordered, jqOptions({ compact })),
+      expect(await formatOne(text, jqOptions({ compact, sortKeys: true }))).toEqual(
+        await formatOne(ordered, jqOptions({ compact })),
       )
     },
   )

@@ -3,7 +3,8 @@ from collections.abc import AsyncIterator
 from mirage.accessor.chroma import ChromaAccessor
 from mirage.core.chroma.client import iter_page_chunks, page_chunks
 from mirage.core.chroma.render import render_page
-from mirage.core.slug_tree.read import file_entry, join_lines
+from mirage.core.hierarchy.probe import file_entry
+from mirage.core.slug_tree.read import join_lines
 from mirage.types import FileStat, PathSpec
 
 

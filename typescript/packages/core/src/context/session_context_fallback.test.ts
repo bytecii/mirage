@@ -51,7 +51,6 @@ import {
   Scope,
 } from '../policy/types.ts'
 import type { Policy } from '../policy/base.ts'
-import { type Policies, runWithOpPolicies, getOpPolicies } from '../policy/policies.ts'
 import type { SessionManager } from '../workspace/session/manager.ts'
 import { SessionState } from '../workspace/session/session.ts'
 import { parseSessionProfile } from '../policy/profile.ts'
@@ -366,25 +365,6 @@ describe('the admission gate on the fallback storage', () => {
     })
     await second
     expect(after).toBe(gateA)
-  })
-})
-
-describe('op policies on the fallback storage', () => {
-  const armed = { wants: () => true } as unknown as Policies
-
-  it('an armed frame survives a concurrent settle', async () => {
-    const [hold, release] = gate()
-    let after: Policies | null = null
-    const first = runWithOpPolicies({ wants: () => true } as unknown as Policies, async () => {
-      await hold
-    })
-    const second = runWithOpPolicies(armed, async () => {
-      release()
-      await first
-      after = getOpPolicies()
-    })
-    await second
-    expect(after).toBe(armed)
   })
 })
 

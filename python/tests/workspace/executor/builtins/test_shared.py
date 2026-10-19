@@ -33,7 +33,6 @@ from mirage.workspace.executor.builtins.shared import (
     is_count_word,
     is_valid_name,
     ok,
-    operand_text,
     readonly_refusal,
     record_delimiter,
     refusal,
@@ -78,11 +77,6 @@ def test_finish_joins_errors():
     assert io.exit_code == 1
     assert io.stderr == b"a\nb\n"
     assert node.stderr == b"a\nb\n"
-
-
-def test_operand_text():
-    assert operand_text(PathSpec.from_str_path("/data/644")) == "/data/644"
-    assert operand_text("644") == "644"
 
 
 def test_abs_path():

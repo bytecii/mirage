@@ -128,7 +128,6 @@ async function windowFromStream(
   const end = size === null ? Number.POSITIVE_INFINITY : offset + size
   const pieces: Uint8Array[] = []
   let seen = 0
-  let total = 0
   for await (const chunk of readStream(accessor, path)) {
     const chunkEnd = seen + chunk.byteLength
     if (chunkEnd > offset) {
@@ -137,17 +136,10 @@ async function windowFromStream(
         Math.min(chunk.byteLength, end - seen),
       )
       pieces.push(piece)
-      total += piece.byteLength
     }
     seen = chunkEnd
     // Breaking here returns the generator, which cancels the body reader.
     if (seen >= end) break
   }
-  const out = new Uint8Array(total)
-  let at = 0
-  for (const piece of pieces) {
-    out.set(piece, at)
-    at += piece.byteLength
-  }
-  return out
+  return concat(pieces)
 }

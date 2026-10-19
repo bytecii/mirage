@@ -17,7 +17,6 @@ from typing import Any
 from mirage.accessor.lancedb import LanceDBAccessor
 from mirage.core.lancedb.search import files_containing as _files_containing
 from mirage.core.lancedb.tree import SEARCH, read, readdir, stat
-from mirage.errors.fs import enotsup
 from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.utils.ranges import slice_window
 from mirage.vfs.base import BaseVFS
@@ -79,10 +78,7 @@ class LanceDBVFS(BaseVFS):
     async def search_many(
         self, paths: list[PathSpec], query: SearchQuery
     ) -> list[tuple[str, str]] | None:
-        many = SEARCH.search_many
-        if many is None:
-            raise enotsup(self.name, "search", paths[0])
-        return await many(self.accessor, paths, query)
+        return await SEARCH.search_many(self.accessor, paths, query)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

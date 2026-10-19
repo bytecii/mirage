@@ -19,7 +19,7 @@ from mirage.core.redis.dest import lookup_error
 from mirage.errors.fs import eisdir
 from mirage.observe.context import record_stream
 from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 from mirage.utils.path import norm
 
 
@@ -28,12 +28,7 @@ async def read_stream(
     path: PathSpec,
 ) -> AsyncIterator[bytes]:
     virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.vfs_path)
-    raw = path.virtual
-    if prefix and raw.startswith(prefix):
-        rest = raw[len(prefix) :]
-        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-            raw = rest or "/"
+    raw = raw_path_of(path)
     store = accessor.store
     key = norm(raw)
     data = await store.get_file(key)

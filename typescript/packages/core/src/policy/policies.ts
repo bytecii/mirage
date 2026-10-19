@@ -19,10 +19,8 @@ import {
   currentCaller,
   explaining,
   lineRunning,
-  liveCallers,
   noteRefusal,
   runExplaining,
-  runWithCaller,
 } from '../context/session_context.ts'
 import { eacces, erofs } from '../errors/fs.ts'
 import { fsErrorLine } from '../errors/render.ts'
@@ -819,45 +817,4 @@ export class Policies {
     const [action] = await this.fire('postSession', ctx)
     return action
   }
-}
-
-/**
- * Bind the workspace's admission policies for the duration of `fn`:
- * the run of one command.
- *
- * Bound by command dispatch around routing, the same window the
- * admission gate binds in, so the command tier's policy guard can fire
- * `preVfs` for the backend I/O a handler performs. Read at wrap or
- * call time by `withCommandGuards`; unset outside a dispatched command
- * (a generic invoked directly in a test), where the guard is inert.
- */
-// The policies a call consults, on the caller: added here, where Policies
-// lives, so the caller's module imports no policy module.
-declare module '../context/session_context.ts' {
-  interface Caller {
-    readonly policies: Policies | null
-  }
-}
-
-export function runWithOpPolicies<T>(policies: Policies, fn: () => Promise<T>): Promise<T> {
-  return runWithCaller({ ...currentCaller(), policies }, fn)
-}
-
-/**
- * The policies bound to the running command, null outside one.
- *
- * The newest live armed set. On an isolating runtime the live set is
- * the innermost binding, so a suspension answers null exactly as
- * bound. On the fallback storage a suspension yields to any
- * concurrently armed frame, because disarming another command's op
- * gates is the worse failure: find's delegated `rm` then double-admits
- * its removal (an over-count, failing closed) instead of a concurrent
- * command's ops running unguarded.
- */
-export function getOpPolicies(): Policies | null {
-  let armed: Policies | null = null
-  for (const caller of liveCallers()) {
-    if (caller.policies !== null) armed = caller.policies
-  }
-  return armed
 }

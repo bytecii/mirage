@@ -76,9 +76,9 @@ def handle_response(r: httpx.Response) -> dict[str, Any] | list[Any]:
     return r.json()
 
 
-def format_age(epoch: float, now: float | None = None) -> str:
+def format_age(epoch: float) -> str:
     """Render a Unix timestamp as a short relative age (``2m``, ``3h``)."""
-    delta = max(0, (now if now is not None else time.time()) - epoch)
+    delta = max(0, time.time() - epoch)
     if delta < 60:
         return f"{int(delta)}s"
     if delta < 3600:

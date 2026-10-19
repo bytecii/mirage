@@ -14,7 +14,6 @@
 
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { eisdir, enoent } from '@struktoai/mirage-core/errors/fs'
-import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { lstripSlash, rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import type { OpenMode, SFTPWrapper } from 'ssh2'
 import { FXF_CREAT, FXF_WRITE } from './constants.ts'
@@ -22,16 +21,6 @@ import { FXF_CREAT, FXF_WRITE } from './constants.ts'
 const S_IFMT = 0o170000
 export const S_IFDIR = 0o040000
 export const S_IFREG = 0o100000
-
-export function stripPrefix(p: PathSpec): string {
-  if (
-    mountPrefixOf(p.virtual, p.vfsPath) &&
-    p.virtual.startsWith(mountPrefixOf(p.virtual, p.vfsPath))
-  ) {
-    return p.virtual.slice(mountPrefixOf(p.virtual, p.vfsPath).length) || '/'
-  }
-  return p.virtual
-}
 
 export function joinRoot(root: string, rel: string): string {
   const r = rstripSlash(root)

@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TypeVar
 
 from mirage.commands.builtin.utils.constants import STDIN_HEADER_NAME
 from mirage.commands.builtin.utils.operands import normalized_read
@@ -21,12 +20,6 @@ from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.types import ByteSource, materialize
 from mirage.shell.bytes import encode_text
 from mirage.types import FileStat, FileType, PathSpec, PolymorphicReadFn
-
-# The backend config a platform command threads through to its reader.
-# Generic rather than a union: the config and the reader that consumes
-# it must be the same backend's, which a union would not enforce.
-ConfigT = TypeVar("ConfigT")
-PathT = TypeVar("PathT")
 
 
 async def read_stdin_async(stdin: ByteSource | None) -> bytes | None:
@@ -51,38 +44,6 @@ def resolve_source(stdin: ByteSource | None) -> AsyncIterator[bytes]:
         return stdin
     # GNU semantics: no stdin behaves like empty input (/dev/null)
     return _wrap_bytes(b"")
-
-
-async def resolve_text_input(
-    read_bytes: Callable[[ConfigT, PathT], Awaitable[bytes]],
-    config: ConfigT,
-    *,
-    inline_text: str | None,
-    file_path: PathT | None,
-    stdin: ByteSource | None,
-    error_message: str,
-) -> str:
-    """Resolve a platform command's text from flag, file, or stdin.
-
-    Args:
-        read_bytes (Callable): backend read ``(config, path) -> bytes``.
-        config: the backend config passed through to ``read_bytes``.
-        inline_text (str | None): text given inline on the command line;
-            an empty one is the text (`--desc ''` clears a description).
-        file_path (PathT | None): the operand to read the text from, in
-            whatever shape ``read_bytes`` takes -- a backend reader wants
-            the mount-relative path, not the virtual one.
-        stdin (ByteSource | None): piped input.
-        error_message (str): raised when no source provides text.
-    """
-    if inline_text is not None:
-        return inline_text
-    if file_path is not None:
-        return (await read_bytes(config, file_path)).decode(errors="replace")
-    raw = await read_stdin_async(stdin)
-    if raw is not None:
-        return raw.decode(errors="replace")
-    raise ValueError(error_message)
 
 
 def is_stdin(path: PathSpec, dash: bool = True) -> bool:

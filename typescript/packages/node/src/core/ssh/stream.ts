@@ -12,13 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { once } from 'node:events'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/errors/fs'
 import { singleQuote } from '@struktoai/mirage-core/utils/quote'
 import type { ReadStream } from 'ssh2'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot } from './utils.ts'
 
 export const FOLLOW =
   'test -f {path} && exec 3< {path} && command -v tail >/dev/null' +
@@ -50,7 +51,7 @@ export async function* readChunks(rs: ReadStream): AsyncIterable<Uint8Array> {
 
 export async function* readStream(accessor: SSHAccessor, p: PathSpec): AsyncIterable<Uint8Array> {
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   const rs = sftp.createReadStream(remote)
   try {
@@ -84,7 +85,7 @@ export async function follow(
   n: number,
   _interval: number,
 ): Promise<AsyncIterable<Uint8Array> | null> {
-  const remote = singleQuote(joinRoot(accessor.config.root ?? '/', stripPrefix(p)))
+  const remote = singleQuote(joinRoot(accessor.config.root ?? '/', rawPathOf(p)))
   const command = FOLLOW.replaceAll(/\{path\}|\{n\}/g, (slot) =>
     slot === '{path}' ? remote : String(n),
   )

@@ -41,18 +41,6 @@ logger = logging.getLogger(__name__)
 GLOB_CHARS = ("*", "?", "[")
 
 
-def _meta_index(pattern: str, access: SessionAccess | None = None) -> int:
-    first = -1
-    for ch in GLOB_CHARS:
-        idx = pattern.find(ch)
-        if idx != -1 and (first == -1 or idx < first):
-            first = idx
-    opener = EXTGLOB_RE.search(pattern) if extglob_active(access) else None
-    if opener is not None and (first == -1 or opener.start() < first):
-        first = opener.start()
-    return first
-
-
 def has_glob_span(pattern: str) -> bool:
     """Whether a glob names a date range a windowed lister can move to.
 
@@ -80,10 +68,7 @@ def has_glob_prefix(pattern: str) -> bool:
     return bool(glob_prefix(pattern))
 
 
-def glob_prefix(
-    pattern: str | None,
-    access: SessionAccess | None = None,
-) -> str:
+def glob_prefix(pattern: str | None) -> str:
     """The literal text a glob starts with, before its first metacharacter.
 
     A quoted glob character travels under a private mark and stands for
@@ -99,7 +84,16 @@ def glob_prefix(
     """
     if not pattern:
         return ""
-    meta_index = _meta_index(pattern, access)
+    meta_index = -1
+    for ch in GLOB_CHARS:
+        idx = pattern.find(ch)
+        if idx != -1 and (meta_index == -1 or idx < meta_index):
+            meta_index = idx
+    opener = EXTGLOB_RE.search(pattern) if extglob_active() else None
+    if opener is not None and (
+        meta_index == -1 or opener.start() < meta_index
+    ):
+        meta_index = opener.start()
     if meta_index == -1:
         return ""
     return unmark_globs(pattern[:meta_index])

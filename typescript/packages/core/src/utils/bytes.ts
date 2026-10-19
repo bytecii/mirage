@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 /** One byte array holding every chunk in order. */
-export function concat(chunks: readonly Uint8Array[]): Uint8Array {
+export function concat(chunks: readonly Uint8Array[]): Uint8Array<ArrayBuffer> {
   let total = 0
   for (const c of chunks) total += c.byteLength
   const out = new Uint8Array(total)

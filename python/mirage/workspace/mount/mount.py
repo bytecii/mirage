@@ -1180,7 +1180,6 @@ class MountEntry:
         token = bind_caller(
             dataclasses.replace(
                 self._on_mount(outer),
-                revisions=self.revisions or None,
                 cache_manager=self.cache_manager,
                 mount=(self.prefix, self.mode),
                 walk_probe=(
@@ -2234,12 +2233,7 @@ class MountEntry:
             kwargs.setdefault("index", self.index)
             index = kwargs["index"]
             op_timeout = self.op_timeout(name)
-            token = bind_caller(
-                dataclasses.replace(
-                    self._on_mount(current_caller()),
-                    revisions=self.revisions or None,
-                )
-            )
+            token = bind_caller(self._on_mount(current_caller()))
             try:
                 # The backend's own paths are host paths, so the process
                 # patch (runtime/python/host/fs.py and open.py) must not answer
@@ -2289,13 +2283,15 @@ class MountEntry:
 
     def _on_mount(self, caller: Caller) -> Caller:
         """``caller`` running on this mount: its records name this mount,
-        and its writes are checked against this mount's write context.
+        its writes are checked against this mount's write context, and its
+        reads keep this mount's revision pins.
 
         Args:
             caller (Caller): who makes the call.
         """
         return dataclasses.replace(
             caller,
+            revisions=self.revisions or None,
             recorder=(
                 None
                 if caller.recorder is None
@@ -2420,12 +2416,7 @@ class MountEntry:
             query (SearchQuery): the query and its options.
         """
         async with self.use():
-            token = bind_caller(
-                dataclasses.replace(
-                    self._on_mount(current_caller()),
-                    revisions=self.revisions or None,
-                )
-            )
+            token = bind_caller(self._on_mount(current_caller()))
             try:
                 with host_io():
                     return await run_with_timeout(
@@ -2453,12 +2444,7 @@ class MountEntry:
             limit (int): the most bytes worth fetching for one file.
         """
         async with self.use():
-            token = bind_caller(
-                dataclasses.replace(
-                    self._on_mount(current_caller()),
-                    revisions=self.revisions or None,
-                )
-            )
+            token = bind_caller(self._on_mount(current_caller()))
             try:
                 with host_io():
                     return await run_with_timeout(
@@ -2574,12 +2560,7 @@ class MountEntry:
             limit.timeout_seconds if limit is not None else None,
             "read",
         )
-        token = bind_caller(
-            dataclasses.replace(
-                self._on_mount(current_caller()),
-                revisions=self.revisions or None,
-            )
-        )
+        token = bind_caller(self._on_mount(current_caller()))
         try:
             pulls = ContextScope()
         finally:

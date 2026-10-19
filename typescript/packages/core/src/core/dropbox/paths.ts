@@ -13,16 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '../../types.ts'
-import { mountPrefixOf } from '../../utils/key_prefix.ts'
+import { rawPathOf } from '../../utils/key_prefix.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import type { DropboxAccessor } from '../../accessor/dropbox.ts'
 
 /** Map a mount path to the Dropbox API path under the configured root. */
 export function dropboxPathOf(accessor: DropboxAccessor, path: PathSpec): string {
-  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-  let p = path.virtual
-  if (prefix !== '' && p.startsWith(prefix)) p = p.slice(prefix.length) || '/'
-  const key = stripSlash(p)
+  const key = stripSlash(rawPathOf(path))
   return key === '' ? accessor.rootPath : `${accessor.rootPath}/${key}`
 }
 

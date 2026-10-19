@@ -87,11 +87,3 @@ export async function searchMany(
   }
   return searchMemoriesRendered(accessor, query.query, prefix, topK, threshold, ids)
 }
-
-export function searchResource(
-  accessor: Mem0Accessor,
-  path: PathSpec,
-  query: SearchQuery,
-): Promise<[string, string][]> {
-  return searchMany(accessor, [path], query)
-}

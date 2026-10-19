@@ -24,7 +24,7 @@ from mirage.core.ssh.stat import attrs_to_file_stat
 from mirage.core.ssh.utils import join_root
 from mirage.errors.fs import eacces, listing_error
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 
 logger = logging.getLogger(__name__)
 # SFTP 3 has one code for every unresolvable name, so a component under a
@@ -87,12 +87,7 @@ async def readdir(
     accessor: SSHAccessor, path_spec: PathSpec
 ) -> list[FileStat]:
     virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
-    path = path_spec.directory if path_spec.pattern else path_spec.virtual
-    if prefix and path.startswith(prefix):
-        rest = path[len(prefix) :]
-        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-            path = rest or "/"
+    path = raw_path_of(path_spec.dir if path_spec.pattern else path_spec)
     sftp = await accessor.sftp()
     try:
         remote_path = join_root(accessor.config.root, path)

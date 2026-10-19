@@ -373,7 +373,6 @@ export async function executeCommand(
       executeFn,
       node,
       nonPrefixParts,
-      name,
       context,
       stdinIn,
       callStack,
@@ -420,7 +419,6 @@ async function runCommandBody(
   executeFnIn: ExecuteFn,
   node: TSNodeLike,
   parts: TSNodeLike[],
-  name: string,
   context: EvaluationContext,
   stdinIn: ByteSource | null,
   callStack: CallStack | null,
@@ -715,10 +713,9 @@ async function runArgv(
     const judging = gated !== null && (await policies.wantsFor('postCommand', sessionId))
     const watched = judging || (await policies.wantsFor('postExecute', sessionId))
     let mine: OpRecord[] = []
-    // The command's own layer of the caller: the policies its file calls
-    // consult and, once admitted, its gate.
+    // The command's own layer of the caller: once admitted, its gate.
     const outer = currentCaller()
-    const result = await runWithCaller({ ...outer, policies, gate: gated ?? outer.gate }, () =>
+    const result = await runWithCaller({ ...outer, gate: gated ?? outer.gate }, () =>
       commandRecords((records) => {
         mine = records
         return route()

@@ -69,8 +69,7 @@ class GoogleDriveVFS(BaseVFS):
     def __init__(self, config: GoogleDriveConfig) -> None:
         super().__init__()
         self.config = config
-        self._token_manager = TokenManager(config)
-        self.accessor = GDriveAccessor(self.config, self._token_manager)
+        self.accessor = GDriveAccessor(self.config, TokenManager(config))
 
     async def readdir(
         self, path: PathSpec, entry: FileStat | None = None
@@ -219,11 +218,6 @@ class GoogleDriveVFS(BaseVFS):
         if not whole_word or not self.config.content_search:
             return None
         return await _files_containing(self.accessor, text, path, entry)
-
-    async def close(self) -> None:
-        """Drain the token manager's connection pool with the VFS."""
-        await self._token_manager.close()
-        await super().close()
 
     async def setattr(
         self,

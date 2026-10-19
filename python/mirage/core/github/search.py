@@ -24,7 +24,6 @@ from mirage.core.github.constants import (
 )
 from mirage.core.github.pushdown import (
     count_scope_files,
-    scope_relative_key,
     search_safe,
     unsearchable_keys,
 )
@@ -32,7 +31,7 @@ from mirage.core.github.repo import ensure_default_branch, ensure_ref
 from mirage.core.github.tree import ensure_tree
 from mirage.types import JsonValue, PathSpec
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.utils.key_prefix import mount_key, mount_prefix_of, raw_path_of
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +127,7 @@ async def narrow_paths(
     mount_prefix = mount_prefix_of(paths[0].virtual, paths[0].vfs_path)
     narrowed: list[str] = []
     for p in paths:
-        key = scope_relative_key(p)
+        key = raw_path_of(p)
         path_filter = key.strip("/")
         try:
             results, truncated = await search_code(
@@ -174,9 +173,7 @@ async def narrow_paths(
 
 async def _scope_files(accessor: GitHubAccessor, under: list[PathSpec]) -> int:
     await ensure_tree(accessor)
-    return sum(
-        count_scope_files(accessor.tree, scope_relative_key(p)) for p in under
-    )
+    return sum(count_scope_files(accessor.tree, raw_path_of(p)) for p in under)
 
 
 async def files_containing(

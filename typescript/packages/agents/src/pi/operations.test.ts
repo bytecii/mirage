@@ -66,12 +66,14 @@ describe('mirageOperations.write', () => {
     expect(await ws.vfs.isDir('/a/b/c')).toBe(true)
   })
 
-  it('mkdir is idempotent', async () => {
+  it('mkdir is idempotent, concurrent calls included', async () => {
     const ws = mkWs()
     const ops = mirageOperations(ws)
     await ops.write.mkdir('/a/b')
     await ops.write.mkdir('/a/b')
+    await Promise.all([ops.write.mkdir('/a/c'), ops.write.mkdir('/a/c')])
     expect(await ws.vfs.isDir('/a/b')).toBe(true)
+    expect(await ws.vfs.isDir('/a/c')).toBe(true)
   })
 })
 

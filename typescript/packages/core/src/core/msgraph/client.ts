@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { sleep } from '../../utils/abort.ts'
 import { graphApi, type MsGraphConfigResolved } from './config.ts'
 import { type ByteWindow } from '../../utils/ranges.ts'
 import { apiRequest, headerDelay, type ApiRequestOptions, type RetryPolicy } from '../api/client.ts'
@@ -48,12 +49,6 @@ interface RequestOptions {
   auth?: boolean
   read?: GraphRead
   window?: ByteWindow | undefined
-}
-
-function sleep(seconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, seconds * 1000)
-  })
 }
 
 async function tokenOf(config: MsGraphConfigResolved): Promise<string> {
@@ -216,7 +211,7 @@ export async function* graphStream(
       clearTimeout(timer)
     }
     if (RETRY_STATUSES.has(response.status) && attempt < config.maxRetries) {
-      await sleep(headerDelay(response, attempt, policy(config)))
+      await sleep(headerDelay(response, attempt, policy(config)) * 1000)
       attempt += 1
       continue
     }
@@ -348,7 +343,7 @@ export async function pollMonitor(
     if (payload.status === 'completed' || payload.status === 'failed' || waited >= timeout) {
       return payload
     }
-    await sleep(interval)
+    await sleep(interval * 1000)
     waited += interval
   }
 }

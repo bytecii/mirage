@@ -29,7 +29,7 @@ import type { Handed } from '../types.ts'
 import { DIFY_TREE } from '../../core/dify/tree.ts'
 import { read, readStream } from '../../core/dify/read.ts'
 import { stat } from '../../core/dify/stat.ts'
-import { searchResource, searchMany } from '../../core/dify/search.ts'
+import { searchMany } from '../../core/dify/search.ts'
 
 export interface DifyVFSOptions {
   config: DifyConfig
@@ -101,7 +101,7 @@ export class DifyVFS extends BaseVFS {
   }
 
   override search(path: PathSpec, query: SearchQuery): Promise<[string, string][] | null> {
-    return searchResource(this.accessor, path, query)
+    return searchMany(this.accessor, [path], query)
   }
 
   override searchMany(paths: PathSpec[], query: SearchQuery): Promise<[string, string][] | null> {

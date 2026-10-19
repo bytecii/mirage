@@ -123,9 +123,3 @@ async def search_many(
         threshold=threshold,
         memory_ids=ids,
     )
-
-
-async def search_resource(
-    accessor: Mem0Accessor, path: PathSpec, query: SearchQuery
-) -> list[tuple[str, str]]:
-    return await search_many(accessor, [path], query)

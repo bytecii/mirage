@@ -57,8 +57,7 @@ class GSheetsVFS(BaseVFS):
     def __init__(self, config: GSheetsConfig) -> None:
         super().__init__()
         self.config = config
-        self._token_manager = TokenManager(config)
-        self.accessor = GSheetsAccessor(self.config, self._token_manager)
+        self.accessor = GSheetsAccessor(self.config, TokenManager(config))
 
     async def readdir(self, path: PathSpec) -> list[FileStat] | DirListing:
         return await _readdir(self.accessor, path)
@@ -111,11 +110,6 @@ class GSheetsVFS(BaseVFS):
 
     def delta_hook(self) -> DeltaHook:
         return app_delta_hook(self.accessor, MIME, make_filename)
-
-    async def close(self) -> None:
-        """Drain the token manager's connection pool with the VFS."""
-        await self._token_manager.close()
-        await super().close()
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

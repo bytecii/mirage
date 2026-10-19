@@ -1081,8 +1081,7 @@ class WorkspaceFiles(Files):
         Args:
             prefix (str): the removed mount's prefix.
         """
-        stripped = prefix.strip("/")
-        norm = "/" + stripped + "/" if stripped else "/"
+        norm = norm_dir(prefix)
         # In place, for the same reason ``set_mounts`` is: a facade
         # derived for a session shares this list, and a retained one
         # must stop reporting a mount the workspace dropped.

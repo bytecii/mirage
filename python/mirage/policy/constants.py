@@ -12,7 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.policy.types import Outcome
+from typing import get_args
+
+from mirage.policy.types import Outcome, ScriptMethod
 
 # A whole-command refusal exits as bash does for a command it found but
 # may not run.
@@ -66,16 +68,7 @@ METADATA_OPS = frozenset({"stat", "exists"})
 
 # The methods a profile's policy names programs for: the pre_ four,
 # answered before the action runs, and the post_ four, after it.
-METHODS = (
-    "pre_execute",
-    "pre_command",
-    "pre_vfs",
-    "pre_session",
-    "post_execute",
-    "post_command",
-    "post_vfs",
-    "post_session",
-)
+METHODS = get_args(ScriptMethod)
 
 # The runtimes a policy program runs on: monty, and Python on wasm.
 PROGRAM_RUNTIMES = frozenset({"monty", "wasi"})

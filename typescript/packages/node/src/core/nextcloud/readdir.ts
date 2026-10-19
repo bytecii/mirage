@@ -1,6 +1,6 @@
 import type { FileStat, PathSpec } from '@struktoai/mirage-core/types'
 import { enoent, enotdir, listingError } from '@struktoai/mirage-core/errors/fs'
-import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
+import { mountPrefixOf, rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { rstripSlash, stripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import type { NextcloudAccessor } from '../../accessor/nextcloud.ts'
@@ -36,11 +36,7 @@ function kindProbes(
 /** A folder's children, each as `stat` answers it. Mirrors Python's `readdir`. */
 export async function readdir(accessor: NextcloudAccessor, path: PathSpec): Promise<FileStat[]> {
   const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-  let target = path.pattern !== null ? path.directory : path.virtual
-  if (prefix !== '' && target.startsWith(prefix)) {
-    const rest = target.slice(prefix.length)
-    if (prefix.endsWith('/') || rest === '' || rest.startsWith('/')) target = rest || '/'
-  }
+  const target = rawPathOf(path.pattern !== null ? path.dir : path)
   const virtualKey = rstripSlash(prefix !== '' ? `${prefix}${target}` : target) || '/'
   const stripped = stripSlash(target)
   const listPath = stripped !== '' ? `${stripped}/` : '/'

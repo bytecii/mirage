@@ -15,7 +15,7 @@
 import type { GoogleApiAccessor } from '../../accessor/google_api.ts'
 import { DirListing, FileStat, FileType, type PathSpec } from '../../types.ts'
 import { enoent } from '../../errors/fs.ts'
-import { mountPrefixOf } from '../../utils/key_prefix.ts'
+import { rawPathOf } from '../../utils/key_prefix.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import type { DetectFn } from '../hierarchy/scope.ts'
 import { TOP_LEVEL_DIRS } from './constants.ts'
@@ -40,13 +40,8 @@ export function makeAppReaddir(
   makeFilename: (title: string, fileId: string, modifiedTime: string) => string,
 ): AppReaddir {
   return async (accessor, path) => {
-    const prefix = mountPrefixOf(path.virtual, path.vfsPath)
     const modifiedRange = path.pattern ? globToModifiedRange(path.pattern) : null
-    let p = path.pattern ? path.directory : path.virtual
-    if (prefix !== '' && p.startsWith(prefix)) {
-      const rest = p.slice(prefix.length)
-      if (prefix.endsWith('/') || rest === '' || rest.startsWith('/')) p = rest || '/'
-    }
+    const p = rawPathOf(path.pattern ? path.dir : path)
     const key = stripSlash(p)
 
     // Bespoke below the classifier: the date-glob push-down filters the

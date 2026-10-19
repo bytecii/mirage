@@ -246,7 +246,7 @@ async function route(
     return [null, null, true]
   }
   if (target === CLOSED) await discardStreams(data)
-  else await append(dispatch, session, target, data)
+  else await append(dispatch, target, data)
   return [null, null, false]
 }
 
@@ -554,12 +554,7 @@ async function routed(
   return failed
 }
 
-async function append(
-  dispatch: DispatchFn,
-  session: SessionState,
-  target: string,
-  data: ByteSource,
-): Promise<void> {
+async function append(dispatch: DispatchFn, target: string, data: ByteSource): Promise<void> {
   if (target === CLOSED) return
   const scope = toScope(target)
   try {

@@ -16,7 +16,7 @@ import { BIN_PREFIX } from '../../shell/constants.ts'
 import { HISTORY_PREFIX } from '../../vfs/history/history.ts'
 import type { BaseVFS } from '../../vfs/base.ts'
 import { type Limit, type ReadSpec, MountMode, WritePolicy } from '../../types.ts'
-import { stripSlash } from '../../utils/slash.ts'
+import { normDir } from '../../utils/slash.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import type { MountSpec } from './types.ts'
 import { Mount } from '../mount/spec.ts'
@@ -157,8 +157,7 @@ export interface UnmountDeps {
  * Python `unmount` in `workspace/mounts.py`.
  */
 export async function unmountPrefix(deps: UnmountDeps, prefix: string): Promise<void> {
-  const stripped = stripSlash(prefix)
-  const norm = stripped ? `/${stripped}/` : '/'
+  const norm = normDir(prefix)
   if (norm === '/') {
     throw new Error(`cannot unmount root: ${prefix}`)
   }

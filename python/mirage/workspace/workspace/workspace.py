@@ -478,7 +478,7 @@ class Workspace:
             caching=self._cache.cache_limit > 0,
         )
         self._implicit_root = install_mounts(
-            self._registry, specs, index, mode, self._read_default
+            self._registry, specs, index, mode
         )
         # What the workspace and its mounts hide from every session,
         # stamped onto the default session now and onto every session

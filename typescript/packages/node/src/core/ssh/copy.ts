@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { enotsup, fsError } from '@struktoai/mirage-core/errors/fs'
 import { POSIX } from '@struktoai/mirage-core/errors/posix'
 import type { FsCondition } from '@struktoai/mirage-core/errors/types'
@@ -21,7 +22,7 @@ import { singleQuote } from '@struktoai/mirage-core/utils/quote'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
 import { exists } from './exists.ts'
 import { read } from './read.ts'
-import { joinRoot, stripPrefix } from './utils.ts'
+import { joinRoot } from './utils.ts'
 import { write } from './write.ts'
 
 export const CP = 'env LC_ALL=C cp -RL --'
@@ -53,8 +54,8 @@ function refusal(dst: PathSpec, err: Uint8Array): Error {
 export async function dirCopy(accessor: SSHAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const root = accessor.config.root ?? '/'
   const command =
-    `${CP} ${singleQuote(joinRoot(root, stripPrefix(src)))} ` +
-    `${singleQuote(joinRoot(root, stripPrefix(dst)))} && echo ${COPIED.trim()}`
+    `${CP} ${singleQuote(joinRoot(root, rawPathOf(src)))} ` +
+    `${singleQuote(joinRoot(root, rawPathOf(dst)))} && echo ${COPIED.trim()}`
   const upto = lostCount()
   const timer = startOp()
   let status: number | null

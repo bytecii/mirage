@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { randomUUID } from 'node:crypto'
 import { closeQuietly } from '@struktoai/mirage-core/io/stream'
 import { chunks } from '@struktoai/mirage-core/io/cooperative'
@@ -20,7 +21,7 @@ import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isNoSuchFile, joinRoot, openForWrite, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot, openForWrite } from './utils.ts'
 
 export async function write(accessor: SSHAccessor, p: PathSpec, data: Uint8Array): Promise<void> {
   await writeStream(accessor, p, data)
@@ -35,7 +36,7 @@ export async function writeStream(
 ): Promise<void> {
   const timer = startOp()
   const sftp = await accessor.sftp()
-  const remote = joinRoot(accessor.config.root ?? '/', stripPrefix(p))
+  const remote = joinRoot(accessor.config.root ?? '/', rawPathOf(p))
   const target = atomic ? remote + '.mirage-' + randomUUID() : remote
   let staged = false
   let size = 0

@@ -15,6 +15,7 @@
 import { mergeSignals } from '../utils/abort.ts'
 import type { SessionAccess } from '../view/types.ts'
 import { createAsyncContext } from '../utils/async_context.ts'
+import { captureExecutionContext } from '../execution/context.ts'
 import type { ContextCall } from '../utils/async_context.ts'
 import type { ByteSource, IOResult, OpReport } from '../io/types.ts'
 import type { Redirect } from '../shell/types.ts'
@@ -153,7 +154,6 @@ const UNBOUND: Caller = {
   redirects: null,
   program: null,
   call: null,
-  policies: null,
   stop: null,
   writeHeld: false,
   lineAbort: null,
@@ -622,11 +622,11 @@ export function runWithRedirectPaths<T>(
   return runChanged({ redirects: [node, paths, runner, syntax] }, fn)
 }
 
-/** Capture the caller for a deferred workspace callback, bound to
- * `session` when one is named: its evaluation comes along only when it
- * is the session bound now. */
+/** Capture the caller and its execution for a deferred workspace
+ * callback, bound to `session` when one is named: its evaluation comes
+ * along only when it is the session bound now. */
 export function captureSessionContext(session?: SessionState, owner?: SessionOwner): ContextCall[] {
-  if (session === undefined) return [callerStorage.capture()]
+  if (session === undefined) return [callerStorage.capture(), captureExecutionContext()]
   const bound = currentCaller()
   const caller: Caller = {
     ...bound,
@@ -634,7 +634,7 @@ export function captureSessionContext(session?: SessionState, owner?: SessionOwn
     owner: owner ?? null,
     evaluation: bound.session === session ? bound.evaluation : null,
   }
-  return [(fn) => callerStorage.run(caller, fn)]
+  return [(fn) => callerStorage.run(caller, fn), captureExecutionContext()]
 }
 
 /**

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toHex } from '../../utils/hex.ts'
 import * as jqWasm from 'jq-wasm'
 import { JqCompileError } from './errors.ts'
 import { stringText } from './parse.ts'
@@ -177,7 +178,7 @@ function streamDefs(expr: string, failed: boolean): string {
 function randomToken(): string {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return toHex(bytes)
 }
 
 /** Whether a value holds a number JSON has no spelling for. */

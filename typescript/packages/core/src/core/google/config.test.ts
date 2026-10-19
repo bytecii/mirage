@@ -13,19 +13,19 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import {
-  GOOGLE_CREDENTIAL_ERROR,
-  GoogleConfigSchema,
-  normalizeGoogleConfig,
-  redactGoogleConfig,
-} from './config.ts'
+import { GOOGLE_CREDENTIAL_ERROR, GoogleConfigSchema } from './config.ts'
 import { GCalConfigSchema, normalizeGCalConfig } from '../../vfs/gcal/config.ts'
 import { errorSummary } from '../../secrets/summary.ts'
-import { REDACTED_SECRET, z } from '../../vfs/secrets.ts'
+import {
+  parseConfigWithSchema,
+  REDACTED_SECRET,
+  redactConfigWithSchema,
+  z,
+} from '../../vfs/secrets.ts'
 
 describe('GoogleConfig', () => {
   it('accepts the refresh-token grant from snake_case', () => {
-    const config = normalizeGoogleConfig({
+    const config = parseConfigWithSchema(GoogleConfigSchema, {
       client_id: 'id',
       client_secret: 'secret',
       refresh_token: 'token',
@@ -34,38 +34,49 @@ describe('GoogleConfig', () => {
   })
 
   it('omits the client secret for a PKCE flow', () => {
-    const config = normalizeGoogleConfig({ client_id: 'id', refresh_token: 'token' })
+    const config = parseConfigWithSchema(GoogleConfigSchema, {
+      client_id: 'id',
+      refresh_token: 'token',
+    })
     expect(config.clientSecret).toBeUndefined()
   })
 
   // A service account can mint an access token but has no refresh token,
   // so before this the only way in was to monkeypatch the refresh grant.
   it('accepts a standalone access token, literal or provider', () => {
-    expect(normalizeGoogleConfig({ access_token: 'sa-token' }).accessToken).toBe('sa-token')
+    expect(
+      parseConfigWithSchema(GoogleConfigSchema, { access_token: 'sa-token' }).accessToken,
+    ).toBe('sa-token')
     const provider = (): string => 'sa-token'
-    expect(normalizeGoogleConfig({ access_token: provider }).accessToken).toBe(provider)
+    expect(parseConfigWithSchema(GoogleConfigSchema, { access_token: provider }).accessToken).toBe(
+      provider,
+    )
   })
 
   // Mirrors python's `_one_credential`: refused at construction, not on the
   // first read.
   it('refuses a config naming no credential', () => {
-    expect(() => normalizeGoogleConfig({ api_base: 'http://localhost:1' })).toThrow(
-      GOOGLE_CREDENTIAL_ERROR,
-    )
+    expect(() =>
+      parseConfigWithSchema(GoogleConfigSchema, { api_base: 'http://localhost:1' }),
+    ).toThrow(GOOGLE_CREDENTIAL_ERROR)
   })
 
   it('refuses a wrong-typed field instead of casting it through', () => {
-    expect(() => normalizeGoogleConfig({ client_id: 7, refresh_token: 'token' })).toThrow(
-      /clientId/,
-    )
+    expect(() =>
+      parseConfigWithSchema(GoogleConfigSchema, { client_id: 7, refresh_token: 'token' }),
+    ).toThrow(/clientId/)
   })
 
   it('keeps refreshFn through parse and redacts it with the other secrets', () => {
     const refreshFn = (): Promise<{ accessToken: string; expiresIn: number }> =>
       Promise.resolve({ accessToken: 'proxy-tok', expiresIn: 3600 })
-    const config = normalizeGoogleConfig({ client_id: 'id', refresh_token: 'token', refreshFn })
+    const config = parseConfigWithSchema(GoogleConfigSchema, {
+      client_id: 'id',
+      refresh_token: 'token',
+      refreshFn,
+    })
     expect(config.refreshFn).toBe(refreshFn)
-    expect(redactGoogleConfig(config)).toEqual({
+    expect(redactConfigWithSchema(GoogleConfigSchema, config)).toEqual({
       clientId: 'id',
       refreshToken: REDACTED_SECRET,
       refreshFn: REDACTED_SECRET,
@@ -73,8 +84,12 @@ describe('GoogleConfig', () => {
   })
 
   it('redacts a provider the same as a literal token', () => {
-    expect(redactGoogleConfig({ accessToken: () => 'tok' }).accessToken).toBe(REDACTED_SECRET)
-    expect(redactGoogleConfig({ accessToken: 'tok' }).accessToken).toBe(REDACTED_SECRET)
+    expect(
+      redactConfigWithSchema(GoogleConfigSchema, { accessToken: () => 'tok' }).accessToken,
+    ).toBe(REDACTED_SECRET)
+    expect(redactConfigWithSchema(GoogleConfigSchema, { accessToken: 'tok' }).accessToken).toBe(
+      REDACTED_SECRET,
+    )
   })
 
   // Python scopes time_zone / min_access_role / today to GCalConfig, and a
@@ -88,7 +103,7 @@ describe('GoogleConfig', () => {
     )
     let refusal = ''
     try {
-      normalizeGoogleConfig({ access_token: 'tok', time_zone: 'UTC' })
+      parseConfigWithSchema(GoogleConfigSchema, { access_token: 'tok', time_zone: 'UTC' })
     } catch (err) {
       if (err instanceof z.ZodError) refusal = errorSummary(err)
     }

@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { FileEntryWithStats, SFTPWrapper, Stats } from 'ssh2'
 
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/errors/fs'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isDirectoryAttrs, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isDirectoryAttrs, isNoSuchFile, joinRoot } from './utils.ts'
 
 async function statRemote(sftp: SFTPWrapper, remote: string): Promise<Stats> {
   return new Promise<Stats>((resolveFn, rejectFn) => {
@@ -72,7 +73,7 @@ async function rmRecurse(sftp: SFTPWrapper, remote: string): Promise<void> {
 
 export async function rmR(accessor: SSHAccessor, p: PathSpec): Promise<void> {
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const remote = joinRoot(accessor.config.root ?? '/', virtual)
   try {
     await rmRecurse(sftp, remote)

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { concat } from '@struktoai/mirage-core/utils/bytes'
 import type { ObjectId } from 'mongodb'
 import { record, revisionFor, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
@@ -77,11 +78,9 @@ async function downloadBytes(
   }
   const readable = b.openDownloadStream(fileId, streamOptions)
   const chunks: Uint8Array[] = []
-  let total = 0
   try {
     for await (const chunk of readable as AsyncIterable<Uint8Array>) {
       chunks.push(chunk)
-      total += chunk.byteLength
     }
   } catch (err) {
     if ((err as { code?: string } | null)?.code === 'ENOENT' || isNoFileError(err)) {
@@ -89,13 +88,7 @@ async function downloadBytes(
     }
     throw err
   }
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
+  return concat(chunks)
 }
 
 export function isNoFileError(err: unknown): boolean {

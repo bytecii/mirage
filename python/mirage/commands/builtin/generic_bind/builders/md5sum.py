@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.generic.md5sum import md5sum_generic
+from mirage.commands.builtin.generic.checksum import checksum_generic
 from mirage.commands.builtin.generic_bind.adapter import GenericCommand
 from mirage.commands.builtin.generic_bind.files import (
     command_files,
@@ -34,13 +34,14 @@ async def md5sum(
 ) -> tuple[ByteSource | None, IOResult]:
     files = command_files(ctx, paths)
     resolved = await resolve_or_empty(files, paths)
-    return await md5sum_generic(
+    return await checksum_generic(
         resolved,
         list(texts),
         ctx,
         dir_aware_stat(files, ctx),
         dir_aware_stream(files, ctx),
-        (files.checksum if files.answers("checksum") else None),
+        name="md5sum",
+        stored=(files.checksum if files.answers("checksum") else None),
     )
 
 

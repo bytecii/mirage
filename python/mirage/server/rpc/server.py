@@ -65,19 +65,12 @@ class RpcError(Exception):
     Args:
         code (int): the JSON-RPC error code.
         message (str): what went wrong.
-        data (dict[str, JsonValue] | None): the structured detail.
     """
 
-    def __init__(
-        self,
-        code: int,
-        message: str,
-        data: dict[str, JsonValue] | None = None,
-    ) -> None:
+    def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
-        self.data = data
 
 
 def error_response(
@@ -257,7 +250,7 @@ class MirageRpcServer:
         try:
             result = await handler(params)
         except RpcError as exc:
-            return error_response(request_id, exc.code, exc.message, exc.data)
+            return error_response(request_id, exc.code, exc.message)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

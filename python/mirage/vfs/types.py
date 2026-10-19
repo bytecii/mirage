@@ -102,11 +102,11 @@ class SearchOps:
 
     Args:
         search (SearchOp): the resource's single-scope search callback.
-        search_many (SearchManyOp | None): optional batch ranking.
+        search_many (SearchManyOp): the batch ranking.
     """
 
     search: SearchOp
-    search_many: SearchManyOp | None = None
+    search_many: SearchManyOp
 
 
 @runtime_checkable

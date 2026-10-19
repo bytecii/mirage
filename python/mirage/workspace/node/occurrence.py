@@ -20,6 +20,7 @@ from typing import Any
 from mirage.policy import Claimant, HandOff, Occurrence
 from mirage.shell.backticks import split_backtick_region
 from mirage.shell.helpers import byte_offset, get_function_name, get_text
+from mirage.shell.parse.heredoc.prefix import tree_root
 from mirage.workspace.session import SessionState
 
 # What opens and closes a substitution's body, in the order the
@@ -54,18 +55,6 @@ class Frame:
     text: str
     base: int
     parent: Occurrence | None
-
-
-def root_of(node: Any) -> Any:
-    """The root of the tree a node belongs to.
-
-    Args:
-        node (Any): a tree-sitter node.
-    """
-    root = node
-    while root.parent is not None:
-        root = root.parent
-    return root
 
 
 def root_frame(node: Any, parent: Occurrence | None) -> Frame:
@@ -173,7 +162,7 @@ def _definition_origin(
         return occurrence_in(root, Frame(frame.text, frame.base, parent))
     # Nodes are fresh objects per read, so the trees are told apart by
     # their roots' ids.
-    if root_of(definition).id == line.id:
+    if tree_root(definition).id == line.id:
         return defined_at(definition, handed)
     name = get_function_name(definition)
     site = session._function_sites.get(name)

@@ -67,8 +67,7 @@ class DropboxVFS(BaseVFS):
     def __init__(self, config: DropboxConfig) -> None:
         super().__init__()
         self.config = config
-        self._token_manager = DropboxTokenManager(config)
-        self.accessor = DropboxAccessor(config, self._token_manager)
+        self.accessor = DropboxAccessor(config, DropboxTokenManager(config))
 
     async def readdir(self, path: PathSpec) -> list[FileStat]:
         return await _readdir(self.accessor, path)
@@ -158,11 +157,6 @@ class DropboxVFS(BaseVFS):
         if not whole_word or not self.accessor.config.content_search:
             return None
         return await _files_containing(self.accessor, text, [path])
-
-    async def close(self) -> None:
-        """Drain the token manager's connection pool with the VFS."""
-        await self._token_manager.close()
-        await super().close()
 
     async def capacity(self) -> CapacityResult:
         return await _capacity(self.accessor)

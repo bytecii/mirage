@@ -73,10 +73,6 @@ def _attach_dir_name(subject: str, msg_id: str) -> str:
     return f"{_subject(subject, msg_id)}__{msg_id}"
 
 
-def _attachment_filename(_attachment_id: str, filename: str) -> str:
-    return filename or "file"
-
-
 def _date_from_internal(internal_date: str) -> str:
     ts = int(internal_date) / 1000
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
@@ -88,7 +84,7 @@ ATTACHMENT = entry_stat("attachment_id")
 def _attachment_entries(payload: dict[str, Any]) -> list[FileStat]:
     return [
         ATTACHMENT(
-            _attachment_filename(att["attachment_id"], att["filename"]),
+            att["filename"],
             att["attachment_id"],
             size=att["size"],
         )

@@ -24,7 +24,6 @@ from mirage.core.jq.eval import (
     stream_reads,
 )
 from mirage.core.jq.format import (
-    dump_text,
     error_report,
     format_one,
     halt_report,
@@ -66,7 +65,6 @@ __all__ = [
     "StreamReads",
     "args_text",
     "decode_utf8",
-    "dump_text",
     "error_report",
     "format_one",
     "halt_report",

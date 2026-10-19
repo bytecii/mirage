@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { rawPathOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { eexist, enoent } from '@struktoai/mirage-core/errors/fs'
 import { stripSlash } from '@struktoai/mirage-core/utils/slash'
 import type { SFTPWrapper, Stats } from 'ssh2'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { isFailure, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isFailure, isNoSuchFile, joinRoot } from './utils.ts'
 
 async function statRemote(sftp: SFTPWrapper, remote: string): Promise<Stats | null> {
   return new Promise<Stats | null>((resolveFn) => {
@@ -47,7 +48,7 @@ async function mkdirOne(sftp: SFTPWrapper, remote: string, ignoreExisting: boole
 
 export async function mkdir(accessor: SSHAccessor, p: PathSpec, recursive = false): Promise<void> {
   const sftp = await accessor.sftp()
-  const virtual = stripPrefix(p)
+  const virtual = rawPathOf(p)
   const root = accessor.config.root ?? '/'
   const remote = joinRoot(root, virtual)
   if (!recursive) {

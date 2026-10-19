@@ -19,7 +19,7 @@ import type { FileStat, PathSpec } from '../../types.ts'
 import { getFileInfo } from './api.ts'
 import { SHA1 } from './constants.ts'
 import { readToken, tokenOf } from './fingerprint.ts'
-import { fileEntry } from './read.ts'
+import { fileEntry } from '../hierarchy/probe.ts'
 
 /**
  * The sha1 Box keeps for a file's content, asked live: a listing row's sha1

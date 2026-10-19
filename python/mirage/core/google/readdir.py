@@ -22,7 +22,7 @@ from mirage.core.google.entry import app_file
 from mirage.core.hierarchy.scope import DetectFn
 from mirage.errors.fs import enoent
 from mirage.types import DirListing, FileStat, FileType, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.key_prefix import raw_path_of
 
 
 def make_app_readdir(
@@ -49,14 +49,9 @@ def make_app_readdir(
         accessor: GoogleApiAccessor, path_spec: PathSpec
     ) -> list[FileStat] | DirListing:
         modified_range = None
-        prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
         if path_spec.pattern:
             modified_range = glob_to_modified_range(path_spec.pattern)
-        path = path_spec.directory if path_spec.pattern else path_spec.virtual
-        if prefix and path.startswith(prefix):
-            rest = path[len(prefix) :]
-            if prefix.endswith("/") or rest == "" or rest.startswith("/"):
-                path = rest or "/"
+        path = raw_path_of(path_spec.dir if path_spec.pattern else path_spec)
         key = path.strip("/")
 
         # Bespoke below the classifier: the date-glob push-down filters

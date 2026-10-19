@@ -167,12 +167,11 @@ export async function splitOpened(
   return [opened, unread, err]
 }
 
-// IOResult carrying operand-split stderr lines: exit `exitCode` when any
-// operand failed, exit 0 otherwise. Callers can override the default failure
-// code of 1 for commands with a different error policy.
-export function operandsIo(err: string, init?: { exitCode?: number }): IOResult {
+// IOResult carrying operand-split stderr lines: exit 1 when any operand
+// failed, exit 0 otherwise.
+export function operandsIo(err: string): IOResult {
   return new IOResult({
-    exitCode: err === '' ? 0 : (init?.exitCode ?? 1),
+    exitCode: err === '' ? 0 : 1,
     stderr: err === '' ? null : encodeText(err),
   })
 }

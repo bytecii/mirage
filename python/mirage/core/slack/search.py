@@ -25,8 +25,7 @@ from mirage.core.hierarchy.probe import row_at, rows_of
 from mirage.core.hierarchy.scope import ROOT
 from mirage.core.render.json import compact_json_bytes
 from mirage.core.slack.channels import list_channels
-from mirage.core.slack.client import slack_get, slack_search_available
-from mirage.core.slack.config import SlackConfig
+from mirage.core.slack.client import slack_get
 from mirage.core.slack.events.payload import day_of
 from mirage.core.slack.paginate import cursor_pages
 from mirage.core.slack.readdir import readdir
@@ -380,10 +379,6 @@ RECORD_KEYS = frozenset(
 )
 
 
-def search_available(config: SlackConfig) -> bool:
-    return slack_search_available(config)
-
-
 async def search_messages(
     accessor: SlackAccessor, query: str, count: int = 20, page: int = 1
 ) -> bytes:
@@ -405,30 +400,6 @@ async def search_messages(
         "sort": "timestamp",
     }
     data = await slack_get(accessor, "search.messages", params=params)
-    return compact_json_bytes(data)
-
-
-async def search_files(
-    accessor: SlackAccessor, query: str, count: int = 20, page: int = 1
-) -> bytes:
-    """Search files across workspace via search.files (single page).
-
-    Args:
-        accessor (SlackAccessor): Slack accessor.
-        query (str): search query.
-        count (int): results per page (Slack caps at 100).
-        page (int): 1-based page number.
-
-    Returns:
-        bytes: JSON response.
-    """
-    params = {
-        "query": query,
-        "count": count,
-        "page": page,
-        "sort": "timestamp",
-    }
-    data = await slack_get(accessor, "search.files", params=params)
     return compact_json_bytes(data)
 
 

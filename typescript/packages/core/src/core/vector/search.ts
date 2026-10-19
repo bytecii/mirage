@@ -62,9 +62,7 @@ export async function searchRowsOutput<A extends Accessor>(
 }
 
 /** Build a store's ranked search, one native ranking per batch. */
-export function makeSearch<A extends Accessor>(
-  tree: VectorTree<A>,
-): Required<Pick<SearchOps<A>, 'search' | 'searchMany'>> {
+export function makeSearch<A extends Accessor>(tree: VectorTree<A>): SearchOps<A> {
   async function searchMany(
     accessor: A,
     paths: PathSpec[],

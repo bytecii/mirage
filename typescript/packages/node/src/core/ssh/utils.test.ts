@@ -12,45 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { PathSpec } from '@struktoai/mirage-core/types'
-import { mountKey } from '@struktoai/mirage-core/utils/key_prefix'
 import { describe, expect, it } from 'vitest'
-import { isDirectoryAttrs, isFileAttrs, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
-
-describe('stripPrefix', () => {
-  it('removes the prefix from the original path', () => {
-    const p = new PathSpec({
-      virtual: '/ssh/foo/bar',
-      directory: '/ssh/foo',
-      vfsPath: mountKey('/ssh/foo/bar', '/ssh'),
-    })
-    expect(stripPrefix(p)).toBe('/foo/bar')
-  })
-  it('returns "/" when original equals the prefix', () => {
-    const p = new PathSpec({
-      virtual: '/ssh',
-      directory: '/ssh',
-      vfsPath: mountKey('/ssh', '/ssh'),
-    })
-    expect(stripPrefix(p)).toBe('/')
-  })
-  it('returns the original when the prefix does not match', () => {
-    const p = new PathSpec({
-      virtual: '/other/foo',
-      directory: '/other',
-      vfsPath: mountKey('/other/foo', '/ssh'),
-    })
-    expect(stripPrefix(p)).toBe('/other/foo')
-  })
-  it('returns the original when prefix is empty', () => {
-    const p = new PathSpec({
-      vfsPath: 'foo/bar',
-      virtual: '/foo/bar',
-      directory: '/foo',
-    })
-    expect(stripPrefix(p)).toBe('/foo/bar')
-  })
-})
+import { isDirectoryAttrs, isFileAttrs, isNoSuchFile, joinRoot } from './utils.ts'
 
 describe('joinRoot', () => {
   it('joins root "/" with rel "/" -> "/"', () => {

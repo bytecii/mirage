@@ -75,7 +75,7 @@ export interface ResolveOptions {
   readonly table?: Record<string, string>
 }
 
-const CONFIG_ENV_KEYS: Record<string, string> = {
+export const CONFIG_ENV_KEYS: Record<string, string> = {
   auth_mode: ENV_AUTH_MODE,
   jwt_alg: ENV_JWT_ALG,
   jwt_issuer: ENV_JWT_ISSUER,

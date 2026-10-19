@@ -25,6 +25,7 @@ from mirage.core.api.client import (
     ApiResponse,
     RetryPolicy,
     api_request,
+    lowered_headers,
     status_error,
 )
 from mirage.core.hf_hub.constants import (
@@ -454,12 +455,7 @@ async def hub_stream(
         if resp.status >= 400:
             raise _error_of(resp, await resp.text())
         if on_response is not None:
-            on_response(
-                {
-                    key.lower(): ", ".join(resp.headers.getall(key))
-                    for key in resp.headers.keys()
-                }
-            )
+            on_response(lowered_headers(resp.headers))
         async for chunk in resp.content.iter_chunked(chunk_size):
             yield chunk
 

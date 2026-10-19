@@ -13,15 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
-from dataclasses import replace
 
 import pytest
 
-from mirage.context.session_context import (
-    bind_caller,
-    current_caller,
-    reset_caller,
-)
 from mirage.errors.fs import ebusy
 from mirage.policy import (
     Action,
@@ -47,9 +41,6 @@ from mirage.policy import (
     render_deny,
 )
 from mirage.policy.mixin import SessionScopedMixin
-from mirage.policy.policies import (
-    get_op_policies,
-)
 from mirage.policy.rule import RulePolicy
 from mirage.policy.types import RouteContext, SessionContext
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
@@ -527,14 +518,3 @@ async def test_remove_by_identity_refreshes_methods_and_keeps_admission_order():
     assert not policies.wants("pre_command")
     assert not policies.remove(first)
     assert await policies.pre_command(_ctx("weird")) is None
-
-
-def test_the_op_policies_binding_is_scoped_to_one_command():
-    assert get_op_policies() is None
-    policies = Policies([])
-    token = bind_caller(replace(current_caller(), policies=policies))
-    try:
-        assert get_op_policies() is policies
-    finally:
-        reset_caller(token)
-    assert get_op_policies() is None

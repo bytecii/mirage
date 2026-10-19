@@ -48,11 +48,6 @@ export class PostgresStore implements PgDriver {
     return { rows: result.rows as R[], rowCount: result.rowCount ?? 0 }
   }
 
-  async databaseName(): Promise<string> {
-    const result = await this.query<{ db: string }>('SELECT current_database() AS db')
-    return result.rows[0]?.db ?? ''
-  }
-
   async close(): Promise<void> {
     if (this.poolPromise === null) return
     const pool = await this.poolPromise

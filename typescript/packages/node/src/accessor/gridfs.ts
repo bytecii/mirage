@@ -14,7 +14,7 @@
 
 import type { Db, MongoClient } from 'mongodb'
 import { Accessor } from '@struktoai/mirage-core/accessor/index'
-import { loadOptionalPeer } from '../optional_peer.ts'
+import { loadOptionalPeer } from '@struktoai/mirage-core/utils/optional_peer'
 import type { GridFSConfig } from '../vfs/gridfs/config.ts'
 
 interface MongoModule {

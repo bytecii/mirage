@@ -12,17 +12,6 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec, PolymorphicReadFn, StatFn
 
 
-async def zcat(
-    paths: list[PathSpec],
-    *,
-    read_bytes: PolymorphicReadFn,
-    stdin: ByteSource | None = None,
-) -> tuple[ByteSource | None, IOResult]:
-    return await decompress_inputs(
-        paths, read=read_bytes, stdin=stdin, to_stdout=True
-    )
-
-
 async def zcat_generic(
     paths: list[PathSpec],
     texts: list[str],
@@ -65,4 +54,4 @@ async def zcat_generic(
     )
 
 
-__all__ = ["zcat", "zcat_generic"]
+__all__ = ["zcat_generic"]
