@@ -6190,6 +6190,146 @@
           }
         }
       ]
+    },
+    {
+      "id": "fresh_stat_reconciles_a_listing_changed_behind_it",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "listed-ram"
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/data/f.txt",
+          "data": "old"
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/f.txt"
+            ]
+          }
+        },
+        {
+          "op": "change",
+          "mount": "/data",
+          "path": "/f.txt",
+          "data": "grown\n"
+        },
+        {
+          "op": "change",
+          "mount": "/data",
+          "path": "/g.txt",
+          "data": "g"
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 3
+            }
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/f.txt"
+            ]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "fresh": true,
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 6
+            }
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 6
+            }
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/f.txt",
+              "/data/g.txt"
+            ]
+          }
+        },
+        {
+          "op": "change",
+          "mount": "/data",
+          "path": "/f.txt"
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "value": {
+              "type": "file",
+              "size": 6
+            }
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "fresh": true,
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/data/f.txt",
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/data",
+          "expect": {
+            "value": [
+              "/data/g.txt"
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /data",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "g.txt\n",
+              "stderr": "",
+              "refusal": null
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -15,6 +15,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { materialize } from '../io/types.ts'
+import { YIELD_INTERVAL } from '../io/yield_budget.ts'
 import { yieldBytes } from '../io/stream.ts'
 import { GZIP_CHUNK_SIZE, crc32, gunzipStream, gzip, gzipCompressStream } from './compress.ts'
 import { GzipDataError } from './compress.ts'
@@ -27,7 +28,7 @@ it('yields while draining expanded output and closes an interrupted source', asy
   const archive = await gzip(new Uint8Array(size).fill(120))
   let now = 0
   const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
-    now += 11
+    now += YIELD_INTERVAL + 1
     return now
   })
   let closed = false
