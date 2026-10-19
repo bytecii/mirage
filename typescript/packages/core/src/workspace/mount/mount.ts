@@ -18,7 +18,6 @@ import { RAMAccessor } from '../../accessor/ram.ts'
 import { activePipe, pipeBelow } from '../../core/dev/device.ts'
 import type { DevicePipe } from '../../core/dev/pipe.ts'
 import { norm } from '../../utils/path.ts'
-import { restrictedMountsFor } from '../../runtime/binding.ts'
 import { ContextScope } from '../../utils/context_scope.ts'
 import {
   captureSessionContext,
@@ -739,8 +738,7 @@ export class MountEntry {
    * Batch-register user commands. Mirrors Python's `Mount.register_commands(...)`.
    * Each one is this mount's own, keyed by name and filetype, so it wins
    * over the shared commands of that name, and is a user command
-   * (`isUserCommand`): refused while the session restricts this mount, and
-   * before it writes to a read-only one. Multi-VFS entries are filtered as
+   * (`isUserCommand`): refused before it writes to a read-only one. Multi-VFS entries are filtered as
    * `ownCommands` says. A `CLI` serves its verbs as a command tree on this
    * mount, under its root's name: a line naming it walks the tree as an
    * installed CLI's does and runs the leaf on this mount's accessor
@@ -1623,9 +1621,7 @@ export class MountEntry {
       const runCtx = this.commandCtx(this.keyedFlags(flags), ctx)
       return this.inCommandScope(probe, async (): Promise<[ByteSource | null, IOResult]> => {
         for (const cmd of handlers) {
-          const refusal =
-            this.readOnlyRefusal(cmdName, cmd, flags, access) ??
-            this.unenforcedRefusal(cmdName, cmd)
+          const refusal = this.readOnlyRefusal(cmdName, cmd, flags, access)
           if (refusal !== null) return [null, refusal]
           const result = await this.runOne(
             cmdName,
@@ -1838,30 +1834,6 @@ export class MountEntry {
   }
 
   /**
-   * Refuse a user command while the session restricts this mount. Such a
-   * command may reach its backend through its own handle, past the
-   * dispatcher, so no hide, path rule or mode cap sees what it reads or
-   * writes; like a runtime that cannot enforce them, it does not run. The
-   * handle reaches the whole store, a part another mount shadows included, so
-   * a restriction anywhere below the prefix counts. Mirrors Python's
-   * MountEntry._unenforced_refusal.
-   */
-  private unenforcedRefusal(cmdName: string, cmd: Command): IOResult | null {
-    if (!this.isUserCommand(cmd)) return null
-    const session = currentCaller().session
-    if (
-      session === null ||
-      !restrictedMountsFor(session, [this.prefix]).map(norm).includes(norm(this.prefix))
-    ) {
-      return null
-    }
-    return new IOResult({
-      exitCode: 127,
-      stderr: encodeText(`${cmdName}: command cannot enforce this session's file restrictions\n`),
-    })
-  }
-
-  /**
    * Whether `cmd` is a user command: one this mount serves that is not
    * mirage's own, registered through `registerCommands` (a VFS's handed
    * commands among them) rather than as a builtin. Mirrors Python's
@@ -1958,8 +1930,7 @@ export class MountEntry {
       return this.inCommandScope(probe, async (): Promise<CommandFnResult> => {
         // No flag here is answered for the leaf: walkLeaf answered the
         // tree's own help, and the leaf is handed the rest.
-        const refusal =
-          this.readOnlyRefusal(prog, leaf, {}, access, root) ?? this.unenforcedRefusal(prog, root)
+        const refusal = this.readOnlyRefusal(prog, leaf, {}, access, root)
         if (refusal !== null) return [null, refusal]
         const accessor = this.viewFor(access).accessor
         return this.runIn(

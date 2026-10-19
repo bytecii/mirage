@@ -630,43 +630,50 @@ const [HANDED_CAT] = command<RAMAccessor>({
   fn: () => [new TextEncoder().encode('handed\n'), new IOResult()],
 })
 
+const [HANDED_PEEK] = command<RAMAccessor>({
+  name: 'peek',
+  vfs: 'ram',
+  spec: new CommandSpec({ arguments: [new Argument('path', { type: 'path' })] }),
+  fn: async (_accessor, paths, _texts, ctx) => {
+    const [path] = paths
+    if (ctx.vfs === undefined || path === undefined) throw new Error('peek reads one path')
+    return [await ctx.vfs.read(path), new IOResult()]
+  },
+})
+
 class HandedRAM extends RAMVFS {
   override commands(): readonly Command[] {
-    return HANDED_CAT === undefined ? [] : [HANDED_CAT]
+    return [HANDED_CAT, HANDED_PEEK].filter((cmd) => cmd !== undefined)
   }
 }
 
 describe('handed commands under restrictions', () => {
-  it('do not run where the session restricts their mount', async () => {
+  // Mirage cannot see what a handler reads through its own accessor, so it
+  // does not try: a hide covers what the handler reads through ctx.vfs.
+  it('run where the session restricts their mount', async () => {
     const parser = await getTestParser()
     const ws = new Workspace(
-      { '/data/': new HandedRAM(), '/data/nested/': new RAMVFS(), '/other/': new RAMVFS() },
+      { '/data/': new HandedRAM(), '/other/': new RAMVFS() },
       { mode: MountMode.WRITE, shellParser: parser },
     )
-    const refused = "cat: command cannot enforce this session's file restrictions\n"
     try {
-      await ws.shell('echo hi > /data/n.txt; echo o > /other/o.txt')
+      await ws.shell('echo hi > /data/n.txt; echo s > /data/secret')
       ws.createSession('here', { profile: { paths: { hide: ['/data/secret'] } } })
-      ws.createSession('pattern', { profile: { paths: { hide: ['*.key'] } } })
-      ws.createSession('nested', { profile: { paths: { hide: ['/data/nested/secret.txt'] } } })
       ws.createSession('elsewhere', { profile: { paths: { hide: ['/other/x'] } } })
-      for (const [sid, out, err, code] of [
-        [undefined, 'handed\n', '', 0],
-        ['elsewhere', 'handed\n', '', 0],
-        ['here', '', refused, 127],
-        ['pattern', '', refused, 127],
-        ['nested', '', refused, 127],
+      for (const [sid, line, out, err, code] of [
+        [undefined, 'cat /data/n.txt', 'handed\n', '', 0],
+        ['here', 'cat /data/n.txt', 'handed\n', '', 0],
+        ['here', 'peek /data/n.txt', 'hi\n', '', 0],
+        ['elsewhere', 'peek /data/secret', 's\n', '', 0],
+        ['here', 'peek /data/secret', '', 'peek: /data/secret: No such file or directory\n', 1],
       ] as const) {
-        const io = await ws.shell('cat /data/n.txt', sid === undefined ? {} : { sessionId: sid })
+        const io = await ws.shell(line, sid === undefined ? {} : { sessionId: sid })
         const dec = new TextDecoder()
-        expect([dec.decode(io.stdout), dec.decode(io.stderr), io.exitCode], String(sid)).toEqual([
-          out,
-          err,
-          code,
-        ])
+        expect(
+          [dec.decode(io.stdout), dec.decode(io.stderr), io.exitCode],
+          `${String(sid)} ${line}`,
+        ).toEqual([out, err, code])
       }
-      const other = await ws.shell('cat /other/o.txt', { sessionId: 'here' })
-      expect(new TextDecoder().decode(other.stdout)).toBe('o\n')
     } finally {
       await ws.close()
     }

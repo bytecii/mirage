@@ -6141,9 +6141,9 @@
           "command": "cd /work && probe",
           "expect": {
             "value": {
-              "exit_code": 127,
-              "stdout": "",
-              "stderr": "probe: command cannot enforce this session's file restrictions\n"
+              "exit_code": 0,
+              "stdout": "ran\n",
+              "stderr": ""
             }
           }
         },

@@ -1608,8 +1608,6 @@ async def test_a_mounts_tree_runs_like_an_installed_cli_on_its_mount():
         0: b"",
         1: b"notes add: read-only mount at /n/\n",
         126: b"notes: Permission denied\n",
-        127: b"notes show: command cannot enforce this session's file "
-        b"restrictions\n",
     }
     try:
         ws.mount("/n/").register_commands([NOTES])
@@ -1655,7 +1653,7 @@ async def test_a_mounts_tree_runs_like_an_installed_cli_on_its_mount():
             ("notes show /n/a.md", None, 0),
             ("notes add /n/a.md w", None, 1),
             ("notes add /n/a.md w --help", None, 1),
-            ("notes show /n/a.md", "hidden", 127),
+            ("notes show /n/a.md", "hidden", 0),
             ("notes ls /n/a.md", "ruled", 0),
             ("notes add /n/a.md w", "ruled", 126),
         ):

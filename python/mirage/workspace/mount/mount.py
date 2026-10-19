@@ -86,7 +86,6 @@ from mirage.io.stream import OutputStream, close_quietly
 from mirage.io.types import ByteSource, CommandOutput, IOResult, materialize
 from mirage.observe.context import with_mount_context, with_revisions
 from mirage.policy import resolve_limit
-from mirage.runtime.binding import restricted_mounts_for
 from mirage.runtime.python.host.host_io import host_io, with_host_io
 from mirage.shell.bytes import encode_text
 from mirage.types import (
@@ -1068,9 +1067,7 @@ class MountEntry:
             run_ctx = self._command_ctx(flags, ctx)
             with self._command_scope(run_ctx):
                 for cmd in handlers:
-                    refusal = self._read_only_refusal(
-                        cmd_name, cmd, flags
-                    ) or self._unenforced_refusal(cmd_name, cmd)
+                    refusal = self._read_only_refusal(cmd_name, cmd, flags)
                     if refusal is not None:
                         return None, refusal
                     result = await self._run_one(
@@ -1320,40 +1317,6 @@ class MountEntry:
             )
         return None
 
-    def _unenforced_refusal(
-        self, cmd_name: str, cmd: Command
-    ) -> IOResult | None:
-        """Refuse a user command while the session restricts this mount.
-
-        A user command (``_is_user_command``: one the VFS was handed, or
-        one registered on the mount later) reaches its backend through its
-        own handle, past the dispatcher, so no hide, path rule or mode cap
-        sees what it reads or writes; like a runtime that cannot enforce
-        them, it does not run. The handle reaches the whole store, a part
-        another mount shadows included, so a restriction anywhere below
-        the prefix counts. Mirage's own commands (the generic and general
-        ones, a builtin backend's) read and write through the dispatcher,
-        and run.
-
-        Args:
-            cmd_name (str): command name.
-            cmd (Command): the handler about to run.
-        """
-        if not self._is_user_command(cmd):
-            return None
-        session = current_caller().session
-        if session is None or norm(self.prefix) not in {
-            norm(p) for p in restricted_mounts_for(session, [self.prefix])
-        }:
-            return None
-        return IOResult(
-            exit_code=127,
-            stderr=encode_text(
-                f"{cmd_name}: command cannot enforce this session's "
-                "file restrictions\n"
-            ),
-        )
-
     async def _run_one(
         self,
         cmd_name: str,
@@ -1473,9 +1436,7 @@ class MountEntry:
             with self._command_scope(run_ctx):
                 # No flag here is answered for the leaf: walk_leaf answered
                 # the tree's own help, and the leaf is handed the rest.
-                refusal = self._read_only_refusal(
-                    prog, leaf, {}, root
-                ) or self._unenforced_refusal(prog, root)
+                refusal = self._read_only_refusal(prog, leaf, {}, root)
                 if refusal is not None:
                     return None, refusal
                 with host_io():
