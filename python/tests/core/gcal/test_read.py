@@ -85,14 +85,17 @@ async def test_calendar_json_carries_the_role_and_bucket_zone(
     assert fields.items() <= body.items()
 
 
-async def test_reading_a_directory_reports_absence(accessor):
+async def test_reading_a_directory_is_eisdir_once_it_is_proved(accessor):
     # A probed directory shape is no proof the node exists, so the read
-    # reports absence; the mount root, which exists by construction, is
-    # the one EISDIR.
-    with pytest.raises(FileNotFoundError):
+    # reports absence; the dispatcher's stat proves a calendar that
+    # exists, and the read through the mount answers EISDIR, as the mount
+    # root does. A calendar that does not exist stays absent.
+    with pytest.raises(IsADirectoryError):
         await read(accessor, spec("/primary"))
     with pytest.raises(IsADirectoryError):
         await read(accessor, spec("/"))
+    with pytest.raises(FileNotFoundError):
+        await read(accessor, spec("/nope"))
 
 
 @pytest.mark.parametrize(

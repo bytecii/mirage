@@ -39,6 +39,12 @@ import {
 import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import type { FsCondition } from '../../../errors/types.ts'
 
+/**
+ * Opt in by assigning a debug sink, as Python's module logger is off until
+ * configured: every failed read runs the probe, and stdout may carry data.
+ */
+export const logger: { debug?: (message: string) => void } = {}
+
 // What a path is, asked on both channels a backend can answer on.
 //
 // A point lookup alone cannot decide. On a prefix store a directory is not
@@ -267,14 +273,18 @@ export async function readHitADir(
   try {
     st = await stat(path)
   } catch (probe) {
-    console.debug(`read probe: stat ${path.virtual} failed: ${String(probe)}`)
+    logger.debug?.(`read probe: stat ${path.virtual} failed: ${String(probe)}`)
+    // Only a stat that finds nothing leaves room for a directory of deeper
+    // keys. One that fails otherwise (an upstream error) proves nothing, and
+    // the parent listing would name the file whose backend failed.
+    if (!isMissError(probe) && !isMissingPath(probe)) return false
     st = null
   }
   if (st !== null) return st.type === FileType.DIRECTORY
   try {
     if (await isImplicitDir(readdir, path)) return true
   } catch (probe) {
-    console.debug(`read probe: listing ${path.virtual} failed: ${String(probe)}`)
+    logger.debug?.(`read probe: listing ${path.virtual} failed: ${String(probe)}`)
   }
   return false
 }

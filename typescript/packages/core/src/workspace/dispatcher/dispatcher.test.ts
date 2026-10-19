@@ -2760,6 +2760,17 @@ async function* voicedStream(vfs: DirVoiceRAM, path: PathSpec): AsyncIterable<Ui
   yield vfs.answer(path)
 }
 
+// A store whose backend fails for a path in `voiced`, on a stat as on a read.
+class UpstreamFailingRAM extends DirVoiceRAM {
+  override stat(path: PathSpec): Promise<FileStat> {
+    if (this.voiced.has(path.mountPath)) return Promise.reject(upstream(path.virtual))
+    return super.stat(path)
+  }
+}
+
+const upstream = (virtual: string): Error =>
+  Object.assign(new Error(`upstream 502 Bad Gateway: ${virtual}`), { code: 'EIO' })
+
 const hostNamed = (virtual: string): Error =>
   Object.assign(new Error('Is a directory'), { code: 'EISDIR', path: `/host${virtual}` })
 
@@ -2806,6 +2817,25 @@ describe.each(WS_READS)('a %s read through ws.vfs', (_, read) => {
       }
     },
   )
+
+  it('keeps the error of a file whose backend fails', async () => {
+    // The directory probe's stat fails too, which proves nothing; the
+    // parent's listing names the file, so reading past that stat called it
+    // a directory.
+    const vfs = new UpstreamFailingRAM(upstream, new Set(['/f']))
+    vfs.store.dirs.add('/')
+    vfs.store.files.set('/f', ENC.encode('x'))
+    const ws = new Workspace({ '/m': vfs })
+    try {
+      const refused = await read(ws, '/m/f').then(
+        () => null,
+        (err: unknown) => err as { code?: string },
+      )
+      expect(refused?.code).toBe('EIO')
+    } finally {
+      await ws.close()
+    }
+  })
 
   it('reads a file, empty or not', async () => {
     const vfs = new RAMVFS()

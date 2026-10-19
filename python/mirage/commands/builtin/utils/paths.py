@@ -365,6 +365,12 @@ async def read_hit_a_dir(
         st: FileStat | None = await stat(path)
     except Exception as probe:
         logger.debug("read probe: stat %s failed: %s", path.virtual, probe)
+        # Only a stat that finds nothing leaves room for a directory of
+        # deeper keys. One that fails otherwise (an upstream error) proves
+        # nothing, and the parent listing would name the file whose
+        # backend failed.
+        if not isinstance(probe, MISS_ERRORS):
+            return False
         st = None
     if st is not None:
         return st.type == FileType.DIRECTORY

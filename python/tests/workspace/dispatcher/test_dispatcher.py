@@ -1640,6 +1640,38 @@ async def test_a_read_of_a_directory_is_refused_for_every_caller(
         await ws.close()
 
 
+class _UpstreamFailingRAM(_DirVoiceRAM):
+    """A store whose backend fails for a path in ``voiced``, on a stat as
+    on a read."""
+
+    async def stat(self, path: PathSpec) -> FileStat:
+        if path.mount_path in self.voiced:
+            self._answer(path)
+        return await super().stat(path)
+
+
+def _upstream(at: str) -> OSError:
+    return OSError(errno.EIO, "upstream 502 Bad Gateway", at)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", sorted(_WS_READS))
+async def test_a_file_whose_backend_fails_keeps_its_error(read):
+    # The directory probe's stat fails too, which proves nothing; the
+    # parent's listing names the file, so reading past that stat called
+    # it a directory.
+    vfs = _UpstreamFailingRAM(_upstream, {"/f"})
+    vfs._store.dirs.add("/")
+    vfs._store.files["/f"] = b"x"
+    ws = Workspace({"/m": vfs})
+    try:
+        with pytest.raises(OSError) as raised:
+            await _WS_READS[read](ws, "/m/f")
+        assert raised.value.errno == errno.EIO
+    finally:
+        await ws.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("read", sorted(_WS_READS))
 async def test_a_read_of_a_file_empty_or_not_is_answered(read):
