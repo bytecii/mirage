@@ -84,7 +84,7 @@ from mirage.core.generic.rewrite import (
 from mirage.errors.fs import ebusy, enotdir, enotsup
 from mirage.io.stream import OutputStream, close_quietly
 from mirage.io.types import ByteSource, CommandOutput, IOResult, materialize
-from mirage.observe.context import with_mount_context, with_revisions
+from mirage.observe.context import with_mount_context
 from mirage.policy import resolve_limit
 from mirage.runtime.python.host.host_io import host_io, with_host_io
 from mirage.shell.bytes import encode_text
@@ -148,31 +148,22 @@ logger = logging.getLogger(__name__)
 
 def _wrap_mount_streams(
     result: tuple[ByteSource | None, IOResult],
-    revisions: dict[str, str] | None,
-    mount_id: str | None = None,
     activity: Activity | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
-    """Wrap the stream in ``result`` with the mount identity and active
-    revisions, so ``record_stream`` and ``revision_for`` calls inside the
-    lazy backend body see the right context when consumed after this
-    frame exits.
-
-    A thin async-gen wrapper that side-effects the recorder state as
-    bytes flow through.
+    """Keep the command's caller on the stream in ``result``, so the
+    lazy backend body pulled after this frame exits records under the
+    mount and reads the revisions its command bound.
 
     Args:
-        result: ``(stream, io)`` as returned by a command handler.
-        revisions: revisions map to push during stream consumption
-            (None when the mount has no pins installed).
-        mount_id (str | None): identity of the serving mount.
+        result: ``(stream, io)`` as returned by a command handler, inside
+            the mount's command scope.
+        activity (Activity | None): the mount's activity, held until the
+            stream ends.
     """
     stream, io = result
     if stream is None or isinstance(stream, (bytes, bytearray)):
         return stream, io
-    wrapped = with_mount_context(stream, mount_id)
-    if revisions:
-        wrapped = with_revisions(revisions, wrapped)
-    wrapped = ContextScope().stream(with_host_io(wrapped))
+    wrapped = ContextScope().stream(with_host_io(stream))
     return (activity.hold(wrapped) if activity is not None else wrapped), io
 
 
@@ -1376,18 +1367,14 @@ class MountEntry:
             )
 
     def _streams(self, result: CommandOutput) -> CommandOutput:
-        """Bind this mount's recorder, revisions and activity to an
-        answer's stream, which runs after the handler's frame is gone.
+        """Bind the command's caller (this mount's recorder and
+        revisions) and this mount's activity to an answer's stream,
+        which runs after the handler's frame is gone.
 
         Args:
             result (CommandOutput): the handler's ``(stream, io)``.
         """
-        return _wrap_mount_streams(
-            result,
-            self.revisions or None,
-            self.mount_id,
-            self.activity,
-        )
+        return _wrap_mount_streams(result, self.activity)
 
     async def run_leaf(
         self,
@@ -2652,13 +2639,10 @@ class MountEntry:
             limit.timeout_seconds if limit is not None else None,
             "read",
         )
-        stream = with_revisions(
-            self.revisions or None,
-            with_mount_context(stream, self.mount_id),
-        )
         token = bind_caller(
             dataclasses.replace(
-                current_caller(), write_context=self.write_context()
+                self._on_mount(current_caller()),
+                revisions=self.revisions or None,
             )
         )
         try:

@@ -1520,19 +1520,17 @@ export class MountEntry {
     const pulls = new ContextScope([
       ...captureSessionContext(),
       captureExecutionContext(),
+      (fn) => runWithMountContext(async () => await fn(), this.mountId),
       (fn) => runWithWriteContext(this.prefix, this.writeContext(), async () => await fn()),
       (fn) => runWithRevisions(revisions, async () => await fn()),
     ])
     const signal = callerSignal()
-    const stream = withMountContext(
-      withPullTimeout(
-        this.wants('readStream').length > 0
-          ? this.readEntryStream(vfs, scope, this.index, signal)
-          : vfs.readStream(scope, {}, signal),
-        limit?.timeoutSeconds ?? null,
-        'read',
-      ),
-      this.mountId,
+    const stream = withPullTimeout(
+      this.wants('readStream').length > 0
+        ? this.readEntryStream(vfs, scope, this.index, signal)
+        : vfs.readStream(scope, {}, signal),
+      limit?.timeoutSeconds ?? null,
+      'read',
     )
     return this.activity.hold(pulls.stream(stream)) as AsyncIterable<Uint8Array>
   }
@@ -1978,7 +1976,7 @@ export class MountEntry {
           }
         : ctx
     return runHandler(call(runCtx), name, limit, producer, voice, {
-      scope: (result) => wrapMountStreams(result, this.mountId, this.activity),
+      scope: (result) => wrapMountStreams(result, this.activity),
       ...(writes ? { drop: () => this.dropCaches() } : {}),
       ...(runSignal !== undefined ? { signal: runSignal } : {}),
       ...(guard !== null ? { abort: guard } : {}),
@@ -2198,18 +2196,18 @@ export function wrapStream(result: unknown, mountId: string, activity: Activity)
   return result
 }
 
-// Push `mountId` back during lazy consumption of the stream the command
-// handed back, so a deferred backend read attributes its record the same
-// way an eager one does. Mirrors python's _wrap_mount_streams.
+// Keep the command's caller on the stream the command handed back, so a
+// deferred backend read records under the mount and reads the revisions its
+// command bound, as an eager one does. Called inside the mount's command
+// scope. Mirrors python's _wrap_mount_streams.
 function wrapMountStreams(
   result: [ByteSource | null, IOResult],
-  mountId: string,
   activity: Activity,
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   if (stream === null || stream instanceof Uint8Array) return [stream, io]
   const scope = new ContextScope([...captureSessionContext(), captureExecutionContext()])
-  return [activity.hold(scope.stream(withMountContext(stream, mountId))), io]
+  return [activity.hold(scope.stream(stream)), io]
 }
 
 function sortFiletypeMap(m: Map<string, (string | null)[]>): Record<string, (string | null)[]> {
