@@ -22,8 +22,13 @@ from mirage.cache.index.config import ListResult
 from mirage.cache.index.constants import LISTING_TRUST_WINDOW
 from mirage.cache.index.listing_memo import ListingMemo
 from mirage.cache.index.scope import command_scope
+from mirage.types import FileStat, FileType
 
 WALL = 2_000_000_000.0
+
+
+async def _rows(batch):
+    return {p: FileStat(name=p, type=FileType.FILE) for p in batch}
 
 
 class Clock:
@@ -251,3 +256,91 @@ async def test_a_fill_drops_the_listings_a_write_or_expiry_ended(memo, clock):
         clock.elapsed = 0.1
         await memo.read("/next", Folder())
     assert held(memo) == {"/next"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_row_batches_are_bounded_and_copies_do_not_leak(memo, partial):
+    paths = [f"/d/{n}" for n in range(1000)]
+    calls = []
+
+    async def fetch(batch):
+        calls.append(list(batch))
+        return {
+            p: FileStat(name=p, type=FileType.FILE, extra={"key": "original"})
+            for p in batch
+        }
+
+    assert await memo.row(paths[0], fetch) is None
+    async with command_scope():
+        await memo.read("/d", Folder(paths, partial=partial))
+        for path in paths:
+            row = await memo.row(path, fetch)
+            assert row.name == path
+            row.extra["key"] = "changed"
+        assert (await memo.row(paths[0], fetch)).extra["key"] == "original"
+    assert len(calls) == 4
+    assert max(map(len, calls)) <= 256
+    assert await memo.row(paths[0], fetch) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expiry", [LISTING_TRUST_WINDOW / 2, LISTING_TRUST_WINDOW * 2]
+)
+async def test_rows_obey_both_listing_expiry_and_trust_window(
+    memo, clock, expiry
+):
+    async with command_scope():
+        await memo.read("/d", Folder(expires_at=WALL + expiry))
+        assert await memo.row("/d/a", _rows) is not None
+        clock.elapsed = min(expiry, LISTING_TRUST_WINDOW)
+        assert await memo.row("/d/a", _rows) is None
+
+
+@pytest.mark.asyncio
+async def test_a_row_batch_overlapping_a_write_is_not_kept(memo):
+    calls = []
+
+    async def fetch(batch):
+        calls.append(list(batch))
+        memo.row_wrote("/d/a")
+        return {p: FileStat(name=p, type=FileType.FILE) for p in batch}
+
+    async with command_scope():
+        await memo.read("/d", Folder())
+        await memo.row("/d/a", fetch)
+        await memo.row("/d/b", fetch)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_rows_a_batch_did_not_find_are_not_fetched_again(memo):
+    calls = []
+
+    async def fetch(batch):
+        calls.append(list(batch))
+        return {}
+
+    async with command_scope():
+        await memo.read("/d", Folder())
+        for path in ("/d/a", "/d/b", "/d/a"):
+            assert await memo.row(path, fetch) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_row_write_refetches_that_row_alone(memo):
+    calls = []
+
+    async def fetch(batch):
+        calls.append(list(batch))
+        return {p: FileStat(name=p, type=FileType.FILE) for p in batch}
+
+    async with command_scope():
+        await memo.read("/d", Folder())
+        await memo.row("/d/a", fetch)
+        memo.row_wrote("/d/a")
+        assert await memo.row("/d/b", fetch) is not None
+        assert await memo.row("/d/a", fetch) is not None
+    assert calls == [["/d/a", "/d/b"], ["/d/a"]]

@@ -1205,9 +1205,7 @@ async function runParsedLine(
       // command it is simply the command.
       const cmdName = commandName(command) || command
       io.exitCode = 1
-      io.stderr = isFsError(err)
-        ? formatFsError(cmdName, err)
-        : encodeText(`${err instanceof Error ? err.message : String(err)}\n`)
+      io.stderr = isFsError(err) ? formatFsError(cmdName, err) : failureResult(err).stderr
       recordStatus(targetSession, 1)
       stdoutBytes = new Uint8Array()
     }

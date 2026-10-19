@@ -1,0 +1,14 @@
+{
+  "name": "mirage",
+  "description": "Mirage filesystem tools and backend authoring skills for Claude Code.",
+  "owner": {
+    "name": "Strukto.AI"
+  },
+  "plugins": [
+    {
+      "name": "mirage",
+      "source": "./plugins/mirage",
+      "description": "Use Mirage-mounted cloud, database, and local data as a virtual filesystem."
+    }
+  ]
+}

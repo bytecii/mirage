@@ -46,3 +46,6 @@ CHECKED_LIMIT = 4096
 # path still registered, so a folder with a long history is walked in bounded
 # steps rather than in one atomic call that blocks the shared server.
 REGISTRY_PAGE = 128
+
+# Bound sibling read-ahead when only one row of a large directory is used.
+ROW_READ_BATCH = 256

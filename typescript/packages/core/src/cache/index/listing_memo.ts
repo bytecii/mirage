@@ -12,11 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { FileStat } from '../../types.ts'
 import type { ListResult } from './config.ts'
-import { LISTING_TRUST_WINDOW } from './constants.ts'
+import { LISTING_TRUST_WINDOW, ROW_READ_BATCH } from './constants.ts'
 import { soleCommandStarted } from './scope.ts'
 
 const WRITES_BY_PREFIX = new Map<string, number>()
+const ROW_WRITES_BY_PREFIX = new Map<string, number>()
+// Each row written within the last window, with its write count and time.
+const ROWS_WRITTEN_BY_PREFIX = new Map<string, Map<string, { count: number; at: number }>>()
 const HOLDERS_BY_PREFIX = new Map<string, number>()
 
 function copied(listing: ListResult): ListResult {
@@ -31,6 +35,8 @@ interface Read {
   readonly readAt: number
   readonly expiresAt: number
   readonly listing: ListResult
+  rowWrites: number
+  readonly rows: Map<string, FileStat | null>
 }
 
 /**
@@ -39,11 +45,13 @@ interface Read {
  * A read is served again only to the command that made it, only while no
  * listing write to the key prefix has finished since the read began, for
  * under LISTING_TRUST_WINDOW seconds, and never past the listing's own
- * expiry. Each fill drops the oldest reads no command can be served any
- * more, so a read stays held for about one window. The key prefix's write
- * count lives while an open memo holds the prefix. On the fallback
- * storage, while more than one command is live, there is no sole stamp and
- * every read goes to Redis.
+ * expiry. Row reads batch at most ROW_READ_BATCH siblings and share this
+ * lifetime, a row the batch did not find is left to a lookup of its own,
+ * and a row-only write drops that row alone. Each fill drops the oldest
+ * reads no command can be served any more, so a read stays held for about
+ * one window. The key prefix's write count lives while an open memo holds
+ * the prefix. On the fallback storage, while more than one command is live,
+ * there is no sole stamp and every read goes to Redis.
  */
 export class ListingMemo {
   private readonly reads = new Map<string, Read>()
@@ -92,8 +100,71 @@ export class ListingMemo {
       this.reads.delete(held)
     }
     this.reads.delete(key)
-    this.reads.set(key, { writesBefore: writes, readAt, expiresAt, listing })
+    this.reads.set(key, {
+      writesBefore: writes,
+      readAt,
+      expiresAt,
+      listing,
+      rowWrites: -1,
+      rows: new Map(),
+    })
     return copied(listing)
+  }
+
+  /** Batch a listed row with its siblings within the listing's lifetime. */
+  async row(
+    path: string,
+    fetch: (paths: readonly string[]) => Promise<Map<string, FileStat>>,
+  ): Promise<FileStat | null> {
+    const stamp = soleCommandStarted()
+    if (stamp === null) return null
+    const folder = path.slice(0, path.lastIndexOf('/')) || '/'
+    const key = `${String(stamp)}:${folder}`
+    const kept = this.reads.get(key)
+    if (kept === undefined || !this.live(kept)) return null
+    const writes = ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0
+    if (kept.rowWrites !== writes) {
+      for (const [done, write] of ROWS_WRITTEN_BY_PREFIX.get(this.keyPrefix) ?? []) {
+        if (write.count > kept.rowWrites) kept.rows.delete(done)
+      }
+      kept.rowWrites = writes
+    }
+    let row = kept.rows.get(path)
+    if (row === undefined) {
+      const paths = kept.listing.entries ?? kept.listing.partialEntries ?? []
+      const position = paths.indexOf(path)
+      if (position < 0) return null
+      const start = Math.floor(position / ROW_READ_BATCH) * ROW_READ_BATCH
+      const missing = paths.slice(start, start + ROW_READ_BATCH).filter((p) => !kept.rows.has(p))
+      const fetched = await fetch(missing)
+      if (
+        this.live(kept) &&
+        (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) === writes &&
+        soleCommandStarted() === stamp
+      ) {
+        for (const p of missing) kept.rows.set(p, fetched.get(p) ?? null)
+      }
+      row = fetched.get(path) ?? null
+    }
+    return row === null ? null : new FileStat(structuredClone(row))
+  }
+
+  /** Count a finished write of one row, keeping its siblings' reads. */
+  rowWrote(path: string): void {
+    const count = (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) + 1
+    ROW_WRITES_BY_PREFIX.set(this.keyPrefix, count)
+    let written = ROWS_WRITTEN_BY_PREFIX.get(this.keyPrefix)
+    if (written === undefined) {
+      written = new Map()
+      ROWS_WRITTEN_BY_PREFIX.set(this.keyPrefix, written)
+    }
+    const at = performance.now()
+    written.delete(path)
+    written.set(path, { count, at })
+    for (const [held, write] of written) {
+      if (at - write.at < LISTING_TRUST_WINDOW * 1000) break
+      written.delete(held)
+    }
   }
 
   /** Runs `fn` and counts a listing write once it is over, whether it threw or not. */
@@ -126,5 +197,7 @@ export class ListingMemo {
     }
     HOLDERS_BY_PREFIX.delete(this.keyPrefix)
     WRITES_BY_PREFIX.delete(this.keyPrefix)
+    ROW_WRITES_BY_PREFIX.delete(this.keyPrefix)
+    ROWS_WRITTEN_BY_PREFIX.delete(this.keyPrefix)
   }
 }

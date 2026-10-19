@@ -337,8 +337,8 @@ def _redis_counted(index: RedisIndexCacheStore) -> Iterator[Counter]:
 @pytest.mark.skipif(
     not os.environ.get("REDIS_URL"), reason="REDIS_URL not set"
 )
-async def test_a_warm_long_listing_reads_its_folder_once(redis_prefix):
-    rows = 50
+@pytest.mark.parametrize("rows", [50, 1000])
+async def test_a_warm_long_listing_batches_its_rows(redis_prefix, rows):
     session = MultiBucketSession(
         {"bucket": {f"d/{n:02}.txt": b"x" for n in range(rows)}}
     )
@@ -358,7 +358,7 @@ async def test_a_warm_long_listing_reads_its_folder_once(redis_prefix):
             with _redis_counted(index) as counts:
                 warm = await ws.shell("ls -l /s3/d")
                 assert await warm.stdout_str() == listed
-            assert counts["mget"] + counts["get"] <= rows + 4
+            assert counts["mget"] + counts["get"] <= (rows + 255) // 256 + 4
             made = await ws.shell("mkdir -p /s3/m/a/b && ls /s3/m/a")
             assert (made.exit_code, await made.stdout_str()) == (0, "b\n")
             teed = await ws.shell("ls -l /s3/d | tee /s3/d/out")

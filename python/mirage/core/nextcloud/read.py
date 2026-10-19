@@ -1,4 +1,8 @@
+from contextlib import AbstractAsyncContextManager
+from typing import cast
+
 from opendal.exceptions import NotFound
+from opendal.file import AsyncFile
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.core.nextcloud.util import nextcloud_key
@@ -18,7 +22,10 @@ async def read(
     timer = start_op()
     try:
         if offset or size is not None:
-            async with await op.open(key, "rb") as f:
+            async with cast(
+                AbstractAsyncContextManager[AsyncFile],
+                await op.open(key, "rb"),
+            ) as f:
                 if offset:
                     await f.seek(offset)
                 data = (

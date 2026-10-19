@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { FileStat, FileType } from '../../types.ts'
 import { LookupStatus, type ListResult } from './config.ts'
 import { LISTING_TRUST_WINDOW } from './constants.ts'
 import { ListingMemo } from './listing_memo.ts'
@@ -42,6 +43,17 @@ class Folder {
   }
 }
 
+function rowBatch(paths: readonly string[]): Promise<Map<string, FileStat>> {
+  return Promise.resolve(
+    new Map(
+      paths.map((path) => [
+        path,
+        new FileStat({ name: path, type: FileType.FILE, extra: { key: 'original' } }),
+      ]),
+    ),
+  )
+}
+
 function gate(): { open: () => void; opened: Promise<void> } {
   let open!: () => void
   const opened = new Promise<void>((resolve) => (open = resolve))
@@ -68,6 +80,76 @@ describe('ListingMemo', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it.each([false, true])(
+    'bounds row batches and isolates row copies (partial: %s)',
+    async (partial) => {
+      const paths = Array.from({ length: 1000 }, (_, n) => `/d/${String(n)}`)
+      const fetch = vi.fn(rowBatch)
+      expect(await memo.row('/d/0', fetch)).toBeNull()
+      await runInCommandScope(async () => {
+        await memo.read('/d', new Folder(paths, partial).fetch)
+        for (const path of paths) {
+          const row = await memo.row(path, fetch)
+          expect(row?.name).toBe(path)
+          if (row === null) throw new Error('missing row')
+          row.extra.key = 'changed'
+        }
+        expect((await memo.row('/d/0', fetch))?.extra.key).toBe('original')
+      })
+      expect(fetch).toHaveBeenCalledTimes(4)
+      expect(Math.max(...fetch.mock.calls.map(([batch]) => batch.length))).toBeLessThanOrEqual(256)
+      expect(await memo.row('/d/0', fetch)).toBeNull()
+    },
+  )
+
+  it.each([LISTING_TRUST_WINDOW / 2, LISTING_TRUST_WINDOW * 2])(
+    'expires rows at the listing expiry or trust window (%s)',
+    async (expiry) => {
+      await runInCommandScope(async () => {
+        await memo.read('/d', new Folder(undefined, false, WALL + expiry).fetch)
+        expect(await memo.row('/d/a', rowBatch)).not.toBeNull()
+        elapsed = Math.min(expiry, LISTING_TRUST_WINDOW)
+        expect(await memo.row('/d/a', rowBatch)).toBeNull()
+      })
+    },
+  )
+
+  it('does not keep a row batch that overlaps a write', async () => {
+    const fetch = vi.fn((paths: readonly string[]) => {
+      memo.rowWrote('/d/a')
+      return rowBatch(paths)
+    })
+    await runInCommandScope(async () => {
+      await memo.read('/d', new Folder().fetch)
+      await memo.row('/d/a', fetch)
+      await memo.row('/d/b', fetch)
+    })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not fetch rows a batch did not find again', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Map<string, FileStat>()))
+    await runInCommandScope(async () => {
+      await memo.read('/d', new Folder().fetch)
+      for (const path of ['/d/a', '/d/b', '/d/a']) {
+        expect(await memo.row(path, fetch)).toBeNull()
+      }
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('refetches a written row alone', async () => {
+    const fetch = vi.fn(rowBatch)
+    await runInCommandScope(async () => {
+      await memo.read('/d', new Folder().fetch)
+      await memo.row('/d/a', fetch)
+      memo.rowWrote('/d/a')
+      expect(await memo.row('/d/b', fetch)).not.toBeNull()
+      expect(await memo.row('/d/a', fetch)).not.toBeNull()
+    })
+    expect(fetch.mock.calls.map(([batch]) => batch)).toEqual([['/d/a', '/d/b'], ['/d/a']])
   })
 
   it('reads a listing once per command', async () => {

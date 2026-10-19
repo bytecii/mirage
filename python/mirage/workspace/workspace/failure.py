@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+
 from mirage.commands.errors import FindParseError, UsageError
 from mirage.errors.render import format_fs_error
 from mirage.errors.types import CommandTimeoutError
@@ -24,6 +26,8 @@ from mirage.policy import (
 )
 from mirage.shell.bytes import encode_text
 from mirage.workspace.workspace.utils import command_name
+
+logger = logging.getLogger(__name__)
 
 
 def placement_refused(action: Deny | Pending, command: str) -> IOResult:
@@ -69,4 +73,8 @@ def failure_result(exc: BaseException, command: str) -> IOResult:
     if isinstance(exc, OSError):
         name = command_name(command) or command
         return IOResult(exit_code=1, stderr=format_fs_error(name, exc))
+    logger.debug(
+        "workspace execution failed",
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     return IOResult(exit_code=1, stderr=encode_text(f"{exc}\n"))

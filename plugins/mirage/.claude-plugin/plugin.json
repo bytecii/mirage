@@ -1,0 +1,13 @@
+{
+  "name": "mirage",
+  "version": "0.1.0",
+  "description": "Use Mirage-mounted cloud, database, and local data as a virtual filesystem.",
+  "author": {
+    "name": "Strukto.AI",
+    "url": "https://github.com/strukto-ai"
+  },
+  "homepage": "https://docs.mirage.strukto.ai",
+  "repository": "https://github.com/strukto-ai/mirage",
+  "license": "Apache-2.0",
+  "keywords": ["mirage", "filesystem", "mcp", "coding-agent"]
+}

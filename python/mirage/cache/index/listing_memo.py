@@ -14,15 +14,19 @@
 
 import threading
 from collections import Counter, OrderedDict
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from time import monotonic, time
 
 from mirage.cache.index.config import ListResult
-from mirage.cache.index.constants import LISTING_TRUST_WINDOW
+from mirage.cache.index.constants import LISTING_TRUST_WINDOW, ROW_READ_BATCH
 from mirage.cache.index.scope import sole_command_started
+from mirage.types import FileStat
 
 _WRITES_BY_PREFIX: Counter[str] = Counter()
+_ROW_WRITES_BY_PREFIX: Counter[str] = Counter()
+# Each row written within the last window, with its write count and time.
+_ROWS_WRITTEN_BY_PREFIX: dict[str, OrderedDict[str, tuple[int, float]]] = {}
 _HOLDERS_BY_PREFIX: Counter[str] = Counter()
 _PREFIX_LOCK = threading.Lock()
 
@@ -40,12 +44,14 @@ def _copied(listing: ListResult) -> ListResult:
     )
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Read:
     writes_before: int
     read_at: float
     expires_at: float
     listing: ListResult
+    row_writes: int = -1
+    rows: dict[str, FileStat | None] = field(default_factory=dict)
 
 
 class ListingMemo:
@@ -54,9 +60,12 @@ class ListingMemo:
     A read is served again only to the command that made it, only while
     no listing write to the key prefix has finished since the read began,
     for under LISTING_TRUST_WINDOW seconds, and never past the listing's
-    own expiry. Each fill drops the oldest reads no command can be served
-    any more, so a read stays held for about one window. The key
-    prefix's write count lives while an open memo holds the prefix.
+    own expiry. Row reads batch at most ROW_READ_BATCH siblings and share
+    this lifetime, a row the batch did not find is left to a lookup of its
+    own, and a row-only write drops that row alone. Each fill drops the
+    oldest reads no command can be served any more, so a read stays held
+    for about one window. The key prefix's write count lives while an open
+    memo holds the prefix.
 
     Args:
         key_prefix (str): the store's key prefix, whose writes count.
@@ -108,6 +117,75 @@ class ListingMemo:
         )
         return _copied(listing)
 
+    async def row(
+        self,
+        path: str,
+        fetch: Callable[[Sequence[str]], Awaitable[dict[str, FileStat]]],
+    ) -> FileStat | None:
+        """Batch a listed row with its siblings within the listing's lifetime.
+
+        Args:
+            path (str): the row's index key.
+            fetch (Callable[[Sequence[str]], Awaitable[dict[str, FileStat]]]):
+                reads the listed rows in one request.
+        """
+        stamp = sole_command_started()
+        if stamp is None:
+            return None
+        folder = path.rsplit("/", 1)[0] or "/"
+        key = (stamp, folder)
+        kept = self._reads.get(key)
+        if kept is None or not self._live(kept):
+            return None
+        writes = _ROW_WRITES_BY_PREFIX[self._key_prefix]
+        if kept.row_writes != writes:
+            with _PREFIX_LOCK:
+                written = _ROWS_WRITTEN_BY_PREFIX.get(self._key_prefix)
+                for done, (count, _) in (written or {}).items():
+                    if count > kept.row_writes:
+                        kept.rows.pop(done, None)
+            kept.row_writes = writes
+        if path in kept.rows:
+            row = kept.rows[path]
+        else:
+            paths = kept.listing.entries or kept.listing.partial_entries or []
+            if path not in paths:
+                return None
+            start = paths.index(path) // ROW_READ_BATCH * ROW_READ_BATCH
+            missing = [
+                p
+                for p in paths[start : start + ROW_READ_BATCH]
+                if p not in kept.rows
+            ]
+            fetched = await fetch(missing)
+            found = {p: fetched.get(p) for p in missing}
+            if (
+                self._live(kept)
+                and _ROW_WRITES_BY_PREFIX[self._key_prefix] == writes
+            ):
+                kept.rows.update(found)
+            row = found[path]
+        return None if row is None else row.model_copy(deep=True)
+
+    def row_wrote(self, path: str) -> None:
+        """Count a finished write of one row, keeping its siblings' reads.
+
+        Args:
+            path (str): the written row's index key.
+        """
+        now = monotonic()
+        with _PREFIX_LOCK:
+            _ROW_WRITES_BY_PREFIX[self._key_prefix] += 1
+            written = _ROWS_WRITTEN_BY_PREFIX.setdefault(
+                self._key_prefix, OrderedDict()
+            )
+            written.pop(path, None)
+            written[path] = (_ROW_WRITES_BY_PREFIX[self._key_prefix], now)
+            while (
+                now - next(iter(written.values()))[1] >= LISTING_TRUST_WINDOW
+            ):
+                written.popitem(last=False)
+
     def wrote(self) -> None:
         """Count a finished listing write to the key prefix."""
         with _PREFIX_LOCK:
@@ -128,3 +206,5 @@ class ListingMemo:
             if _HOLDERS_BY_PREFIX[self._key_prefix] <= 0:
                 del _HOLDERS_BY_PREFIX[self._key_prefix]
                 _WRITES_BY_PREFIX.pop(self._key_prefix, None)
+                _ROW_WRITES_BY_PREFIX.pop(self._key_prefix, None)
+                _ROWS_WRITTEN_BY_PREFIX.pop(self._key_prefix, None)

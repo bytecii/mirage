@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { CommandTimeoutError } from '../../errors/types.ts'
+import { isFsError } from '../../errors/fs.ts'
 import { UsageError } from '../../commands/errors.ts'
 import { ContentDriftError } from '../snapshot/drift.ts'
 import { encodeText } from '../../shell/bytes.ts'
@@ -49,6 +50,9 @@ export function failureResult(err: unknown): { stderr: Uint8Array; exitCode: num
     return { stderr: encodeText(`${err.message}\n`), exitCode: err.exitCode }
   }
   const msg = err instanceof Error ? err.message : String(err)
+  if (!isControlFlowError(err) && !isFsError(err)) {
+    console.debug('workspace execution failed:', err)
+  }
   return { stderr: encodeText(`${msg}\n`), exitCode: 1 }
 }
 

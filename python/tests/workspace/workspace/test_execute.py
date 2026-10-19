@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -31,6 +32,33 @@ from mirage.workspace.execution import ExecutionScope
 from mirage.workspace.session.ram import RAMSessionStore
 from mirage.workspace.session.store import SessionFields
 from tests.fixtures.apply_marks import caching_ram_workspace, capture_marks
+
+
+@pytest.mark.asyncio
+async def test_unexpected_execution_failure_logs_traceback_and_keeps_shell_result(
+    caplog,
+):
+    error = TypeError("broken routing invariant")
+
+    def policy(ctx):
+        raise error
+
+    ws = Workspace({"/ram": RAMVFS()}, route_policy=policy)
+    try:
+        with caplog.at_level(
+            logging.DEBUG, logger="mirage.workspace.workspace.failure"
+        ):
+            result = await ws.shell("echo ok")
+        assert result.exit_code == 1
+        assert await result.stderr_str() == "broken routing invariant\n"
+        assert await result.stdout_str() == ""
+        records = [
+            r for r in caplog.records if r.exc_info and r.exc_info[1] is error
+        ]
+        assert records and records[0].exc_info[2] is not None
+        assert ws.get_session(ws.default_session_id).last_exit_code == 1
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio
