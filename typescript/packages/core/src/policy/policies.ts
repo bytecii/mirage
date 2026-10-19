@@ -281,7 +281,7 @@ export async function preVfsGate(
         ? null
         : explainedOp(policies, ctx, decisions, line)
     // Without task isolation the binding would reach other tasks' ops; there
-    // a deciding method gets no files and a session it cannot write.
+    // the mark rides a deciding method's own files and program instead.
     const noted = await (asyncContextIsolatesTasks
       ? runExplaining(DryRun.DECIDING, decide)
       : decide())
@@ -632,7 +632,7 @@ export class Policies {
               SessionResultContext,
           )
         // Without task isolation the binding would reach other tasks' ops,
-        // so there a method runs as it did before: it may write.
+        // so there the mark rides the method's own files and program alone.
         answered = await (asyncContextIsolatesTasks ? runExplaining(DryRun.DECIDING, ask) : ask())
       } catch (err) {
         if (policy === this.placement) throw err

@@ -18,7 +18,7 @@ import type { OpRecord } from '../observe/record.ts'
 import { finishRecord, type OpTimer, startOp } from '../observe/context.ts'
 import type { FileStat, SetAttrFields, Visibility } from '../types.ts'
 import { FileType, PathSpec } from '../types.ts'
-import { eacces, isEnotdir, isMissingPath } from '../errors/fs.ts'
+import { isEnotdir, isMissingPath } from '../errors/fs.ts'
 import {
   type Caller,
   type CallerDispatchFn,
@@ -283,24 +283,6 @@ export class Files {
       ledger: this.ledger,
       served: mount,
     })
-  }
-
-  /**
-   * The same facade with every op refused (EACCES), its mount table still
-   * answered: a policy method's files where it cannot run as a policy deciding,
-   * so a program still reads which mounts its session sees.
-   *
-   * @internal The mechanism behind a method's files without task isolation;
-   * Python always isolates tasks.
-   */
-  refusingOps(): Files {
-    return new Files(
-      (_op, path) => Promise.reject(eacces(path)),
-      this.sink,
-      this.links,
-      this.ownerOf,
-      { ...this.options(), bind: null },
-    )
   }
 
   /**

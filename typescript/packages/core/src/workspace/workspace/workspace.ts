@@ -75,9 +75,9 @@ import {
   parseMountMode,
 } from '../../types.ts'
 import type { Policies } from '../../policy/index.ts'
-import { DryRun, Outcome, type EntryGate, type ShellExplanation } from '../../policy/types.ts'
+import { DryRun, Outcome, type ShellExplanation } from '../../policy/types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
-import { Files, WorkspaceFiles } from '../files.ts'
+import { Files, WorkspaceFiles, withCaller } from '../files.ts'
 import type { MountEntry } from '../mount/mount.ts'
 import { checkReadCapability } from '../mount/read_policy.ts'
 import { WritePolicyError } from '../mount/errors.ts'
@@ -99,6 +99,7 @@ import {
 } from '../../runtime/binding.ts'
 import { ContextScope } from '../../utils/context_scope.ts'
 import {
+  type Caller,
   captureSessionContext,
   currentCaller,
   getAdmission,
@@ -168,7 +169,7 @@ import { placementRefused } from './failure.ts'
 export { ExecuteResult } from './types.ts'
 export type { ExecuteOptions, MountSpec, SessionExecuteOptions, WorkspaceOptions } from './types.ts'
 
-// A method's session write where it cannot run as a policy deciding.
+// A method's session write where the deciding mark cannot reach it.
 function refuseWrite(name: string): Promise<void> {
   return Promise.reject(eacces(name))
 }
@@ -396,8 +397,14 @@ export class Workspace {
       this.sessionManager,
       // The entry points the runtime world attaches, so a profile policy reads
       // the mounts an agent's program would, and through the same gate,
-      // with its ops stamped as its own for its `preVfs` to recognize.
-      { dispatch: (issuer) => this.programDispatch(issuer), resolver: sandboxResolver },
+      // with its ops stamped as its own for its `preVfs` to recognize. Its
+      // program runs only while a policy decides, so each op says so on its
+      // own caller: its reads run, its writes are refused.
+      {
+        dispatch: (issuer) =>
+          this.programDispatch(issuer, this.dispatcher, { explaining: DryRun.DECIDING }),
+        resolver: sandboxResolver,
+      },
     )
     this.registry.policies.add(this.scriptPolicy)
     for (const entry of options.policies ?? []) this.registry.policies.add(entry)
@@ -420,15 +427,17 @@ export class Workspace {
       }
       if (session === null) return null
       const view = sessionView(session, this.policies)
-      const vfs = this.vfs.forSession(session.sessionId)
+      // A method decides: its files say so on each op's own caller, so its
+      // reads run and its writes are refused wherever it runs.
+      const vfs = withCaller(this.vfs.forSession(session.sessionId), {
+        explaining: DryRun.DECIDING,
+      })
       if (asyncContextIsolatesTasks) return { session: view, vfs }
-      // Without task isolation a method cannot run as a policy deciding: its
-      // own calls could not be told from the ones it judges. There its files
-      // answer the mount table and refuse every op, and its session refuses
-      // every write.
+      // Without task isolation the mark cannot reach a session write through
+      // the async context, so there its session refuses every write.
       return {
         session: { ...view, set: refuseWrite, unset: refuseWrite, mark: refuseWrite },
-        vfs: vfs.refusingOps(),
+        vfs,
       }
     }
     // Installed CLIs, fully separate from mounts: a spec name resolves
@@ -664,6 +673,7 @@ export class Workspace {
     // capture keeps the dispatcher's fold across every live session.
     const dispatcher =
       sessionId === undefined ? this.dispatcher : this.dispatcher.forSession(session)
+    const gate = getAdmission()
     const scope = new ContextScope([
       ...captureSessionContext(session, this.sessionManager),
       captureExecutionContext(),
@@ -687,7 +697,11 @@ export class Workspace {
           cwd: PathSpec.fromStrPath(session.cwd),
           env: envSnapshot(session),
         },
-        dispatch: this.programDispatch(undefined, dispatcher, getAdmission()),
+        dispatch: this.programDispatch(
+          undefined,
+          dispatcher,
+          gate === null ? null : { ruleGate: gate },
+        ),
         restrictedMounts: restrictedMountsFor(session, this.sandboxMounts()),
       },
       scope,
@@ -827,13 +841,14 @@ export class Workspace {
    *   it is how a profile policy's own reads reach its `preVfs` marked as
    *   its own, as an argument rather than ambient state.
    * @param dispatcher the dispatcher, bound to a session when one is named.
-   * @param gate the command running the program, so a rule scoped to
-   *   `python3` reaches its `open()`.
+   * @param changes what every op says of its caller: the command running the
+   *   program, so a rule scoped to `python3` reaches its `open()`, or a
+   *   policy deciding.
    */
   private programDispatch(
     issuer?: symbol,
     dispatcher: Dispatcher = this.dispatcher,
-    gate: EntryGate | null = null,
+    changes: Partial<Caller> | null = null,
   ): DispatchFn {
     return (name, path, args = [], kwargs = {}, report) =>
       dispatcher.dispatch(
@@ -842,7 +857,7 @@ export class Workspace {
         args,
         issuer === undefined ? kwargs : { ...kwargs, issuer },
         report,
-        gate === null ? undefined : { ...currentCaller(), ruleGate: gate },
+        changes === null ? undefined : { ...currentCaller(), ...changes },
       )
   }
 
@@ -1107,7 +1122,7 @@ export class Workspace {
    * It runs no command, expands nothing, spends no grant and puts no
    * question to a host, which is what makes it safe to call about a line
    * nobody typed; a policy deciding it reads for real but changes nothing
-   * (`DryRun`), where the runtime isolates async tasks. The line carries
+   * (`DryRun`). The line carries
    * the verdict its result would, every answer at `preExecute` and its
    * parse tree, each command with every policy's answer to it and the
    * runtime that would run it. A line a rule refuses, or that waits on the
@@ -1121,7 +1136,8 @@ export class Workspace {
    */
   async explain(line: string, sessionId = ''): Promise<ShellExplanation> {
     await this.ensureSessionsLoaded()
-    // Without task isolation the bindings would reach other tasks' ops.
+    // Without task isolation the bindings would reach other tasks' ops; there
+    // the deciding mark rides each method's own files and program alone.
     if (!asyncContextIsolatesTasks) return this.explained(line, sessionId)
     // Judged inside a line, as the line runs: an ask a deciding policy's
     // read meets refuses like a deny and records nothing.
