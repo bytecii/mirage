@@ -24,7 +24,7 @@ import { HfModelsVFS } from './hf_models.ts'
 // the whole tree and the generic walk over it costs no requests. A native op
 // would buy a constant factor and cost a second implementation of the same
 // traversal.
-const OPS = ['glob', 'read', 'readdir', 'stat']
+const OPS = ['read', 'readdir', 'stat']
 
 // The mount is read-only, so the byte-mutation functions are absent exactly
 // as they are from python's. The dispatcher, which a shell command bypasses,

@@ -173,8 +173,8 @@ namespace (`workspace/mount/namespace/`) sits above every backend with the
 mount table, symlinks and the attribute overlay; a handler reads links and
 mount boundaries through `links_of` and `mounts_of`
 (`commands/builtin/utils/links`), as its session sees them: they read the
-tables off its files through the internal `namespace_of`, and `ctx.vfs`
-itself hands out neither. A `filetype` registration on a mount is the only
+`FilesView` its files hand out (`view_of`), hides already applied, and
+`ctx.vfs` itself hands out neither table. A `filetype` registration on a mount is the only
 renderer extension point.
 
 Pinned behavior: `find -size` rounds up and the start row is the generic's;
