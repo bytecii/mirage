@@ -28,6 +28,10 @@ specific to the TypeScript SDK.
   spells the same keys in snake_case.
 - **Pyodide** is in the TypeScript SDK only; WASI is in the Python SDK only.
 
+Runtime output uses the normal `Workspace.shell()` result: `stdout` and
+`stderr` are `Uint8Array`; use `stdoutText` and `stderrText` when you want
+decoded strings.
+
 ## Pyodide
 
 ### Scripts and flags
@@ -45,6 +49,8 @@ specific to the TypeScript SDK.
 - An installed Python CLI gets bare `argv` (its name at index 0) and `stdin`
   (bytes, or `None`), as on Monty; Pyodide also keeps `sys.argv` and
   `sys.stdin`.
+- Standard streams support text and `.buffer` I/O, but do not expose native
+  OS file descriptors.
 
 ### Files
 

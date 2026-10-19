@@ -86,11 +86,37 @@ Here `python3 job.py | grep error` runs `python3` in the container and
 
 | Where | Reaches the workspace through | Outside the workspace |
 | --- | --- | --- |
-| In-process | directly: every file it opens is the workspace's | nothing: no host files, no network, unless a Pyodide `init_module` adds them |
+| Monty, WASI, QuickJS | directly: every file they open is the workspace's | no host files or network |
+| Pyodide | directly, through the workspace's file bridge | Browser workers retain JavaScript and network access; `init_module` enables host access. See [containment](/typescript/runtime/python#containment). |
 | `local`, Sandlock | a [FUSE folder](/home/setup/fuse) you mount | the host's disk and network; under Sandlock, only the paths you grant |
 | Other sandboxes | SFTP and `sshfs` with `mount_type: ssh` (`docker`, `e2b`, `ssh`, `smolvm`, `apple_container`), or a Mirage inside the sandbox | that sandbox's disk and network |
 
-Mount modes, profiles and policies apply to every file call that reaches the workspace. A host or sandbox runtime also has its own files and network, which they do not cover; only an all in-process list, with no Pyodide `init_module`, keeps agent code inside them.
+Mount modes, profiles and policies apply to every file call that reaches the
+workspace. A host or sandbox runtime also has its own files and network, which
+they do not cover. Pyodide has its own containment limits; use a sandbox with
+a process and kernel boundary for hostile code.
+
+### Verify workspace file access
+
+Run these lines inside Mirage's shell after configuring a writable `/data`
+mount visible to the runtime capturing `python3`. They check that Python can
+read a workspace file and write one back:
+
+```bash
+(
+  scratch=$(mktemp /data/mirage-check.XXXXXX) || exit
+  trap 'rm -f -- "$scratch"' EXIT
+  printf 'hello\n' > "$scratch" &&
+  MIRAGE_CHECK_FILE="$scratch" python3 -c 'import os; from pathlib import Path; path = Path(os.environ["MIRAGE_CHECK_FILE"]); text = path.read_text(); path.write_text(text.upper()); print(text, end="")' &&
+  cat "$scratch"
+)
+# hello
+# HELLO
+```
+
+In-process runtimes use the file bridge automatically. For `local` and
+Sandlock, first mount a [FUSE folder](/home/setup/fuse). For other sandboxes,
+finish the provider page's **Connecting the workspace** steps first.
 
 ## Resource limits
 

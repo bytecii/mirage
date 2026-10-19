@@ -16,11 +16,12 @@ only, in Node and in browsers.
 
 ## Installation
 
-```bash
-pnpm add pyodide
+```bash Node
+pnpm add @struktoai/mirage-node pyodide
 ```
 
-In a browser, the page must be cross-origin isolated for the worker; see
+In a browser, install `@struktoai/mirage-browser` and `pyodide` instead. The page
+must be cross-origin isolated for the worker; see
 [worker and browser setup](/typescript/runtime/python#worker-and-browser-setup).
 
 ## Usage
@@ -31,7 +32,19 @@ In a browser, the page must be cross-origin isolated for the worker; see
     import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
 
     const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.EXEC, runtimes: ['pyodide'] })
-    await ws.shell("python3 -c 'print(1 + 1)'")
+    try {
+      const inline = await ws.shell("python3 -c 'print(1 + 1)'")
+      console.log(inline.stdoutText) // 2
+
+      await ws.shell(`echo 'import sys; print(sys.argv[1:])' > /data/hello.py`)
+      const script = await ws.shell('python3 /data/hello.py alice bob')
+      console.log(script.stdoutText) // ['alice', 'bob']
+
+      const piped = await ws.shell("echo 'print(1 + 1)' | python3")
+      console.log(piped.stdoutText) // 2
+    } finally {
+      await ws.close()
+    }
     ```
   </Tab>
   <Tab title="YAML" icon="file-code">

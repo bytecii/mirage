@@ -26,6 +26,10 @@ serves them from the workspace, `fuse` from a Mirage inside the sandbox, and
 | [SSH](/home/setup/runtime/sandbox/ssh) | Any machine running `sshd` | `mount_type`: `ssh`, `fuse` or `both` |
 | [Sandlock](/home/setup/runtime/sandbox/sandlock) | This Linux host, confined | A [FUSE folder](/home/setup/fuse) you grant |
 
+After following a provider page's **Connecting the workspace** steps, run the
+shared [workspace file check](/home/setup/runtime/overview#verify-workspace-file-access)
+to confirm reads and writes cross the runtime boundary.
+
 ## The sandbox image
 
 A sandbox that serves the mounts with its own Mirage needs `fuse3` and

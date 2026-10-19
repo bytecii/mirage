@@ -7,7 +7,9 @@ description: Runtime-specific constraints in the TypeScript SDK (Node and Browse
 Most of Mirage's behavior is identical across Python and TypeScript. The two TS runtimes (Node and Browser) each impose a handful of constraints, most of which don't exist in Python (the one shared design property, size-unknown stat, is included because it is the most common surprise). All are documented here so you can plan around them before they surprise you in production.
 
 <Note>
-  `python3` has its own set of WASM-runtime-level divergences from Python Mirage's subprocess model. See [Python](/typescript/python#limitations) for the full list.
+  `python3` has its own set of WASM-runtime-level divergences. See the
+  [TypeScript runtime reference](/typescript/runtime/python#pyodide) for the
+  worker, filesystem, socket, and containment details.
 </Note>
 
 ## Node versions

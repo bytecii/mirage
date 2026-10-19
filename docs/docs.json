@@ -495,7 +495,6 @@
               "typescript/quickstart",
               "typescript/browser-quickstart",
               "typescript/setup/fuse",
-              "typescript/python",
               "typescript/limitations"
             ]
           },
@@ -783,6 +782,10 @@
     {
       "source": "/typescript/runtime/javascript",
       "destination": "/home/setup/runtime/quickjs"
+    },
+    {
+      "source": "/typescript/python",
+      "destination": "/home/setup/runtime/pyodide"
     },
     {
       "source": "/typescript/runtime/sandbox",
