@@ -24,6 +24,7 @@ import type { PathSpec } from '../types.ts'
 import { stat as ramStat } from '../core/ram/stat.ts'
 import { DEFAULT_READ_TTL, FileStat, FileType, Limit, MountMode, ReadPolicy } from '../types.ts'
 import { eacces, enoent, enotdir } from '../errors/fs.ts'
+import { CommandTimeoutError } from '../errors/types.ts'
 import { Session, Workspace } from './workspace/workspace.ts'
 
 const DEC = new TextDecoder()
@@ -190,6 +191,29 @@ class LateStatRAM extends RAMVFS {
         await gate
       }
     }
+  }
+}
+
+class StuckWriteRAM extends RAMVFS {
+  stats = 0
+  release: () => void = () => undefined
+  private readonly stuck = new Promise<void>((resolve) => {
+    this.release = resolve
+  })
+  began: () => void = () => undefined
+  readonly writing = new Promise<void>((resolve) => {
+    this.began = resolve
+  })
+
+  override async write(path: PathSpec, data: Uint8Array, signal?: AbortSignal): Promise<void> {
+    this.began()
+    await this.stuck
+    await super.write(path, data, signal)
+  }
+
+  override stat(path: PathSpec): Promise<FileStat> {
+    this.stats++
+    return super.stat(path)
   }
 }
 
@@ -463,6 +487,26 @@ describe('fresh stat', () => {
       const row = await ws.vfs.stat('/data/d', undefined, { fresh: true })
       expect(row.type).toBe(FileType.FILE)
       expect(await ws.cache.fingerprint('/data/d/inner/f.txt')).toBe('v1')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('counts a held path against the stat timeout', async () => {
+    const vfs = new StuckWriteRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      ws.mount('/data').commandLimits.set('stat', new Limit({ timeoutSeconds: 0.1 }))
+      const writing = ws.vfs.write('/data/f.txt', 'x')
+      await vfs.writing
+      const before = vfs.stats
+      await expect(ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).rejects.toBeInstanceOf(
+        CommandTimeoutError,
+      )
+      vfs.release()
+      await writing
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(vfs.stats).toBe(before)
     } finally {
       await ws.close()
     }

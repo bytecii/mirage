@@ -26,7 +26,7 @@ from collections.abc import (
     Collection,
     Mapping,
 )
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -35,6 +35,7 @@ from mirage.cache.file import io as cache_io
 from mirage.cache.index.ram import ListingCheckStore
 from mirage.cache.lock import KeyLock
 from mirage.cache.manager import CacheManager
+from mirage.commands.builtin.utils.limit import run_with_timeout
 from mirage.commands.builtin.utils.paths import (
     dot_refusal,
     hidden_walk,
@@ -1059,13 +1060,12 @@ class Dispatcher:
             name in DISPATCH_WRITE_OPS
             or (call.write and name not in POLICY_WRITE_OPS)
         ) and name not in SERIAL_WRITE_OPS
-        prefix = mount.prefix.rstrip("/")
-        key = f"{id(mount.vfs)}:{mount_key(call.path.virtual, prefix)}"
         try:
-            async with (
-                self._writers.with_lock(key) if call.fresh else nullcontext()
-            ):
-                ran = await self._call(call, mount, self._filler(call, mount))
+            ran = await (
+                self._fresh_call(call, mount)
+                if call.fresh
+                else self._call(call, mount, self._filler(call, mount))
+            )
         except BaseException:
             if settles:
                 await self._evict_failed_write(mount, name, call.path, kwargs)
@@ -1948,6 +1948,26 @@ class Dispatcher:
         finally:
             scope.close()
         return result
+
+    async def _fresh_call(self, call: _Call, mount: MountEntry) -> Any:
+        """Run a fresh stat under its path's writer hold.
+
+        No local write to the path lands between the backend's answer and
+        its reconcile. The wait for the hold counts against the stat's
+        own timeout: a write the clock gave up on may still hold the path.
+
+        Args:
+            call (_Call): the admitted fresh stat.
+            mount (MountEntry): the mount serving its path.
+        """
+        prefix = mount.prefix.rstrip("/")
+        key = f"{id(mount.vfs)}:{mount_key(call.path.virtual, prefix)}"
+
+        async def held() -> Any:
+            async with self._writers.with_lock(key):
+                return await self._call(call, mount, self._filler(call, mount))
+
+        return await run_with_timeout(held(), mount.op_timeout("stat"), "stat")
 
     async def _visible_files(
         self, mount: MountEntry, call: _Call

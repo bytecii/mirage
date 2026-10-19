@@ -23,6 +23,7 @@ import pytest
 
 from mirage import Workspace
 from mirage.context import reset_current_session, set_current_session
+from mirage.errors.types import CommandTimeoutError
 from mirage.policy import (
     Action,
     Deny,
@@ -31,7 +32,7 @@ from mirage.policy import (
     VfsContext,
     VfsResultContext,
 )
-from mirage.types import FileType, HiddenPaths, MountMode, Visibility
+from mirage.types import FileType, HiddenPaths, Limit, MountMode, Visibility
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.ram.store import RAMStore
@@ -170,6 +171,23 @@ class _LateStatRAM(RAMVFS):
             if gate is not None:
                 self.asked.set()
                 await gate.wait()
+
+
+class _StuckWriteRAM(RAMVFS):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stuck = asyncio.Event()
+        self.writing = asyncio.Event()
+        self.stats = 0
+
+    async def write(self, path, data):
+        self.writing.set()
+        await self.stuck.wait()
+        await super().write(path, data)
+
+    async def stat(self, path):
+        self.stats += 1
+        return await super().stat(path)
 
 
 class TestFreshStat:
@@ -423,6 +441,27 @@ class TestFreshStat:
             row = await ws.vfs.stat("/data/d", fresh=True)
             assert row.type is FileType.FILE
             assert await ws.cache.fingerprint("/data/d/inner/f.txt") == "v1"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_held_path_counts_against_the_stat_timeout(self):
+        vfs = _StuckWriteRAM()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            ws.mount("/data").command_limits["stat"] = Limit(
+                timeout_seconds=0.1
+            )
+            writing = asyncio.create_task(ws.vfs.write("/data/f.txt", b"x"))
+            await vfs.writing.wait()
+            before = vfs.stats
+            with pytest.raises(CommandTimeoutError):
+                await ws.vfs.stat("/data/f.txt", fresh=True)
+            vfs.stuck.set()
+            await writing
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert vfs.stats == before
         finally:
             await ws.close()
 

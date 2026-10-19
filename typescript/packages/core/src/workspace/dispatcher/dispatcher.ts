@@ -908,11 +908,8 @@ export class Dispatcher {
       !SERIAL_WRITE_OPS.has(name)
     let ran: Awaited<ReturnType<typeof this.callBackend>>
     try {
-      const key = `${String(this.storeId(vfs))}:${mountKey(call.path.virtual, rstripSlash(mount.prefix))}`
       ran = call.fresh
-        ? await this.state.writers.withLock(key, () =>
-            this.callBackend(call, mount, vfs, scope, mode),
-          )
+        ? await this.freshCall(call, mount, vfs, scope, mode)
         : await this.callBackend(call, mount, vfs, scope, mode)
     } catch (err) {
       if (settles) {
@@ -1704,6 +1701,38 @@ export class Dispatcher {
     if (found === null) return null
     const visible = visibleAnswer('read_tree', call.vis, call.path, found) as Map<string, FileStat>
     return [...visible.values()].filter((st) => st.type === FileType.FILE).length
+  }
+
+  /**
+   * Run a fresh stat under its path's writer hold, so no local write to the
+   * path lands between the backend's answer and its reconcile. The wait for
+   * the hold counts against the stat's own timeout, since a write the clock
+   * gave up on keeps the path until its call settles, and a waiter past the
+   * deadline leaves the queue rather than running late. Mirrors Python's
+   * Dispatcher._fresh_call.
+   */
+  private async freshCall(
+    call: Call,
+    mount: MountEntry,
+    vfs: BaseVFS,
+    scope: PathSpec,
+    mode: MountMode,
+  ): Promise<[unknown, PathSpec | null, readonly unknown[]]> {
+    const key = `${String(this.storeId(vfs))}:${mountKey(call.path.virtual, rstripSlash(mount.prefix))}`
+    const expired = new AbortController()
+    try {
+      return await runWithTimeout(
+        this.state.writers.withLock(
+          key,
+          () => this.callBackend(call, mount, vfs, scope, mode),
+          expired.signal,
+        ),
+        mount.opTimeout('stat'),
+        'stat',
+      )
+    } finally {
+      expired.abort()
+    }
   }
 
   /**
