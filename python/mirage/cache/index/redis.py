@@ -13,10 +13,11 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import functools
 import json
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from datetime import datetime, timedelta, timezone
-from typing import cast
+from typing import Any, Concatenate, ParamSpec, TypeVar, cast
 
 try:
     from redis.asyncio import Redis
@@ -45,6 +46,7 @@ from mirage.cache.index.constants import (
     REGISTRY_PAGE,
     TOMBSTONE_PREFIX,
 )
+from mirage.cache.index.listing_memo import ListingMemo
 from mirage.cache.index.store import IndexCacheStore
 from mirage.types import FileStat, FileType
 from mirage.utils.ids import uuid7
@@ -66,6 +68,27 @@ def _row(raw: str | bytes) -> FileStat:
 _PendingSeed = tuple[
     dict[str, FileStat], dict[str, list[str]], datetime, str | None
 ]
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _counts_listing_write(
+    method: Callable[
+        Concatenate["RedisIndexCacheStore", P], Coroutine[Any, Any, R]
+    ],
+) -> Callable[Concatenate["RedisIndexCacheStore", P], Coroutine[Any, Any, R]]:
+    @functools.wraps(method)
+    async def counted(
+        self: "RedisIndexCacheStore", *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._listings.wrote()
+
+    return counted
+
 
 _REPLACE_ENTRY = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
@@ -620,6 +643,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         self._generation_key = f"{p}{GENERATION_KEY}"
         self._paths_key = f"{p}{PATHS_KEY}"
         self._directory_generation_prefix = f"{self._generation_key}:"
+        self._listings = ListingMemo(p)
 
     def _entry_key(self, vfs_path: str) -> str:
         return f"{self._entry_prefix}{vfs_path}"
@@ -749,6 +773,7 @@ class RedisIndexCacheStore(IndexCacheStore):
                 version,
             )
         )
+        self._listings.wrote()
 
     async def _generation(self, key: str) -> str:
         task = self._generation_tasks.get(key)
@@ -884,7 +909,10 @@ class RedisIndexCacheStore(IndexCacheStore):
                             self._entry_prefix,
                             uuid7() if last_seed[vfs_path] == number else "",
                         )
-                await pipe.execute()
+                try:
+                    await pipe.execute()
+                finally:
+                    self._listings.wrote()
                 del self._pending_seeds[: len(pending)]
 
     @property
@@ -929,6 +957,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         )
         await pipe.execute()
 
+    @_counts_listing_write
     async def add_entry(
         self,
         vfs_path: str,
@@ -988,6 +1017,27 @@ class RedisIndexCacheStore(IndexCacheStore):
         return result == 1
 
     async def list_dir(self, vfs_path: str) -> ListResult:
+        """A folder's listing, read from Redis at most once per command.
+
+        Inside a shell command, a later call for the same folder is
+        answered from this process's memory while no listing write to
+        this key prefix has finished in this process since the read
+        began, the read is under LISTING_TRUST_WINDOW seconds old, and
+        the listing has not reached its own expiry. A write by another
+        process is therefore seen within that window, and by every new
+        command at its first read. Outside a command every call reads
+        Redis.
+
+        Args:
+            vfs_path (str): the listed folder's key.
+        """
+        return await self._listings.read(
+            vfs_path, lambda: self._read_listing(vfs_path)
+        )
+
+    async def _read_listing(
+        self, vfs_path: str
+    ) -> tuple[ListResult, float | None]:
         await self._flush_seed()
         key = self._children_key(vfs_path)
         raw, current, directory = await self._client.mget(
@@ -996,7 +1046,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             f"{self._directory_generation_prefix}{vfs_path}",
         )
         if raw is None:
-            return ListResult(status=LookupStatus.NOT_FOUND)
+            return ListResult(status=LookupStatus.NOT_FOUND), None
         listing = IndexDirectory.model_validate_json(raw)
         if (
             current is None
@@ -1004,15 +1054,21 @@ class RedisIndexCacheStore(IndexCacheStore):
             or listing.generation != f"{_text(current)}:{_text(directory)}"
             or datetime.now(timezone.utc).timestamp() >= listing.expires_at
         ):
-            return ListResult(status=LookupStatus.EXPIRED)
+            return ListResult(status=LookupStatus.EXPIRED), None
         if listing.partial:
-            return ListResult(
-                partial_entries=listing.entries, version=listing.version
+            return (
+                ListResult(
+                    partial_entries=listing.entries, version=listing.version
+                ),
+                listing.expires_at,
             )
-        return ListResult(
-            entries=listing.entries,
-            version=listing.version,
-            window=listing.window,
+        return (
+            ListResult(
+                entries=listing.entries,
+                version=listing.version,
+                window=listing.window,
+            ),
+            listing.expires_at,
         )
 
     async def set_dir(
@@ -1045,6 +1101,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             vfs_path, entries, expired_at, partial=True, evict=False
         )
 
+    @_counts_listing_write
     async def _set_dir(
         self,
         vfs_path: str,
@@ -1154,6 +1211,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             if cursor == 0:
                 return entries
 
+    @_counts_listing_write
     async def invalidate_entry(self, vfs_path: str) -> None:
         await self._flush_seed()
         folder = vfs_path.rsplit("/", 1)[0] or "/"
@@ -1177,6 +1235,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             ],
         )
 
+    @_counts_listing_write
     async def invalidate_dir(self, vfs_path: str) -> None:
         await self._flush_seed()
         # The child list becomes a tombstone, so the next complete listing
@@ -1224,6 +1283,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             if not cursor:
                 return
 
+    @_counts_listing_write
     async def invalidate_prefix(
         self, vfs_path: str, *, excluded: tuple[str, ...] = ()
     ) -> None:
@@ -1252,12 +1312,14 @@ class RedisIndexCacheStore(IndexCacheStore):
             if not cursor:
                 return False
 
+    @_counts_listing_write
     async def invalidate(self) -> None:
         await self._flush_seed()
         # One atomic generation change expires all listings without racing
         # another client's refill or resurrecting a concurrently removed path.
         await self._client.set(self._generation_key, uuid7())
 
+    @_counts_listing_write
     async def clear(self) -> None:
         async with self._seed_lock:
             self._pending_seeds.clear()
@@ -1276,6 +1338,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         if self._closed:
             return
         await self._flush_seed()
+        self._listings.close()
         if self._owns_client:
             await self._client.aclose()
         await super().close()
