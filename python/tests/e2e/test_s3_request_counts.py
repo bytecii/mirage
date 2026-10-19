@@ -313,3 +313,58 @@ async def test_a_listing_lives_as_long_as_the_shorter_of_index_and_mount_ttl(
                 assert counts["list"] - before == listed
         finally:
             await ws.close()
+
+
+@contextmanager
+def _redis_counted(index: RedisIndexCacheStore) -> Iterator[Counter]:
+    counts = Counter()
+    client = index._client
+
+    def counted(name):
+        original = getattr(client, name)
+
+        async def send(*args, **kwargs):
+            counts[name] += 1
+            return await original(*args, **kwargs)
+
+        return patch.object(client, name, send)
+
+    with counted("mget"), counted("get"):
+        yield counts
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("REDIS_URL"), reason="REDIS_URL not set"
+)
+async def test_a_warm_long_listing_reads_its_folder_once(redis_prefix):
+    rows = 50
+    session = MultiBucketSession(
+        {"bucket": {f"d/{n:02}.txt": b"x" for n in range(rows)}}
+    )
+    ws = Workspace(
+        {"/s3": (_s3_vfs(), MountMode.WRITE)},
+        index=RedisIndexConfig(
+            url=os.environ["REDIS_URL"], key_prefix=redis_prefix
+        ),
+    )
+    index = ws.mount("/s3").index_store
+    assert isinstance(index, RedisIndexCacheStore)
+    with patch_s3_session(session):
+        try:
+            cold = await ws.shell("ls -l /s3/d")
+            listed = await cold.stdout_str()
+            assert cold.exit_code == 0
+            with _redis_counted(index) as counts:
+                warm = await ws.shell("ls -l /s3/d")
+                assert await warm.stdout_str() == listed
+            assert counts["mget"] + counts["get"] <= rows + 4
+            made = await ws.shell("mkdir -p /s3/m/a/b && ls /s3/m/a")
+            assert (made.exit_code, await made.stdout_str()) == (0, "b\n")
+            teed = await ws.shell("ls -l /s3/d | tee /s3/d/out")
+            assert await teed.stdout_str() == listed
+            after = await ws.shell("ls /s3/d")
+            assert "out\n" in await after.stdout_str()
+        finally:
+            await index.clear()
+            await ws.close()

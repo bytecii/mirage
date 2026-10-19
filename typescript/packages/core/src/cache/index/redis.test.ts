@@ -18,6 +18,7 @@ import { IndexDirectorySchema, LookupStatus } from './config.ts'
 import { CacheManager } from '../manager.ts'
 import { REGISTRY_PAGE } from './constants.ts'
 import { RedisIndexCacheStore, type RedisClientLike } from './redis.ts'
+import { runInCommandScope } from './scope.ts'
 import { storedStat } from '../../workspace/mount/listing.ts'
 
 describe('RedisIndexCacheStore default keyPrefix', () => {
@@ -1395,5 +1396,202 @@ describe('Redis client protocol', () => {
       'mirage:index:mirage:idx:generation:/',
     ])
     expect(value.get).not.toHaveBeenCalled()
+  })
+})
+
+function row(name: string, fingerprint = name): FileStat {
+  return new FileStat({ name, type: FileType.FILE, fingerprint })
+}
+
+const LISTED: [string, FileStat][] = [
+  ['a', row('a')],
+  ['b', row('b')],
+]
+
+type StoreWrite = (store: RedisIndexCacheStore) => Promise<unknown>
+
+const COUNTING = {
+  seed: (store) => {
+    store.seed(
+      new Map([['/d/c', row('c')]]),
+      new Map([['/d', ['/d/a', '/d/b', '/d/c']]]),
+      new Date(Date.now() + 60000),
+    )
+    return Promise.resolve()
+  },
+  addEntry: (store) => store.addEntry('/d/c', row('c')),
+  setDir: (store) => store.setDir('/d', [['a', row('a')]]),
+  setPartialDir: (store) => store.setPartialDir('/d', [['c', row('c')]]),
+  invalidateEntry: (store) => store.invalidateEntry('/d/a'),
+  invalidateDir: (store) => store.invalidateDir('/d'),
+  invalidatePrefix: (store) => store.invalidatePrefix('/d'),
+  invalidate: (store) => store.invalidate(),
+  clear: (store) => store.clear(),
+} satisfies Record<string, StoreWrite>
+
+const NOT_COUNTING = {
+  put: (store) => store.put('/d/a', row('a', 'new')),
+  replaceIfUnchanged: async (store) => {
+    expect(await store.replaceIfUnchanged('/d/a', JSON.stringify(row('a')), row('a', 'new'))).toBe(
+      true,
+    )
+  },
+} satisfies Record<string, StoreWrite>
+
+type StoreRead =
+  | 'ttl'
+  | 'scopeSnapshot'
+  | 'get'
+  | 'getMany'
+  | 'listDir'
+  | 'reportGone'
+  | 'entries'
+  | 'listedThisCommand'
+  | 'holdsSubtree'
+  | 'close'
+
+type Classified = keyof typeof COUNTING | keyof typeof NOT_COUNTING | StoreRead
+const CLASSIFIED: [
+  Exclude<keyof RedisIndexCacheStore, Classified>,
+  Exclude<Classified, keyof RedisIndexCacheStore>,
+] extends [never, never]
+  ? true
+  : false = true
+
+describe.skipIf(skip)('RedisIndexCacheStore listing reads in one command', () => {
+  const prefix = `mirage:idx:test:${String(Date.now())}:${Math.random().toString(36).slice(2)}:`
+  let store: RedisIndexCacheStore
+  let peer: RedisIndexCacheStore
+
+  beforeEach(async () => {
+    store = new RedisIndexCacheStore({ url: REDIS_URL ?? '', keyPrefix: prefix, ttl: 60 })
+    peer = new RedisIndexCacheStore({ url: REDIS_URL ?? '', keyPrefix: prefix, ttl: 60 })
+    await store.clear()
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await store.clear()
+    await store.close()
+    await peer.close()
+  })
+
+  async function redis(): Promise<RedisClientLike> {
+    return (store as unknown as { client: () => Promise<RedisClientLike> }).client()
+  }
+
+  async function mGets(): Promise<{ mock: { calls: unknown[] } }> {
+    return vi.spyOn(await redis(), 'mGet')
+  }
+
+  it.each(Object.keys(COUNTING) as (keyof typeof COUNTING)[])(
+    'sees a listing write by %s in the same command',
+    async (method) => {
+      await store.setDir('/d', LISTED)
+      const [before, after] = await runInCommandScope(async () => {
+        const first = await store.listDir('/d')
+        await COUNTING[method](store)
+        return [first, await store.listDir('/d')] as const
+      })
+      expect(after).toEqual(await peer.listDir('/d'))
+      expect(after).not.toEqual(before)
+    },
+  )
+
+  it.each(Object.keys(NOT_COUNTING) as (keyof typeof NOT_COUNTING)[])(
+    'keeps the listing read across a row write by %s',
+    async (method) => {
+      await store.setDir('/d', LISTED)
+      const sent = await mGets()
+      const [before, after] = await runInCommandScope(async () => {
+        const first = await store.listDir('/d')
+        await NOT_COUNTING[method](store)
+        return [first, await store.listDir('/d')] as const
+      })
+      expect(after).toEqual(before)
+      expect(sent.mock.calls).toHaveLength(1)
+      expect((await store.get('/d/a')).entry?.fingerprint).toBe('new')
+    },
+  )
+
+  it('classifies every store method', () => {
+    expect(CLASSIFIED).toBe(true)
+  })
+
+  it('keeps the listing read across a write on another keyspace', async () => {
+    const other = new RedisIndexCacheStore({ url: REDIS_URL ?? '', keyPrefix: `${prefix}other:` })
+    await store.setDir('/d', LISTED)
+    const sent = await mGets()
+    try {
+      await runInCommandScope(async () => {
+        await store.listDir('/d')
+        await other.setDir('/d', [['z', row('z')]])
+        await store.listDir('/d')
+      })
+    } finally {
+      await other.clear()
+      await other.close()
+    }
+    expect(sent.mock.calls).toHaveLength(1)
+  })
+
+  it('sees a write by a peer store on the same keyspace', async () => {
+    await store.setDir('/d', LISTED)
+    const after = await runInCommandScope(async () => {
+      await store.listDir('/d')
+      await peer.invalidateEntry('/d/a')
+      return store.listDir('/d')
+    })
+    expect(after.partialEntries).toEqual(['/d/b'])
+  })
+
+  it('sees a peer store seed once it is flushed', async () => {
+    await store.setDir('/d', LISTED)
+    const after = await runInCommandScope(async () => {
+      await COUNTING.seed(peer)
+      await store.listDir('/d')
+      await peer.get('/d/c')
+      return store.listDir('/d')
+    })
+    expect(after.entries).toEqual(['/d/a', '/d/b', '/d/c'])
+  })
+
+  it('does not keep a read made during an unfinished write', async () => {
+    await store.setDir('/d', LISTED)
+    const c = await redis()
+    const evaluate = c.eval.bind(c)
+    let entered!: () => void
+    const entering = new Promise<void>((resolve) => (entered = resolve))
+    let release!: () => void
+    const released = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(c, 'eval').mockImplementation(async (script, options) => {
+      entered()
+      await released
+      return evaluate(script, options)
+    })
+    const after = await runInCommandScope(async () => {
+      const writing = store.invalidateEntry('/d/a')
+      await entering
+      expect((await store.listDir('/d')).entries).toEqual(['/d/a', '/d/b'])
+      release()
+      await writing
+      return store.listDir('/d')
+    })
+    expect(after.partialEntries).toEqual(['/d/b'])
+  })
+
+  it('reads a missing or expired listing each time', async () => {
+    await store.setDir('/d', LISTED)
+    await store.invalidate()
+    const sent = await mGets()
+    await runInCommandScope(async () => {
+      for (const [folder, status] of [
+        ['/missing', LookupStatus.NOT_FOUND],
+        ['/d', LookupStatus.EXPIRED],
+      ] as const) {
+        for (let n = 0; n < 2; n++) expect((await store.listDir(folder)).status).toBe(status)
+      }
+    })
+    expect(sent.mock.calls).toHaveLength(4)
   })
 })

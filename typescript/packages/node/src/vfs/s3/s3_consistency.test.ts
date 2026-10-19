@@ -224,6 +224,50 @@ describe('S3 cache consistency (mocked)', () => {
     },
   )
 
+  it.skipIf(process.env.REDIS_URL === undefined)(
+    'a warm long listing reads its folder once',
+    async () => {
+      const rows = 50
+      for (let n = 0; n < rows; n++) {
+        mock.store.set(BUCKET, `d/${String(n).padStart(2, '0')}.txt`, ENC.encode('x'))
+      }
+      const ws = new Workspace(
+        { '/s3': new S3VFS(makeConfig()) },
+        {
+          mode: MountMode.WRITE,
+          index: {
+            type: IndexType.REDIS,
+            ...(process.env.REDIS_URL === undefined ? {} : { url: process.env.REDIS_URL }),
+            keyPrefix: `s3-listing:${crypto.randomUUID()}:`,
+          },
+        },
+      )
+      const index = ws.mount('/s3').indexStore
+      if (!(index instanceof RedisIndexCacheStore)) throw new Error('expected Redis index')
+      const client = await (index as unknown as { client: () => Promise<RedisClientLike> }).client()
+      try {
+        const cold = await ws.shell('ls -l /s3/d')
+        expect(cold.exitCode).toBe(0)
+        const listed = DEC.decode(cold.stdout)
+        const mGet = vi.spyOn(client, 'mGet')
+        const get = vi.spyOn(client, 'get')
+        const warm = await ws.shell('ls -l /s3/d')
+        expect(DEC.decode(warm.stdout)).toBe(listed)
+        expect(mGet.mock.calls.length + get.mock.calls.length).toBeLessThanOrEqual(rows + 4)
+        mGet.mockRestore()
+        get.mockRestore()
+        const made = await ws.shell('mkdir -p /s3/m/a/b && ls /s3/m/a')
+        expect([made.exitCode, DEC.decode(made.stdout)]).toEqual([0, 'b\n'])
+        const teed = await ws.shell('ls -l /s3/d | tee /s3/d/out')
+        expect(DEC.decode(teed.stdout)).toBe(listed)
+        expect(DEC.decode((await ws.shell('ls /s3/d')).stdout)).toContain('out\n')
+      } finally {
+        await index.clear()
+        await ws.close()
+      }
+    },
+  )
+
   it('fresh re-list keeps the deletion baseline after stat', async () => {
     mock.store.set(BUCKET, 'sub/a', ENC.encode('a'))
     mock.store.set(BUCKET, 'sub/b', ENC.encode('b'))

@@ -27,6 +27,7 @@ import {
   type LookupResult,
   type SetDirOptions,
 } from './config.ts'
+import { ListingMemo } from './listing_memo.ts'
 import { IndexCacheStore } from './store.ts'
 import {
   CHILDREN_PREFIX,
@@ -582,6 +583,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
 
   private readonly seedLock = new KeyLock()
   private readonly pendingSeeds: PendingSeed[] = []
+  private readonly listings: ListingMemo
   private closed = false
 
   constructor(options: RedisIndexCacheOptions = {}) {
@@ -596,6 +598,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     this.tombstonePrefix = `${prefix}${TOMBSTONE_PREFIX}`
     this.generationKey = `${prefix}${GENERATION_KEY}`
     this.pathsKey = `${prefix}${PATHS_KEY}`
+    this.listings = new ListingMemo(prefix)
   }
 
   private entryKey(path: string): string {
@@ -638,6 +641,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       expiresAt: expiresAt.getTime() / 1000,
       version,
     })
+    this.listings.wrote()
   }
 
   private trackPaths(pipe: RedisPipeline, paths: readonly string[]): void {
@@ -813,7 +817,11 @@ export class RedisIndexCacheStore extends IndexCacheStore {
             })
           }
         }
-        await pipe.exec()
+        try {
+          await pipe.exec()
+        } finally {
+          this.listings.wrote()
+        }
         this.pendingSeeds.splice(0, pending.length)
       }
     })
@@ -867,43 +875,45 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     await pipe.exec()
   }
 
-  async addEntry(vfsPath: string, entry: FileStat, expiredAt?: Date | null): Promise<void> {
-    await this.flushSeed()
-    const c = await this.client()
-    const folder = vfsPath.slice(0, vfsPath.lastIndexOf('/')) || '/'
-    const now = new Date()
-    const lifetime = now.getTime() + this.ttl * 1000
-    const generation = await this.generation(c, this.generationKey)
-    const directory = await this.generation(c, `${this.generationKey}:${folder}`)
-    const fresh: IndexDirectory = {
-      entries: [vfsPath],
-      folders: [entry.type === FileType.DIRECTORY ? 1 : 0],
-      generation: `${generation}:${directory}`,
-      expires_at: (expiredAt == null ? lifetime : Math.min(lifetime, expiredAt.getTime())) / 1000,
-      partial: true,
-      version: null,
-      window: false,
-    }
-    const pipe = c.multi()
-    this.trackPaths(pipe, [folder, vfsPath])
-    pipe.eval(ADD_ENTRY, {
-      keys: [
-        this.childrenKey(folder),
-        this.generationKey,
-        `${this.generationKey}:${folder}`,
-        this.tombstonePrefix + folder,
-        `${this.generationKey}:${vfsPath}`,
-      ],
-      arguments: [
-        this.entryKey(vfsPath),
-        JSON.stringify(entry),
-        vfsPath,
-        JSON.stringify(fresh),
-        String(now.getTime() / 1000),
-        uuid7(),
-      ],
+  addEntry(vfsPath: string, entry: FileStat, expiredAt?: Date | null): Promise<void> {
+    return this.listings.writing(async () => {
+      await this.flushSeed()
+      const c = await this.client()
+      const folder = vfsPath.slice(0, vfsPath.lastIndexOf('/')) || '/'
+      const now = new Date()
+      const lifetime = now.getTime() + this.ttl * 1000
+      const generation = await this.generation(c, this.generationKey)
+      const directory = await this.generation(c, `${this.generationKey}:${folder}`)
+      const fresh: IndexDirectory = {
+        entries: [vfsPath],
+        folders: [entry.type === FileType.DIRECTORY ? 1 : 0],
+        generation: `${generation}:${directory}`,
+        expires_at: (expiredAt == null ? lifetime : Math.min(lifetime, expiredAt.getTime())) / 1000,
+        partial: true,
+        version: null,
+        window: false,
+      }
+      const pipe = c.multi()
+      this.trackPaths(pipe, [folder, vfsPath])
+      pipe.eval(ADD_ENTRY, {
+        keys: [
+          this.childrenKey(folder),
+          this.generationKey,
+          `${this.generationKey}:${folder}`,
+          this.tombstonePrefix + folder,
+          `${this.generationKey}:${vfsPath}`,
+        ],
+        arguments: [
+          this.entryKey(vfsPath),
+          JSON.stringify(entry),
+          vfsPath,
+          JSON.stringify(fresh),
+          String(now.getTime() / 1000),
+          uuid7(),
+        ],
+      })
+      await pipe.exec()
     })
-    await pipe.exec()
   }
 
   override async replaceIfUnchanged(
@@ -922,7 +932,25 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     )
   }
 
-  async listDir(vfsPath: string): Promise<ListResult> {
+  /**
+   * A folder's listing, read from Redis at most once per command.
+   *
+   * Inside a shell command, a later call for the same folder is answered
+   * from this process's memory while no listing write to this key prefix
+   * has finished in this process since the read began, the read is under
+   * LISTING_TRUST_WINDOW seconds old, and the listing has not reached its
+   * own expiry. A write by another process is therefore seen within that
+   * window, and by every new command at its first read. Outside a command,
+   * and on the fallback storage while more than one command is live, every
+   * call reads Redis. On the fallback storage a call outside any command
+   * while exactly one command is live is served from that command's memo,
+   * under the same write counting and window.
+   */
+  listDir(vfsPath: string): Promise<ListResult> {
+    return this.listings.read(vfsPath, () => this.readListing(vfsPath))
+  }
+
+  private async readListing(vfsPath: string): Promise<[ListResult, number | null]> {
     await this.flushSeed()
     const c = await this.client()
     const [raw, current, directory] = await c.mGet([
@@ -930,7 +958,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       this.generationKey,
       `${this.generationKey}:${vfsPath}`,
     ])
-    if (raw == null) return { status: LookupStatus.NOT_FOUND }
+    if (raw == null) return [{ status: LookupStatus.NOT_FOUND }, null]
     const listing = IndexDirectorySchema.parse(JSON.parse(raw))
     if (
       current == null ||
@@ -938,9 +966,14 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       listing.generation !== `${current}:${directory}` ||
       Date.now() / 1000 >= listing.expires_at
     )
-      return { status: LookupStatus.EXPIRED }
-    if (listing.partial) return { partialEntries: listing.entries, version: listing.version }
-    return { entries: listing.entries, version: listing.version, window: listing.window }
+      return [{ status: LookupStatus.EXPIRED }, null]
+    if (listing.partial) {
+      return [{ partialEntries: listing.entries, version: listing.version }, listing.expires_at]
+    }
+    return [
+      { entries: listing.entries, version: listing.version, window: listing.window },
+      listing.expires_at,
+    ]
   }
 
   async setDir(
@@ -968,7 +1001,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     await this.storeDir(vfsPath, entries, expiredAt, true, false)
   }
 
-  private async storeDir(
+  private storeDir(
     vfsPath: string,
     entries: readonly [string, FileStat][],
     expiredAt: Date | null | undefined,
@@ -977,27 +1010,51 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     excluded: readonly string[] = [],
     version: string | null = null,
   ): Promise<Evicted[]> {
-    await this.flushSeed()
-    const c = await this.client()
-    const now = new Date()
-    const prefix = vfsPath === '/' ? '/' : `${vfsPath}/`
-    const generation = await this.generation(c, this.generationKey)
-    const directory = await this.generation(c, `${this.generationKey}:${vfsPath}`)
-    const rows: [string, string][] = []
-    for (const [name, entry] of entries) {
-      rows.push([prefix + name, JSON.stringify(entry)])
-    }
-    const listing: IndexDirectory = {
-      entries: rows.map(([path]) => path),
-      folders: entries.map(([, entry]) => (entry.type === FileType.DIRECTORY ? 1 : 0)),
-      generation: `${generation}:${directory}`,
-      expires_at: (expiredAt?.getTime() ?? now.getTime() + this.ttl * 1000) / 1000,
-      partial,
-      version: partial ? null : version,
-      window: !partial && !evict,
-    }
-    if (!evict) {
-      await c.eval(WRITE_LISTING, {
+    return this.listings.writing(async () => {
+      await this.flushSeed()
+      const c = await this.client()
+      const now = new Date()
+      const prefix = vfsPath === '/' ? '/' : `${vfsPath}/`
+      const generation = await this.generation(c, this.generationKey)
+      const directory = await this.generation(c, `${this.generationKey}:${vfsPath}`)
+      const rows: [string, string][] = []
+      for (const [name, entry] of entries) {
+        rows.push([prefix + name, JSON.stringify(entry)])
+      }
+      const listing: IndexDirectory = {
+        entries: rows.map(([path]) => path),
+        folders: entries.map(([, entry]) => (entry.type === FileType.DIRECTORY ? 1 : 0)),
+        generation: `${generation}:${directory}`,
+        expires_at: (expiredAt?.getTime() ?? now.getTime() + this.ttl * 1000) / 1000,
+        partial,
+        version: partial ? null : version,
+        window: !partial && !evict,
+      }
+      if (!evict) {
+        await c.eval(WRITE_LISTING, {
+          keys: [
+            this.childrenKey(vfsPath),
+            this.tombstonePrefix + vfsPath,
+            this.pathsKey,
+            this.generationKey,
+            `${this.generationKey}:${vfsPath}`,
+          ],
+          arguments: [
+            JSON.stringify(listing),
+            this.entryPrefix,
+            this.childrenPrefix,
+            this.tombstonePrefix,
+            `${this.generationKey}:`,
+            '[]',
+            uuid7(),
+            ...rows.flat(),
+          ],
+        })
+        return []
+      }
+      // One script, so no other writer lands between reading the previous
+      // listing and replacing it; the diff is against the true predecessor.
+      const [gone, folders] = (await this.evalComplete(c, SWAP_LISTING, {
         keys: [
           this.childrenKey(vfsPath),
           this.tombstonePrefix + vfsPath,
@@ -1011,83 +1068,65 @@ export class RedisIndexCacheStore extends IndexCacheStore {
           this.childrenPrefix,
           this.tombstonePrefix,
           `${this.generationKey}:`,
-          '[]',
+          JSON.stringify(excluded.map(rstripSlash)),
           uuid7(),
           ...rows.flat(),
         ],
-      })
-      return []
-    }
-    // One script, so no other writer lands between reading the previous
-    // listing and replacing it; the diff is against the true predecessor.
-    const [gone, folders] = (await this.evalComplete(c, SWAP_LISTING, {
-      keys: [
-        this.childrenKey(vfsPath),
-        this.tombstonePrefix + vfsPath,
-        this.pathsKey,
-        this.generationKey,
-        `${this.generationKey}:${vfsPath}`,
-      ],
-      arguments: [
-        JSON.stringify(listing),
-        this.entryPrefix,
-        this.childrenPrefix,
-        this.tombstonePrefix,
-        `${this.generationKey}:`,
-        JSON.stringify(excluded.map(rstripSlash)),
-        uuid7(),
-        ...rows.flat(),
-      ],
-    })) as [string[], number[]]
-    const dropped: Evicted[] = []
-    for (const [i, path] of gone.entries()) {
-      dropped.push({ path, folder: folders[i] === 1 })
-    }
-    return dropped
-  }
-
-  async invalidateEntry(vfsPath: string): Promise<void> {
-    await this.flushSeed()
-    const c = await this.client()
-    const folder = vfsPath.slice(0, vfsPath.lastIndexOf('/')) || '/'
-    await c.eval(DELETE_ENTRY, {
-      keys: [
-        this.pathsKey,
-        this.childrenKey(folder),
-        this.tombstonePrefix + folder,
-        this.generationKey,
-        `${this.generationKey}:${folder}`,
-        this.entryKey(vfsPath),
-      ],
-      arguments: [
-        this.entryPrefix,
-        this.childrenPrefix,
-        this.tombstonePrefix,
-        `${this.generationKey}:`,
-        vfsPath,
-        uuid7(),
-      ],
+      })) as [string[], number[]]
+      const dropped: Evicted[] = []
+      for (const [i, path] of gone.entries()) {
+        dropped.push({ path, folder: folders[i] === 1 })
+      }
+      return dropped
     })
   }
 
-  async invalidateDir(vfsPath: string): Promise<void> {
-    await this.flushSeed()
-    const c = await this.client()
-    // The child list becomes a tombstone, so the next complete listing can
-    // still tell which children went away.
-    await c.eval(BURY_LISTING, {
-      keys: [
-        this.childrenKey(vfsPath),
-        this.tombstonePrefix + vfsPath,
-        `${this.generationKey}:${vfsPath}`,
-        this.pathsKey,
-      ],
-      arguments: [
-        this.entryPrefix,
-        this.childrenPrefix,
-        this.tombstonePrefix,
-        `${this.generationKey}:`,
-      ],
+  invalidateEntry(vfsPath: string): Promise<void> {
+    return this.listings.writing(async () => {
+      await this.flushSeed()
+      const c = await this.client()
+      const folder = vfsPath.slice(0, vfsPath.lastIndexOf('/')) || '/'
+      await c.eval(DELETE_ENTRY, {
+        keys: [
+          this.pathsKey,
+          this.childrenKey(folder),
+          this.tombstonePrefix + folder,
+          this.generationKey,
+          `${this.generationKey}:${folder}`,
+          this.entryKey(vfsPath),
+        ],
+        arguments: [
+          this.entryPrefix,
+          this.childrenPrefix,
+          this.tombstonePrefix,
+          `${this.generationKey}:`,
+          vfsPath,
+          uuid7(),
+        ],
+      })
+    })
+  }
+
+  invalidateDir(vfsPath: string): Promise<void> {
+    return this.listings.writing(async () => {
+      await this.flushSeed()
+      const c = await this.client()
+      // The child list becomes a tombstone, so the next complete listing can
+      // still tell which children went away.
+      await c.eval(BURY_LISTING, {
+        keys: [
+          this.childrenKey(vfsPath),
+          this.tombstonePrefix + vfsPath,
+          `${this.generationKey}:${vfsPath}`,
+          this.pathsKey,
+        ],
+        arguments: [
+          this.entryPrefix,
+          this.childrenPrefix,
+          this.tombstonePrefix,
+          `${this.generationKey}:`,
+        ],
+      })
     })
   }
 
@@ -1116,11 +1155,13 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     } while (cursor !== '')
   }
 
-  async invalidatePrefix(vfsPath: string, excluded: readonly string[] = []): Promise<void> {
-    await this.flushSeed()
-    // Tombstones survive until the next complete listing proves removals.
-    await this.deletePaths([this.entryPrefix], vfsPath, excluded)
-    await this.deletePaths([this.childrenPrefix, `${this.generationKey}:`], vfsPath, excluded)
+  invalidatePrefix(vfsPath: string, excluded: readonly string[] = []): Promise<void> {
+    return this.listings.writing(async () => {
+      await this.flushSeed()
+      // Tombstones survive until the next complete listing proves removals.
+      await this.deletePaths([this.entryPrefix], vfsPath, excluded)
+      await this.deletePaths([this.childrenPrefix, `${this.generationKey}:`], vfsPath, excluded)
+    })
   }
 
   override async holdsSubtree(vfsPath: string): Promise<boolean> {
@@ -1138,29 +1179,34 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     return false
   }
 
-  async invalidate(): Promise<void> {
-    await this.flushSeed()
-    const c = await this.client()
-    // Atomically expire listings without overwriting concurrent refills/deletions.
-    await c.set(this.generationKey, uuid7())
+  invalidate(): Promise<void> {
+    return this.listings.writing(async () => {
+      await this.flushSeed()
+      const c = await this.client()
+      // Atomically expire listings without overwriting concurrent refills/deletions.
+      await c.set(this.generationKey, uuid7())
+    })
   }
 
   clear(): Promise<void> {
-    return this.seedLock.withLock('seed', async () => {
-      this.pendingSeeds.length = 0
-      await this.deletePaths([this.entryPrefix], '/')
-      await this.deletePaths(
-        [this.childrenPrefix, this.tombstonePrefix, `${this.generationKey}:`],
-        '/',
-      )
-      const c = await this.client()
-      await c.del(this.generationKey)
-    })
+    return this.listings.writing(() =>
+      this.seedLock.withLock('seed', async () => {
+        this.pendingSeeds.length = 0
+        await this.deletePaths([this.entryPrefix], '/')
+        await this.deletePaths(
+          [this.childrenPrefix, this.tombstonePrefix, `${this.generationKey}:`],
+          '/',
+        )
+        const c = await this.client()
+        await c.del(this.generationKey)
+      }),
+    )
   }
 
   override async close(): Promise<void> {
     if (this.closed) return
     await this.flushSeed()
+    this.listings.clear()
     if (this.providedClient === null && this.clientPromise !== null) {
       const c = await this.clientPromise
       const typed = c as unknown as { destroy?: () => void }
