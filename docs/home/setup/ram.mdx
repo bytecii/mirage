@@ -1,0 +1,30 @@
+---
+title: RAM
+icon: memory
+description: Use temporary workspace files without installing a service or configuring credentials.
+---
+
+RAM stores files in memory. Use it for scratch files, tests and trying Mirage.
+Files are lost when the application exits. Available in Python, Node and browsers.
+
+## Configuration
+
+```yaml
+mounts:
+  /data:
+    vfs: ram
+    mode: write
+```
+
+The mount starts empty. In Mirage's shell, create and read a file:
+
+```bash
+echo "hello" > /data/note.txt
+cat /data/note.txt
+```
+
+## SDK guides
+
+- [Python RAM VFS](/python/vfs/ram)
+- [TypeScript quickstart](/typescript/quickstart)
+- [Browser quickstart](/typescript/browser-quickstart)

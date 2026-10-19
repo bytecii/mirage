@@ -77,6 +77,17 @@
             "pages": [
               "home/setup/vfs",
               {
+                "group": "Local & Infrastructure",
+                "icon": "server",
+                "pages": [
+                  "home/setup/ram",
+                  "home/setup/disk",
+                  "home/setup/opfs",
+                  "home/setup/redis",
+                  "home/setup/ssh"
+                ]
+              },
+              {
                 "group": "Object Storage",
                 "icon": "cloud",
                 "pages": [

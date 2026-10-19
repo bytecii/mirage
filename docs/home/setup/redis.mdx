@@ -1,0 +1,31 @@
+---
+title: Redis
+icon: /images/redis-logo.svg
+description: Store workspace files in Redis.
+---
+
+Redis stores workspace files in a Redis database. Available in Python, Node
+and browsers. File persistence depends on the database's configuration.
+
+## Configuration
+
+For Python or Node, set `url` to your Redis connection URL. Use `key_prefix`
+to keep this workspace's files separate from other data:
+
+```yaml
+mounts:
+  /data:
+    vfs: redis
+    mode: write
+    config:
+      url: redis://localhost:6379/0
+      key_prefix: "mirage:fs:"
+```
+
+Browsers connect through a compatible HTTP endpoint, such as Upstash REST.
+See [browser Redis setup](/typescript/setup/redis#browser) for configuration.
+
+## SDK guides
+
+- [Python Redis VFS](/python/vfs/redis)
+- [TypeScript Redis setup](/typescript/setup/redis)
