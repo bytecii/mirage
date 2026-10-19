@@ -1245,3 +1245,30 @@ async def test_a_write_admission_check_takes_no_record():
         assert ws.vfs.records == []
     finally:
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_policys_read_leaves_the_op_it_judges_on_the_ledger():
+    # A pre_vfs policy reading through the dispatcher, as a profile
+    # script's read does: what it reads is no record of the unlink it
+    # judges, which RAM does not record itself.
+    ws = Workspace({"/d/": RAMVFS()}, mode=MountMode.WRITE)
+
+    class Reads(Policy):
+        async def pre_vfs(self, ctx: VfsContext) -> None:
+            if ctx.call.name == "unlink":
+                await ws.dispatch("read", PathSpec.from_str_path("/d/rules"))
+            return None
+
+    try:
+        await ws.vfs.write("/d/rules", b"keep\n")
+        await ws.vfs.write("/d/f", b"gone\n")
+        ws.policies.add(Reads())
+        del ws.vfs.records[:]
+        await ws.vfs.unlink("/d/f")
+        assert [(r.op, r.path) for r in ws.vfs.records] == [
+            ("read", "/d/rules"),
+            ("unlink", "/d/f"),
+        ]
+    finally:
+        await ws.close()

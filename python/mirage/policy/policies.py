@@ -16,9 +16,9 @@ import asyncio
 import errno
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import fields, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from mirage.commands.spec.usage import operand_exit_code
 from mirage.context import (
@@ -34,6 +34,7 @@ from mirage.errors.fs import eacces, erofs
 from mirage.errors.posix import posix_errno, posix_phrase
 from mirage.errors.render import fs_error_line
 from mirage.errors.types import FsCondition
+from mirage.observe.context import command_records
 from mirage.policy.base import Policy
 from mirage.policy.builtin.hidden_paths import HiddenPathsPolicy
 from mirage.policy.builtin.mount_mode import MountModePolicy
@@ -182,6 +183,24 @@ def policy_denied(
     )
 
 
+_T = TypeVar("_T")
+
+
+async def _apart(answer: Awaitable[_T]) -> _T:
+    """A VFS call's policy answer, the policy's own reads recorded apart.
+
+    They still reach the ledger, but they are no records of the call
+    being judged: counted as its, they would pass for the call's own
+    record (a RAM unlink records none, so the facade records it) and be
+    charged to the command the call runs in.
+
+    Args:
+        answer (Awaitable[_T]): the policies' answer, not yet awaited.
+    """
+    with command_records(own=True):
+        return await answer
+
+
 async def pre_vfs_gate(
     policies: "Policies",
     call: VfsCall,
@@ -254,11 +273,13 @@ async def pre_vfs_gate(
     if isinstance(trace, list):
         token = set_explaining(DryRun.DECIDING)
         try:
-            hidden = check_hidden and await policies.hides(ctx)
+            hidden = check_hidden and await _apart(policies.hides(ctx))
             noted = (
                 None
                 if hidden
-                else await _explained_op(policies, ctx, decisions, line)
+                else await _apart(
+                    _explained_op(policies, ctx, decisions, line)
+                )
             )
         finally:
             reset_explaining(token)
@@ -277,8 +298,10 @@ async def pre_vfs_gate(
         or (write and mode is not None)
     ):
         return
-    answer = await policies.pre_vfs(
-        ctx, check_hidden=check_hidden, rules_only=line or deciding
+    answer = await _apart(
+        policies.pre_vfs(
+            ctx, check_hidden=check_hidden, rules_only=line or deciding
+        )
     )
     if isinstance(answer, Hide):
         raise answer.error
@@ -414,7 +437,9 @@ async def post_vfs_gate(
         caller=policy_caller(caller.session),
         result=result,
     )
-    await _refuse_op(ctx, await policies.post_vfs(ctx), decisions, caller)
+    await _refuse_op(
+        ctx, await _apart(policies.post_vfs(ctx)), decisions, caller
+    )
 
 
 async def pre_session_gate(

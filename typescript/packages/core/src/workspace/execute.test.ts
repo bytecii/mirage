@@ -19,6 +19,7 @@ import { CLI, CLIHandler } from '../commands/cli/types.ts'
 import { command } from '../commands/config.ts'
 import { CommandSpec } from '../commands/spec/types.ts'
 import { IOResult, type ByteSource } from '../io/types.ts'
+import type { VfsContext } from '../policy/types.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { MountMode } from '../types.ts'
@@ -543,6 +544,32 @@ describe('the ledger a file call lands in', () => {
     } finally {
       await ws.close()
       await other.close()
+    }
+  })
+
+  // Twin of test_a_policys_read_leaves_the_op_it_judges_on_the_ledger: a
+  // preVfs policy reading through the dispatcher, as a profile script's
+  // read does: what it reads is no record of the unlink it judges, which
+  // RAM does not record itself.
+  it('keeps the op a policy judges, past what the policy read', async () => {
+    const ws = new Workspace({ '/d': new RAMVFS() }, { mode: MountMode.WRITE, shellParser: parser })
+    try {
+      await ws.vfs.write('/d/rules', 'keep\n')
+      await ws.vfs.write('/d/f', 'gone\n')
+      ws.policies.add({
+        async preVfs(ctx: VfsContext): Promise<null> {
+          if (ctx.call.name === 'unlink') await ws.dispatch('read', '/d/rules')
+          return null
+        },
+      })
+      ws.vfs.records.splice(0)
+      await ws.vfs.unlink('/d/f')
+      expect(ws.vfs.records.map((r) => [r.op, r.path])).toEqual([
+        ['read', '/d/rules'],
+        ['unlink', '/d/f'],
+      ])
+    } finally {
+      await ws.close()
     }
   })
 
