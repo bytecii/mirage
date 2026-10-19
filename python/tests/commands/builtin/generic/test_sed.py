@@ -1,3 +1,5 @@
+import errno
+
 import pytest
 
 from mirage.commands.builtin.generic.sed import sed
@@ -185,3 +187,36 @@ async def test_repeated_stdin_operands_share_one_byte_cursor():
     )
     assert await materialize(output) == b"x\n"
     assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_place", [False, True])
+@pytest.mark.parametrize(
+    "script,code", [("1r /r", 4), ("1R /r", 4), ("/none/r /r", 0)]
+)
+async def test_an_r_file_that_fails_to_read_fails_where_it_is_read(
+    in_place, script, code
+):
+    rb, wb, store = _make_backend({"/f": b"one\ntwo\n"})
+
+    async def read(path):
+        if path.virtual == "/r":
+            raise OSError(errno.EIO, "Input/output error")
+        return await rb(path)
+
+    output, io = await sed(
+        [_spec("/f")],
+        script,
+        read_stream=read,
+        write_bytes=wb,
+        in_place=in_place,
+    )
+    if output is not None:
+        await materialize(output)
+    assert io.exit_code == code
+    stderr = await materialize(io.stderr)
+    if code:
+        assert stderr == b"sed: read error on /r: Input/output error\n"
+    else:
+        assert stderr == b""
+        assert not in_place or store["/f"] == b"one\ntwo\n"

@@ -739,6 +739,12 @@ class _Compiler:
                 src.get()
             elif src.peek() is None:
                 return None
+        # A script that ends on a backslash no other escapes (an odd run,
+        # counted with the one-line form's own backslash where it touches
+        # it) leaves text that runs to that end as written, unescaped,
+        # that backslash dropped. After an even run, a backslash the text
+        # is left with at the end is dropped too.
+        tail = len(src.text) - len(src.text.rstrip("\\"))
         out: list[str] = []
         read = recursive = False
         start = src.pos
@@ -751,9 +757,7 @@ class _Compiler:
                 continue
             nxt = src.peek()
             if nxt is None:
-                # Text that runs to the end of the script on a backslash
-                # goes out as written, that backslash dropped.
-                return self.view(src.text[start : src.pos - 1]) + "\n"
+                break
             src.get()
             if nxt == "\n":
                 out.append("\n")
@@ -779,6 +783,15 @@ class _Compiler:
                 continue
             out.append(found[0])
             src.pos = found[1]
+        if tail % 2 and src.peek() is None:
+            # The backslash that carries it from one piece to the next
+            # goes as well, its newline staying.
+            raw = "".join(
+                src.text[i]
+                for i in range(start, len(src.text) - 1)
+                if i + 1 not in src.joins
+            )
+            return self.view(raw) + "\n"
         if recursive:
             raise self.fail(_RECURSIVE)
         if not read:

@@ -20,12 +20,13 @@ from mirage.commands.builtin.generic_bind.dispatch import caller_stream
 from mirage.commands.builtin.sed_exec import (
     SED_LINE_LENGTH,
     SedFileContent,
-    SedFileError,
     SedFileSource,
     SedFileText,
     SedInput,
     SedMachine,
     SedRunOptions,
+    read_failed,
+    unreadable_file,
 )
 from mirage.commands.builtin.sed_script import (
     SED_STDERR,
@@ -198,9 +199,9 @@ async def _read_script_files(
 ) -> dict[str, SedFileContent]:
     """Read the files ``r`` or ``R`` names.
 
-    A file that cannot be opened reads as empty, as POSIX asks, and a
-    directory opens and then fails to read, which GNU reports and exits 4
-    on when it gets there.
+    A file that cannot be opened reads as empty, as POSIX asks; any other
+    failure, a directory's included, is a read error GNU reports and exits
+    4 on when it gets there, whether the file streams or is read here.
 
     Args:
         names (Sequence[str]): the file names.
@@ -214,12 +215,10 @@ async def _read_script_files(
             continue
         try:
             files[name] = SedFileText(byte_view(await access.read(name), utf8))
-        except IsADirectoryError:
-            files[name] = SedFileError(
-                f"sed: read error on {name}: Is a directory\n"
-            )
-        except FS_ERRORS:
-            files[name] = None
+        except Exception as exc:
+            if not read_failed(exc):
+                raise
+            files[name] = unreadable_file(name, exc)
     return files
 
 

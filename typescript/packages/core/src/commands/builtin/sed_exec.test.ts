@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { ByteSource } from '../../io/types.ts'
-import { SedMachine, type SedFileContent } from './sed_exec.ts'
+import { SedMachine, unreadableFile, type SedFileContent } from './sed_exec.ts'
 import { compileScript } from './sed_script.ts'
 
 const ENC = new TextEncoder()
@@ -289,5 +289,20 @@ describe('SedMachine', () => {
       1,
     ])
     expect((await run('/a/I{s//x/p}', ['AB\n'], { suppress: true }))[0]).toBe('xB\n')
+  })
+})
+
+describe('a script file read whole', () => {
+  const failure = (code: string) => Object.assign(new Error(code), { code })
+
+  it('reports every failure past opening', () => {
+    expect(unreadableFile('/r', failure('ENOENT'))).toBeNull()
+    expect(unreadableFile('/r', failure('EACCES'))).toBeNull()
+    expect(unreadableFile('/r', failure('EISDIR'))).toEqual({
+      error: 'sed: read error on /r: Is a directory\n',
+    })
+    expect(unreadableFile('/r', failure('EIO'))).toEqual({
+      error: 'sed: read error on /r: Input/output error\n',
+    })
   })
 })

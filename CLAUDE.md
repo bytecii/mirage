@@ -65,7 +65,10 @@ permissively licensed.
 
 - Dependencies are MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0 or alike,
   never GPL, LGPL, AGPL or MPL. Check before adding one; `cargo deny`
-  (`rust/deny.toml`) gates the Rust tree.
+  (`rust/deny.toml`) gates the Rust tree, and
+  `scripts/check_dependency_licenses.py` the Python and npm trees. Those
+  still carry the packages `licenses/dependency_exceptions.toml` lists,
+  each with its reason; a new one fails the check.
 - Match GNU's behaviour, never its code: do not translate, copy or
   paraphrase GNU, gnulib or glibc source, or any copyleft code. Work from
   POSIX, the GNU manuals and the pinned image's output. Ship no table

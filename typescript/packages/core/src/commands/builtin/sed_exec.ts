@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { classify, failureText } from '../../errors/classify.ts'
 import { fsStrerror, isFsError } from '../../errors/fs.ts'
 import { chunks } from '../../io/cooperative.ts'
 import { closeQuietly, ensureStream } from '../../io/stream.ts'
@@ -139,7 +140,28 @@ function opensFailed(err: unknown): boolean {
 }
 
 function readError(name: string, err: unknown): Panic {
-  return new Panic(`sed: read error on ${name}: ${fsStrerror(err) ?? String(err)}\n`, 4)
+  return new Panic(`sed: read error on ${name}: ${failureText(err)}\n`, 4)
+}
+
+/**
+ * Whether a failure to read an `r` or `R` file is the file's own, which sed
+ * reports against it: an fs error, or any condition the error vocabulary
+ * names, EIO included. Mirrors Python's `read_failed`.
+ */
+export function readFailed(err: unknown): boolean {
+  return isFsError(err) || classify(err) !== null
+}
+
+/**
+ * What an `r` or `R` file read whole ahead of the run holds when the read
+ * fails: nothing when it does not open, as POSIX asks, and otherwise the read
+ * error GNU exits 4 on when the script gets to it. Mirrors Python's
+ * `unreadable_file`.
+ */
+export function unreadableFile(name: string, err: unknown): SedFileContent {
+  if (!opensFailed(err)) return { error: readError(name, err).message }
+  console.debug(`sed r file ${name} does not open:`, err)
+  return null
 }
 
 // Whether the command is addressed by line 0 alone (`0r`).
@@ -662,7 +684,7 @@ export class SedMachine {
       case AddressKind.LAST:
         return this.isLast()
       case AddressKind.REGEX:
-        return addr.regex !== null && this.regex(addr.regex).search(ps) !== null
+        return addr.regex !== null && this.regex(addr.regex).matches(ps)
       case AddressKind.STEP:
         if (addr.step <= 0) return this.line === addr.number
         return this.line >= addr.number && (this.line - addr.number) % addr.step === 0
@@ -697,7 +719,7 @@ export class SedMachine {
           if (await this.isLast()) this.ranges.delete(index)
           return true
         default:
-          if (second.regex !== null && this.regex(second.regex).search(ps) !== null)
+          if (second.regex !== null && this.regex(second.regex).matches(ps))
             this.ranges.delete(index)
           return true
       }
@@ -768,7 +790,7 @@ export class SedMachine {
       }
     } catch (err) {
       await closeQuietly(stream)
-      if (!isFsError(err)) throw err
+      if (!readFailed(err)) throw err
       if (!opensFailed(err)) throw readError(name, err)
       // A file that cannot be opened reads as empty, as POSIX asks.
       console.debug(`sed r file ${name} does not open:`, err)
@@ -798,7 +820,7 @@ export class SedMachine {
     try {
       got = await reader.line()
     } catch (err) {
-      if (!isFsError(err)) throw err
+      if (!readFailed(err)) throw err
       this.readers.set(name, null)
       await closeQuietly(reader.chunks)
       if (!opensFailed(err) || reader.started) throw readError(name, err)

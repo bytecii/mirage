@@ -1,14 +1,17 @@
+import errno
 from collections.abc import AsyncIterator
 
 import pytest
 
 from mirage.commands.builtin.sed_exec import (
     SedFileContent,
+    SedFileError,
     SedFileSource,
     SedFileText,
     SedInput,
     SedMachine,
     SedRunOptions,
+    unreadable_file,
 )
 from mirage.commands.builtin.sed_script import SedScriptPiece, compile_script
 
@@ -254,3 +257,14 @@ async def test_quit_codes_and_the_empty_regex():
     assert code == 1
     out, _, _, _ = await _run("/a/I{s//x/p}", b"AB\n", suppress=True)
     assert out == "xB\n"
+
+
+def test_a_script_file_read_whole_reports_every_failure_past_opening():
+    assert unreadable_file("/r", FileNotFoundError(errno.ENOENT, "")) is None
+    assert unreadable_file("/r", PermissionError(errno.EACCES, "")) is None
+    assert unreadable_file("/r", IsADirectoryError(errno.EISDIR, "")) == (
+        SedFileError("sed: read error on /r: Is a directory\n")
+    )
+    assert unreadable_file("/r", OSError(errno.EIO, "I/O error")) == (
+        SedFileError("sed: read error on /r: Input/output error\n")
+    )

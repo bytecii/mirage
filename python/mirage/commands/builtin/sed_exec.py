@@ -36,6 +36,7 @@ from mirage.commands.builtin.sed_script import (
     SedRegex,
     SedSubstitution,
 )
+from mirage.errors.classify import classify, failure_text
 from mirage.errors.constants import FS_ERRORS
 from mirage.errors.fs import fs_strerror
 from mirage.errors.types import DotWalkLoop
@@ -164,7 +165,29 @@ def _opens_failed(exc: BaseException) -> bool:
 
 
 def _read_error(name: str, exc: BaseException) -> _Panic:
-    return _Panic(f"sed: read error on {name}: {fs_strerror(exc) or exc}\n", 4)
+    return _Panic(f"sed: read error on {name}: {failure_text(exc)}\n", 4)
+
+
+def read_failed(exc: BaseException) -> bool:
+    """Whether a failure to read an ``r`` or ``R`` file is the file's
+    own, which sed reports against it: an fs error, or any condition the
+    error vocabulary names, EIO included."""
+    return isinstance(exc, FS_ERRORS) or classify(exc) is not None
+
+
+def unreadable_file(name: str, exc: BaseException) -> SedFileError | None:
+    """What an ``r`` or ``R`` file read whole ahead of the run holds when
+    the read fails: nothing when it does not open, as POSIX asks, and
+    otherwise the read error GNU exits 4 on when the script gets to it.
+
+    Args:
+        name (str): the file, as the script names it.
+        exc (BaseException): the failure.
+    """
+    if _opens_failed(exc):
+        logger.debug("sed r file %s does not open: %s", name, exc)
+        return None
+    return SedFileError(_read_error(name, exc).message)
 
 
 def _quit_code(number: int | None) -> int:
@@ -686,8 +709,8 @@ class SedMachine:
         self._last = regex
         return regex
 
-    def _search(self, sed_regex: SedRegex, text: str) -> Groups | None:
-        return self._regex(sed_regex).search(text)
+    def _matches(self, sed_regex: SedRegex, text: str) -> bool:
+        return self._regex(sed_regex).matches(text)
 
     async def _match(self, addr: SedAddress, ps: str) -> bool:
         kind = addr.kind
@@ -699,7 +722,7 @@ class SedMachine:
             return await self._is_last()
         if kind is AddressKind.REGEX:
             assert addr.regex is not None
-            return self._search(addr.regex, ps) is not None
+            return self._matches(addr.regex, ps)
         if kind is AddressKind.STEP:
             if addr.step <= 0:
                 return self.line == addr.number
@@ -737,7 +760,7 @@ class SedMachine:
                     del self._ranges[index]
                 return True
             assert second.regex is not None
-            if self._search(second.regex, ps) is not None:
+            if self._matches(second.regex, ps):
                 del self._ranges[index]
             return True
         if first.kind is AddressKind.LINE:
@@ -806,7 +829,9 @@ class SedMachine:
                 if got is None:
                     return
                 first = got
-        except FS_ERRORS as exc:
+        except Exception as exc:
+            if not read_failed(exc):
+                raise
             await close_quietly(stream)
             if not _opens_failed(exc):
                 raise _read_error(name, exc) from exc
@@ -837,7 +862,9 @@ class SedMachine:
             return reader.pop() if reader else None
         try:
             got = await reader.line()
-        except FS_ERRORS as exc:
+        except Exception as exc:
+            if not read_failed(exc):
+                raise
             self._readers[name] = None
             await close_quietly(reader.chunks)
             if not _opens_failed(exc) or reader.started:

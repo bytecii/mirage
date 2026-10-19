@@ -639,10 +639,10 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "[[ abc =~ (a|ab)(bc|c) ]] && echo \"${BASH_REMATCH[@]}\"; [[ abcd =~ ab|abcd ]] && echo \"${BASH_REMATCH[0]}\"; re='*x'; [[ x =~ $re ]]; echo rc=$?; [[ a == a && x =~ $re ]]; echo and=$?",
+      "command": "[[ abc =~ (a|ab)(bc|c) ]] && echo \"${BASH_REMATCH[@]}\"; [[ abcd =~ ab|abcd ]] && echo \"${BASH_REMATCH[0]}\"; re='*x'; [[ x =~ $re ]]; echo rc=$?; [[ a == a && x =~ $re ]]; echo and=$?; [[ x =~ $re || a == a ]]; echo or=$?; [[ ! x =~ $re ]]; echo not=$?; [[ ! ! x =~ $re ]]; echo notnot=$?; [[ ! ( ! x =~ $re ) ]]; echo group=$?; [[ x =~ q || a == a ]] && echo or-parse; [[ ! x =~ q ]] && echo not-parse; [[ a == b || x =~ x ]] && echo left-or",
       "expect": {
         "exit": 0,
-        "stdout": "abc a bc\nabcd\nrc=2\nand=2\n",
+        "stdout": "abc a bc\nabcd\nrc=2\nand=2\nor=0\nnot=0\nnotnot=2\ngroup=1\nor-parse\nnot-parse\nleft-or\n",
         "stderr": ""
       }
     },

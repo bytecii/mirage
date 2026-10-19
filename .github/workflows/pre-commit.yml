@@ -81,6 +81,15 @@ jobs:
         working-directory: typescript
         run: pnpm install --frozen-lockfile
 
+      # What the wheel's runtime and extras reach (uv.lock, licenses from
+      # PyPI) and what the workspace installs for production (pnpm's own
+      # report) is permissive, or named with a reason in
+      # licenses/dependency_exceptions.toml. rust/deny.toml gates Rust.
+      - name: Dependency licenses
+        run: |
+          (cd typescript && pnpm licenses list --json --prod) > "$RUNNER_TEMP/npm-licenses.json"
+          python3 scripts/check_dependency_licenses.py --python --npm "$RUNNER_TEMP/npm-licenses.json"
+
       - name: Build TypeScript packages
         working-directory: typescript
         run: pnpm -r build

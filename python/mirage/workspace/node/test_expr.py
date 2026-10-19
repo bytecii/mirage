@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
@@ -36,6 +38,8 @@ from mirage.workspace.expand.fields import split_fields
 from mirage.workspace.expand.node import expand_chunks
 from mirage.workspace.expand.pattern import expand_pattern
 from mirage.workspace.expand.variable import ifs_value
+
+logger = logging.getLogger(__name__)
 
 _CONTAINER_TYPES = (
     NT.BINARY_EXPRESSION,
@@ -170,6 +174,11 @@ async def expand_double_bracket(
 ) -> CondNode:
     """Build a structured condition tree from a ``[[ ... ]]`` node.
 
+    tree-sitter nests the expression by its own precedence (``=~``
+    looser than ``||``, ``!`` tighter than ``=~``), so its tokens are
+    read again as bash parses them; a shape that reading refuses keeps
+    tree-sitter's tree.
+
     Args:
         node: tree-sitter test_command node opened with ``[[``.
         context (EvaluationContext): the evaluation expanding it.
@@ -179,7 +188,198 @@ async def expand_double_bracket(
     exprs = [c for c in node.named_children]
     if not exprs:
         return CondWord("")
-    return await _build_cond(exprs[0], context, execute_fn, cs, view=view)
+    tokens: list[_CondToken] = []
+    try:
+        _cond_tokens(node, tokens)
+        tree = _CondParser(tokens).parse()
+    except _CondSyntax as exc:
+        logger.debug("[[ ]] keeps tree-sitter's reading: %s", exc)
+        return await _build_cond(exprs[0], context, execute_fn, cs, view=view)
+    return await _cond_node(tree, context, execute_fn, cs, view)
+
+
+# One token of a ``[[ ]]`` expression: an operator's text, or an operand
+# node (``negative`` for a ``-N`` tree-sitter split into ``-`` and N).
+@dataclass(frozen=True, slots=True)
+class _CondToken:
+    op: str | None = None
+    operand: Any = None
+    negative: bool = False
+
+
+# A parsed ``[[ ]]`` expression: its kind, then its parts.
+_CondTree = tuple[Any, ...]
+
+
+class _CondSyntax(Exception):
+    """The tokens are no expression the ``[[ ]]`` grammar reads."""
+
+
+def _cond_tokens(node, out: list[_CondToken]) -> None:
+    """Append the tokens of a ``[[ ]]`` node to ``out`` in source order.
+
+    Args:
+        node: tree-sitter node to flatten.
+        out (list[_CondToken]): accumulator.
+    """
+    for child in node.children:
+        ctype = child.type
+        if ctype in ("[[", "]]"):
+            continue
+        if ctype == NT.ERROR:
+            raise _CondSyntax
+        if not child.is_named:
+            out.append(_CondToken(op=ctype))
+        elif ctype == NT.TEST_OPERATOR:
+            out.append(_CondToken(op=decode_text(child.text)))
+        elif ctype in _CONTAINER_TYPES:
+            negative = _negative_number_child(child)
+            if negative is not None:
+                out.append(_CondToken(operand=negative, negative=True))
+            else:
+                _cond_tokens(child, out)
+        else:
+            out.append(_CondToken(operand=child))
+
+
+class _CondParser:
+    """bash's ``[[ ]]`` grammar over the flat tokens, loosest first:
+    ``||``, ``&&``, then a term. A term is any run of ``!`` (each one
+    toggles a single inversion, so ``! !`` inverts nothing) before a
+    parenthesized expression, a unary test, a binary test or a word.
+    The tree is tuples, expanded later by ``_cond_node``.
+    """
+
+    def __init__(self, tokens: list[_CondToken]) -> None:
+        self.tokens = tokens
+        self.at = 0
+
+    def _op(self, ahead: int = 0) -> str | None:
+        at = self.at + ahead
+        return self.tokens[at].op if at < len(self.tokens) else None
+
+    def _operand(self, ahead: int = 0) -> bool:
+        at = self.at + ahead
+        return at < len(self.tokens) and self.tokens[at].op is None
+
+    def parse(self) -> _CondTree:
+        tree = self._either()
+        if self.at != len(self.tokens):
+            raise _CondSyntax
+        return tree
+
+    def _either(self) -> _CondTree:
+        tree = self._both()
+        while self._op() == "||":
+            self.at += 1
+            tree = ("or", tree, self._both())
+        return tree
+
+    def _both(self) -> _CondTree:
+        tree = self._term()
+        while self._op() == "&&":
+            self.at += 1
+            tree = ("and", tree, self._term())
+        return tree
+
+    def _term(self) -> _CondTree:
+        inverted = False
+        while self._op() == "!":
+            self.at += 1
+            inverted = not inverted
+        if self._op() == "(":
+            self.at += 1
+            tree: _CondTree = ("group", self._either())
+            if self._op() != ")":
+                raise _CondSyntax
+            self.at += 1
+        else:
+            tree = self._test()
+        return ("not", tree) if inverted else tree
+
+    def _test(self) -> _CondTree:
+        op = self._op()
+        if op is not None and op.startswith("-") and self._operand(1):
+            self.at += 2
+            return ("unary", op, self.tokens[self.at - 1])
+        if not self._operand():
+            raise _CondSyntax
+        left = self.tokens[self.at]
+        op = self._op(1)
+        if (
+            op is not None
+            and (op in _COND_BINARY_TOKENS or op.startswith("-"))
+            and self._operand(2)
+        ):
+            self.at += 3
+            return ("binary", op, left, self.tokens[self.at - 1])
+        self.at += 1
+        return ("word", left)
+
+
+_COND_BINARY_TOKENS = frozenset({"=", "==", "!=", "=~", "<", ">"})
+
+
+async def _cond_node(
+    tree: _CondTree,
+    context: EvaluationContext,
+    execute_fn,
+    cs,
+    view: SessionView | None,
+) -> CondNode:
+    """Expand one parsed ``[[ ]]`` tree into a CondNode.
+
+    Args:
+        tree (_CondTree): from ``_CondParser``.
+        context (EvaluationContext): the evaluation expanding it.
+        execute_fn: workspace execute for command substitutions.
+        cs: call stack for positional parameters.
+    """
+    kind = tree[0]
+    if kind in ("and", "or"):
+        # Expansion is part of evaluating an operand, so skipped branches
+        # cannot run substitutions or observe state before the left side.
+        first = CondLazy(
+            partial(_cond_node, tree[1], context, execute_fn, cs, view)
+        )
+        second = CondLazy(
+            partial(_cond_node, tree[2], context, execute_fn, cs, view)
+        )
+        if kind == "and":
+            return CondAnd(first, second)
+        return CondOr(first, second)
+    if kind == "not":
+        return CondNot(
+            await _cond_node(tree[1], context, execute_fn, cs, view)
+        )
+    if kind == "group":
+        return await _cond_node(tree[1], context, execute_fn, cs, view)
+    if kind == "unary":
+        operand = await _token_text(tree[2], context, execute_fn, cs, view)
+        return CondUnary(op=tree[1], operand=operand)
+    if kind == "binary":
+        left_text = await _token_text(tree[2], context, execute_fn, cs, view)
+        right: _CondToken = tree[3]
+        if right.negative:
+            right_text = await _token_text(
+                right, context, execute_fn, cs, view
+            )
+            return CondBinary(left=left_text, op=tree[1], right=right_text)
+        return await _comparison(
+            tree[1], left_text, right.operand, context, execute_fn, cs, view
+        )
+    return CondWord(await _token_text(tree[1], context, execute_fn, cs, view))
+
+
+async def _token_text(
+    token: _CondToken,
+    context: EvaluationContext,
+    execute_fn,
+    cs,
+    view: SessionView | None,
+) -> str:
+    text = await expand_node(token.operand, context, execute_fn, cs, view=view)
+    return "-" + text if token.negative else text
 
 
 async def _build_cond(
@@ -306,7 +506,30 @@ async def _build_binary(
     left_text = await expand_node(
         operands[0], context, execute_fn, cs, view=view
     )
-    right_node = operands[1]
+    return await _comparison(
+        op, left_text, operands[1], context, execute_fn, cs, view
+    )
+
+
+async def _comparison(
+    op: str,
+    left_text: str,
+    right_node,
+    context: EvaluationContext,
+    execute_fn,
+    cs,
+    view: SessionView | None,
+) -> CondNode:
+    """A binary test, its right operand expanded as ``op`` reads it.
+
+    Args:
+        op (str): the operator.
+        left_text (str): the expanded left operand.
+        right_node: the right operand's tree-sitter node.
+        context (EvaluationContext): the evaluation expanding it.
+        execute_fn: workspace execute for command substitutions.
+        cs: call stack for positional parameters.
+    """
     if op == "=~" and right_node.type == NT.REGEX:
         raw = decode_text(right_node.text)
         # After =~ tree-sitter lexes even a quoted operand as one regex

@@ -27,3 +27,16 @@ def test_a_name_without_its_posix_prefix_finds_the_first_row():
     assert variable("VERSION") == ("_POSIX_VERSION", "200809")
     assert variable("LINK_MAX") == ("LINK_MAX", "127")
     assert variable("NO_SUCH_VAR") is None
+
+
+def test_the_listing_follows_the_posix_tables():
+    names = [name for name, _ in GETCONF_VARIABLES]
+    assert names[:3] == ["FILESIZEBITS", "LINK_MAX", "MAX_CANON"]
+    assert names.index("ARG_MAX") < names.index("PATH")
+    assert names.index("PATH") < names.index("CHAR_BIT")
+    assert names[-1] == "UIO_MAXIOV"
+
+
+def test_a_name_with_its_own_row_finds_it_before_a_posix_one():
+    assert variable("ARG_MAX") == ("ARG_MAX", "2097152")
+    assert variable("SSIZE_MAX") == ("SSIZE_MAX", "32767")

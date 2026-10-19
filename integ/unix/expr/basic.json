@@ -1710,6 +1710,37 @@
         "stdout": "4\na\n2\n0\nrc=1\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "expr_a_class_that_takes_a_newline_reports_no_false_match",
+      "seq": 9970050,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "expr aaxcx : '\\w[^x]*[ab][a-]'; echo rc=$?; echo aaxcx | sed 's/.[^x]*[ab][a-]/<&>/'",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\nrc=1\naaxcx\n",
+        "stderr": ""
+      }
     }
   ]
 }

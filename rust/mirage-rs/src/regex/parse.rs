@@ -165,8 +165,9 @@ pub(crate) enum Look {
     Start,
     /// `$`: the end of the record, or of a line.
     End,
-    /// A `$` next to a group, which regcomp holds to the end of the
-    /// subject even before a newline the match goes on to consume.
+    /// A `$` of a pattern with groups, under a search that places them:
+    /// regexec then holds it to the end of the subject even before a
+    /// newline the match goes on to consume.
     GroupedEnd,
     /// `` \` ``: the start of the whole subject.
     SubjectStart,
@@ -212,6 +213,19 @@ impl Ast {
     /// newlines the match consumes, which the automata cannot see.
     pub(crate) fn anchors_at_edges(&self) -> bool {
         self.edges(true, true)
+    }
+
+    /// The expression with each `$` a `GroupedEnd`, as a search that
+    /// places groups reads a pattern that has any.
+    pub(crate) fn held_ends(&self) -> Ast {
+        match self {
+            Ast::Look(Look::End) => Ast::Look(Look::GroupedEnd),
+            Ast::Group(group, inner) => Ast::Group(*group, Box::new(inner.held_ends())),
+            Ast::Repeat(inner, min, max) => Ast::Repeat(Box::new(inner.held_ends()), *min, *max),
+            Ast::Concat(items) => Ast::Concat(items.iter().map(Ast::held_ends).collect()),
+            Ast::Alternate(items) => Ast::Alternate(items.iter().map(Ast::held_ends).collect()),
+            other => other.clone(),
+        }
     }
 
     fn zero_width(&self) -> bool {
@@ -362,32 +376,6 @@ pub(crate) fn parse(
         warnings: parser.warnings,
         groups: parser.groups,
     })
-}
-
-fn grouped(ast: &Ast) -> bool {
-    match ast {
-        Ast::Group(..) => true,
-        Ast::Repeat(inner, _, _) => grouped(inner),
-        _ => false,
-    }
-}
-
-/// A `$` reads a newline the match consumes after it only between two
-/// items that are not groups: `b$.` matches across a line, `(b)$.` and
-/// `b$(.)` do not, nor, inside a group, a `$` that starts or ends its
-/// branch (`(b$|x).`).
-fn mark_grouped_ends(items: &mut [Ast], in_group: bool) {
-    for i in 0..items.len() {
-        if items[i] != Ast::Look(Look::End) {
-            continue;
-        }
-        let before = i.checked_sub(1).map(|at| &items[at]);
-        let after = items.get(i + 1);
-        let edge = before.is_none() || after.is_none();
-        if (edge && in_group) || before.is_some_and(grouped) || after.is_some_and(grouped) {
-            items[i] = Ast::Look(Look::GroupedEnd);
-        }
-    }
 }
 
 /// A fixed string's units, each one matched as itself.
@@ -573,9 +561,6 @@ impl<'a> Parser<'a> {
             };
             items.push(atom);
             depth = depth.max(deep);
-        }
-        if self.dialect != Dialect::Grep {
-            mark_grouped_ends(&mut items, self.depth > 0);
         }
         Ok(match items.len() {
             0 => (Ast::Empty, 1),

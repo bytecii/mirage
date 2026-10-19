@@ -444,6 +444,40 @@
       "flags": [
         "e"
       ]
+    },
+    {
+      "id": "sed_text_running_to_a_trailing_backslash_goes_out_raw",
+      "seq": 9970048,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'p\\n' | sed -e 'a\\' -e '\\\\x\\\\\\'; printf 'p\\n' | sed 'a\\\\\\\\\\'; printf 'p\\n' | sed 'a\\\\\\\\'; printf 'p\\n' | sed 'a x\\\\\\'; printf 'p\\n' | sed 'a \\tx\\\\\\'; printf 'p\\n' | sed -e 'a\\' -e 'foo\\' -e '\\\\\\'; printf 'p\\n' | sed -e 'a\\' -e '\\\\\\\\'; printf 'p\\n' | sed -e 'a\\' -e '\\\\\\' -e 'q'",
+      "expect": {
+        "exit": 0,
+        "stdout": "p\n\\\\x\\\\\np\n\\\\\\\np\n\\\np\nx\\\\\np\ntx\\\\\np\nfoo\n\\\\\np\n\\\\\np\n\\\nq\n",
+        "stderr": ""
+      }
     }
   ]
 }
