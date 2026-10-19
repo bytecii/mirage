@@ -48,7 +48,7 @@ export type OwnerOf = (path: string) => MountRow | null
 export interface FilesOptions {
   bind?: SessionBind | null
   // What every op says of its caller over the async context's: the call
-  // an op-level answer covers, a dry run's trace.
+  // an op-level answer covers, a dry run's trace, a deciding policy's mark.
   caller?: Partial<Caller> | null
   // The dispatcher bound to the session a bind put in place; the plain
   // dispatch serves an op that kept the caller's ambient session.
@@ -255,9 +255,10 @@ export class Files {
    * The same facade with `changes` said of every op's caller: a file
    * tool's call, the unit an op-level answer covers, so an approval one op
    * is answered by is claimed for the call's other ops and a call running
-   * at the same time is never taken for this one; or a dry run's trace.
-   * Said on each op, not bound in the async context, which without task
-   * isolation another task would read. Reached through `withCaller`.
+   * at the same time is never taken for this one; a dry run's trace; or a
+   * policy method's deciding mark. Said on each op, not bound in the async
+   * context, which without task isolation another task would read. Reached
+   * through `withCaller`.
    */
   private forCaller(changes: Partial<Caller>): Files {
     return new Files(this.dispatchFn, this.sink, this.links, this.ownerOf, {
@@ -891,10 +892,11 @@ export function namespaceOf(files: Files): FilesNamespace {
 }
 
 /**
- * The same files with `changes` said of every op's caller: a file tool's call
- * or a dry run's trace. Never a handler's: the dispatcher trusts the caller, so
- * one that dropped its rule gate would read past a path rule scoped to its
- * command. Python's task context carries the caller instead.
+ * The same files with `changes` said of every op's caller: a file tool's call,
+ * a dry run's trace or a policy method's deciding mark. Never a handler's: the
+ * dispatcher trusts the caller, so one that dropped its rule gate would read
+ * past a path rule scoped to its command. Python's task context carries the
+ * caller instead.
  */
 export function withCaller(files: Files, changes: Partial<Caller>): Files {
   return callerFilesOf(files, changes)
