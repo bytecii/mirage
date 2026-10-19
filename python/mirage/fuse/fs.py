@@ -19,9 +19,10 @@ import os
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any, ParamSpec, TypeVar
 
-from mirage.bridge.sync import run_async_from_sync
+from mirage.bridge.sync import on_auxiliary_loop, run_async_from_sync
 from mirage.fuse.constants import XATTR_CREATE, XATTR_REPLACE
 from mirage.fuse.darwin import rename_flags_check
 from mirage.mount.core import MountCore
@@ -104,7 +105,9 @@ class MirageFS:
             T: whatever the core method returns.
         """
         try:
-            return run_async_from_sync(fn(*args, **kwargs), self._loop)
+            return run_async_from_sync(
+                on_auxiliary_loop(partial(fn, *args, **kwargs)), self._loop
+            )
         except Exception as err:
             code = classify_error(err)
             if code == errno.EIO and not isinstance(
@@ -151,7 +154,9 @@ class MirageFS:
         # RENAME op, so without this method mv fails with ENOSYS before
         # reaching userspace.
         try:
-            run_async_from_sync(self.core.getattr(new), self._loop)
+            run_async_from_sync(
+                on_auxiliary_loop(partial(self.core.getattr, new)), self._loop
+            )
             new_exists = True
         except (FileNotFoundError, ValueError):
             new_exists = False

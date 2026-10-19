@@ -15,9 +15,10 @@
 import base64
 import logging
 import shlex
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import PurePosixPath
-from typing import TypeVar
+from typing import ParamSpec, TypeVar
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -39,7 +40,7 @@ from mirage.agents.langchain.convert import (
     io_to_file_infos,
     io_to_grep_matches,
 )
-from mirage.bridge.sync import run_async_from_sync
+from mirage.bridge.sync import on_owner_loop
 from mirage.io.types import IOResult
 from mirage.workspace.files import Files
 from mirage.workspace.tools.io_text import replace_text, with_refusal
@@ -49,6 +50,7 @@ from mirage.workspace.workspace import Session, Workspace
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+P = ParamSpec("P")
 
 BINARY_EXTENSIONS = frozenset(
     {
@@ -134,6 +136,10 @@ class LangchainWorkspace(SandboxBackendProtocol):
     Workspace.shell() for pipe and flag support. Both run as the session,
     so its profile judges every call.
 
+    Sync tools may run on worker threads, but refuse calls on the owner
+    event-loop thread: await the corresponding async method there. Close
+    the workspace when finished to drain the sync loop and pooled clients.
+
     Args:
         workspace (Workspace): The workspace to operate on.
         sandbox_id (str): The id the backend reports.
@@ -148,11 +154,15 @@ class LangchainWorkspace(SandboxBackendProtocol):
         session_id: str | None = None,
     ) -> None:
         self._ws = workspace
+        self._sync_bridge = workspace._sync_bridge
+        self._sync_bridge.attach()
         self._id = sandbox_id
         self._session_id = session_id
 
-    def _run(self, coro: Awaitable[T]) -> T:
-        return run_async_from_sync(coro)
+    def _run(
+        self, fn: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        return self._ws._run_sync(partial(fn, *args, **kwargs), fn.__name__)
 
     @property
     def _vfs(self) -> Files:
@@ -173,8 +183,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
     def execute(
         self, command: str, *, timeout: int | None = None
     ) -> ExecuteResponse:
-        return self._run(self.aexecute(command, timeout=timeout))
+        return self._run(self.aexecute, command, timeout=timeout)
 
+    @on_owner_loop
     async def aexecute(
         self, command: str, *, timeout: int | None = None
     ) -> ExecuteResponse:
@@ -184,8 +195,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
     # ── ls ──────────────────────────────────────────────────
 
     def ls(self, path: str) -> LsResult:
-        return self._run(self.als(path))
+        return self._run(self.als, path)
 
+    @on_owner_loop
     async def als(self, path: str) -> LsResult:
         io = await self._exec(f"ls {shlex.quote(path)}")
         stdout = (await io.stdout_str()).strip()
@@ -210,8 +222,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
     def read(
         self, file_path: str, offset: int = 0, limit: int = 2000
     ) -> ReadResult:
-        return self._run(self.aread(file_path, offset, limit))
+        return self._run(self.aread, file_path, offset, limit)
 
+    @on_owner_loop
     async def aread(
         self, file_path: str, offset: int = 0, limit: int = 2000
     ) -> ReadResult:
@@ -225,8 +238,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
     # ── write ────────────────────────────────────────────────
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        return self._run(self.awrite(file_path, content))
+        return self._run(self.awrite, file_path, content)
 
+    @on_owner_loop
     async def awrite(self, file_path: str, content: str) -> WriteResult:
         ops = self._vfs
         try:
@@ -251,9 +265,10 @@ class LangchainWorkspace(SandboxBackendProtocol):
         replace_all: bool = False,
     ) -> EditResult:
         return self._run(
-            self.aedit(file_path, old_string, new_string, replace_all)
+            self.aedit, file_path, old_string, new_string, replace_all
         )
 
+    @on_owner_loop
     async def aedit(
         self,
         file_path: str,
@@ -294,8 +309,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
         *,
         max_count: int | None = None,
     ) -> GrepResult:
-        return self._run(self.agrep(pattern, path, glob, max_count=max_count))
+        return self._run(self.agrep, pattern, path, glob, max_count=max_count)
 
+    @on_owner_loop
     async def agrep(
         self,
         pattern: str,
@@ -336,8 +352,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
     # ── glob ─────────────────────────────────────────────────
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return self._run(self.aglob(pattern, path))
+        return self._run(self.aglob, pattern, path)
 
+    @on_owner_loop
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
         name = pattern.split("/")[-1] if "/" in pattern else pattern
         io = await self._exec(
@@ -354,8 +371,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
     def upload_files(
         self, files: list[tuple[str, bytes]]
     ) -> list[FileUploadResponse]:
-        return self._run(self.aupload_files(files))
+        return self._run(self.aupload_files, files)
 
+    @on_owner_loop
     async def aupload_files(
         self, files: list[tuple[str, bytes]]
     ) -> list[FileUploadResponse]:
@@ -368,8 +386,9 @@ class LangchainWorkspace(SandboxBackendProtocol):
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        return self._run(self.adownload_files(paths))
+        return self._run(self.adownload_files, paths)
 
+    @on_owner_loop
     async def adownload_files(
         self, paths: list[str]
     ) -> list[FileDownloadResponse]:

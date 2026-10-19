@@ -14,10 +14,18 @@
 
 import asyncio
 import concurrent.futures
-from collections.abc import Awaitable
-from typing import TypeVar
+import threading
+from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import ContextVar
+from functools import partial, wraps
+from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
+
+from mirage.concurrency.limiter import run_blocking, settle
 
 T = TypeVar("T")
+AUXILIARY_LOOP: ContextVar[bool] = ContextVar(
+    "mirage_auxiliary_loop", default=False
+)
 
 
 async def _await_result(awaitable: Awaitable[T]) -> T:
@@ -25,7 +33,7 @@ async def _await_result(awaitable: Awaitable[T]) -> T:
 
 
 def _run_in_new_loop(awaitable: Awaitable[T]) -> T:
-    return asyncio.run(_await_result(awaitable))
+    return asyncio.run(on_auxiliary_loop(partial(_await_result, awaitable)))
 
 
 def run_async_from_sync(
@@ -41,6 +49,11 @@ def run_async_from_sync(
     every call on ONE loop, which is what a VFS holding a
     connection pool needs to still be closable at the end.
 
+    Git's synchronous object readers also rely on the current-loop fallback
+    for independent reads. Temporary loops are auxiliary to the caller's
+    foreground owner. This fallback cannot safely wait on shared async
+    locks; workspace agent adapters use ``SyncBridge`` instead.
+
     Args:
         awaitable (Awaitable[T]): The asynchronous operation to run.
         loop (asyncio.AbstractEventLoop | None): Shared event loop.
@@ -50,6 +63,11 @@ def run_async_from_sync(
         running_loop = asyncio.get_running_loop()
     except RuntimeError:
         running_loop = None
+
+    if loop is not None and loop.is_closed():
+        if isinstance(awaitable, Coroutine):
+            awaitable.close()
+        raise RuntimeError("The owner event loop is closed")
 
     if loop is not None and loop is not running_loop:
         if loop.is_running():
@@ -67,3 +85,334 @@ def run_async_from_sync(
         return _run_in_new_loop(awaitable)
     with concurrent.futures.ThreadPoolExecutor(1) as pool:
         return pool.submit(_run_in_new_loop, awaitable).result()
+
+
+async def _invoke(factory: Callable[[], Awaitable[T]]) -> T:
+    return await factory()
+
+
+async def on_auxiliary_loop(factory: Callable[[], Awaitable[T]]) -> T:
+    """Run an internal callback without claiming foreground ownership.
+
+    Args:
+        factory (Callable[[], Awaitable[T]]): deferred callback on its
+            temporary bridge loop or independent FUSE service loop.
+    """
+    token = AUXILIARY_LOOP.set(True)
+    try:
+        return await factory()
+    finally:
+        AUXILIARY_LOOP.reset(token)
+
+
+def _serve_loop(loop: asyncio.AbstractEventLoop) -> None:
+    with asyncio.Runner(loop_factory=lambda: loop) as runner:
+        runner.get_loop().run_forever()
+
+
+class SyncBridge:
+    """Workspace-owned scheduling for synchronous agent tools.
+
+    Foreground calls establish ownership without changing the dispatcher's
+    threading contract. A synchronous application or context gets one loop
+    thread, whose lifetime ends with the workspace. Auxiliary bridge reads
+    and FUSE callbacks never replace that foreground owner.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._context_loop: asyncio.AbstractEventLoop | None = None
+        self._ambiguous = False
+        self._closing = False
+        self._stop_requested = False
+        self._lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+
+    def observe(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Record a foreground operation before it touches async state.
+
+        Args:
+            loop (asyncio.AbstractEventLoop | None): explicit host loop,
+                otherwise the caller's running loop, if any.
+        """
+        if AUXILIARY_LOOP.get():
+            return
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+        with self._lock:
+            if loop is self._context_loop and loop is not self._loop:
+                return
+            if self._loop is None:
+                self._loop = loop
+            elif self._loop is not loop:
+                self._ambiguous = True
+
+    def attach(self) -> None:
+        """Use an adapter constructor's loop only when no owner is known."""
+        if AUXILIARY_LOOP.get():
+            return
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        with self._lock:
+            if self._loop is None:
+                self._loop = current
+
+    def _start_locked(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        self._loop.call_soon(ready.set)
+        self._thread = threading.Thread(
+            target=_serve_loop,
+            args=(self._loop,),
+            name="mirage-sync",
+            daemon=True,
+        )
+        self._thread.start()
+        ready.wait()
+
+    def context_loop(self) -> asyncio.AbstractEventLoop:
+        """Keep a context-first workspace's owner running between calls.
+
+        An existing async host keeps its owner; the synchronous file patch
+        uses a separate context loop, which is auxiliary to that owner.
+        """
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("Workspace is closed")
+            if self._thread is threading.current_thread():
+                raise RuntimeError(
+                    "Use async file operations on the workspace owner event loop"
+                )
+            if self._loop is None:
+                self._start_locked()
+            if self._thread is not None:
+                assert self._loop is not None
+                self._context_loop = self._loop
+            else:
+                self._context_loop = asyncio.new_event_loop()
+            return self._context_loop
+
+    def _submit_locked(
+        self, factory: Callable[[], Awaitable[T]], *, teardown: bool = False
+    ) -> concurrent.futures.Future[T]:
+        """Queue before stop can be requested, so Runner sees every task.
+
+        Args:
+            factory (Callable[[], Awaitable[T]]): deferred operation, invoked
+                on the owner only after submission has been accepted.
+            teardown (bool): admit idempotent teardown while closing.
+        """
+        loop = self._loop
+        if not teardown and self._ambiguous:
+            raise RuntimeError(
+                "Workspace has been used on multiple event loops"
+            )
+        if (
+            self._stop_requested
+            or loop is None
+            or loop.is_closed()
+            or not loop.is_running()
+        ):
+            raise RuntimeError("The workspace owner event loop is not running")
+        if not teardown:
+            if self._closing:
+                raise RuntimeError("Workspace is closing")
+        pending = _invoke(factory)
+        try:
+            return asyncio.run_coroutine_threadsafe(pending, loop)
+        except BaseException:
+            pending.close()
+            raise
+
+    def run(self, factory: Callable[[], Awaitable[T]], async_name: str) -> T:
+        """Invoke a tool without blocking its owner or racing loop shutdown.
+
+        Args:
+            factory (Callable[[], Awaitable[T]]): deferred async tool call.
+            async_name (str): async alternative named in refusal errors.
+        """
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        with self._lock:
+            if self._closing and self._loop is None:
+                raise RuntimeError("Workspace is closing")
+            if self._loop is None:
+                if current is not None:
+                    self._loop = current
+                else:
+                    self._start_locked()
+            if self._loop is current:
+                raise RuntimeError(
+                    "Cannot call a synchronous tool on its owner event loop; "
+                    f"use await {async_name}(...)"
+                )
+            future = self._submit_locked(factory)
+        return future.result()
+
+    async def close(self, factory: Callable[[], Awaitable[None]]) -> None:
+        """Close admission before scheduling teardown on a live owner.
+
+        Args:
+            factory (Callable[[], Awaitable[None]]): workspace teardown.
+        """
+        current = asyncio.get_running_loop()
+        with self._lock:
+            self._closing = True
+            loop = self._loop
+            if (
+                loop is not None
+                and (self._thread is not None or not self._ambiguous)
+                and not self._stop_requested
+                and loop is not current
+                and not loop.is_closed()
+                and loop.is_running()
+            ):
+                future = self._submit_locked(factory, teardown=True)
+            else:
+                future = None
+        if future is None:
+            await factory()
+            return
+        closing = asyncio.wrap_future(future)
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError:
+            await settle(closing)
+            raise
+
+    def close_sync(
+        self,
+        factory: Callable[[], Awaitable[None]],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Admit context teardown atomically with managed-loop shutdown.
+
+        Args:
+            factory (Callable[[], Awaitable[None]]): workspace teardown.
+            loop (asyncio.AbstractEventLoop): the context's file-operation loop.
+        """
+        with self._lock:
+            self._closing = True
+            if loop is self._loop and self._thread is not None:
+                if threading.current_thread() is self._thread:
+                    raise RuntimeError(
+                        "Cannot exit a synchronous context on its owner loop"
+                    )
+                future = self._submit_locked(factory, teardown=True)
+            else:
+                future = None
+        if future is None:
+            run_async_from_sync(_invoke(factory), loop)
+        else:
+            future.result()
+
+    async def arun(self, factory: Callable[[], Awaitable[T]]) -> T:
+        """Keep async adapter calls on their established owner too.
+
+        Cross-loop cancellation reaches the owner task without cancelling
+        its completion future, so cleanup still finishes before we return.
+
+        Args:
+            factory (Callable[[], Awaitable[T]]): deferred async tool call.
+        """
+        task: asyncio.Task[Any] | None = None
+        cancel_requested = False
+
+        async def invoke() -> T:
+            nonlocal task
+            if cancel_requested:
+                raise asyncio.CancelledError
+            task = asyncio.current_task()
+            return await factory()
+
+        def cancel() -> None:
+            nonlocal cancel_requested
+            cancel_requested = True
+            if task is not None:
+                task.cancel()
+
+        current = asyncio.get_running_loop()
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("Workspace is closing")
+            if self._loop is None:
+                self._loop = current
+            loop = self._loop
+            future = None if loop is current else self._submit_locked(invoke)
+        if future is None:
+            return await factory()
+        completion = asyncio.wrap_future(future)
+        try:
+            return await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            with self._lock:
+                if not future.done() and not self._stop_requested:
+                    loop.call_soon_threadsafe(cancel)
+            await settle(completion)
+            raise
+
+    def _stop_after_task(self, task: asyncio.Future[Any]) -> None:
+        self._request_stop()
+
+    def _request_stop(self) -> None:
+        with self._lock:
+            assert self._loop is not None
+            self._closing = True
+            if not self._stop_requested and not self._loop.is_closed():
+                self._stop_requested = True
+                self._loop.call_soon_threadsafe(self._loop.stop)
+
+    async def ashutdown(self) -> None:
+        """Join off-loop, or stop an owned loop once its calling task settles."""
+        if self._thread is threading.current_thread():
+            task = asyncio.current_task()
+            assert task is not None
+            task.add_done_callback(self._stop_after_task)
+        elif self._thread is not None:
+            await run_blocking(self.shutdown)
+
+    def shutdown(self) -> None:
+        """Stop only a loop this bridge created; its runner drains tasks."""
+        thread = self._thread
+        if thread is None:
+            return
+        if threading.current_thread() is thread:
+            raise RuntimeError("Cannot join the workspace owner from itself")
+        with self._shutdown_lock:
+            self._request_stop()
+            thread.join()
+
+
+class BridgeClient(Protocol):
+    _sync_bridge: SyncBridge
+
+
+Client = TypeVar("Client", bound=BridgeClient)
+P = ParamSpec("P")
+
+
+def on_owner_loop(
+    method: Callable[Concatenate[Client, P], Coroutine[Any, Any, T]],
+) -> Callable[Concatenate[Client, P], Coroutine[Any, Any, T]]:
+    """Keep an adapter's async method on the same owner as its sync tools.
+
+    Args:
+        method (Callable): async adapter method; its signature is preserved
+            because agent frameworks derive tool schemas from it.
+    """
+
+    @wraps(method)
+    async def call(self: Client, *args: P.args, **kwargs: P.kwargs) -> T:
+        return await self._sync_bridge.arun(
+            partial(method, self, *args, **kwargs)
+        )
+
+    return call

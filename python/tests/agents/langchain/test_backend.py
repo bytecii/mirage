@@ -12,7 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import base64
+import subprocess
+import sys
 
 import pytest
 
@@ -20,10 +23,303 @@ from mirage import RAMVFS, MountMode, Workspace
 from mirage.agents.langchain.backend import LangchainWorkspace
 from mirage.policy import CommandContext, Deny, Policy
 
+CONTENTION_REPRO = """
+import asyncio
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+from mirage import RAMVFS, MountMode, Workspace
+from mirage.agents.agno import MirageToolkit
+from mirage.agents.langchain import LangchainWorkspace
+from mirage.commands.cli.builtin.git import GIT
+from mirage.commands.cli.types import CLI, CLIHandler
+from mirage.commands.spec.types import CommandSpec
+from mirage.concurrency.limiter import run_blocking
+from mirage.context import reset_current_session, set_current_session
+from mirage.fuse.fs import MirageFS
+from mirage.io import IOResult
+
+kind, mode = sys.argv[1:]
+ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+ws.create_session("s")
+if kind == "langchain":
+    adapter = LangchainWorkspace(ws, session_id="s")
+    sync = adapter.execute
+    async_name = "aexecute"
+else:
+    adapter = MirageToolkit(ws, session_id="s")
+    sync = adapter.shell
+    async_name = "ashell"
+
+async def main():
+    await ws.shell("echo seed", session_id="s")
+    lock = ws._session_mgr.line_lock_for("s")
+    await lock.acquire()
+    try:
+        if mode == "loop":
+            try:
+                sync("echo hi")
+            except RuntimeError as exc:
+                assert "await " + async_name in str(exc), str(exc)
+            else:
+                raise AssertionError("owner-thread sync call was allowed")
+        elif mode == "nested":
+            token = set_current_session(ws.get_session("s"), owner=ws._session_mgr)
+            try:
+                result = await asyncio.to_thread(sync, "echo nested")
+                text = result.output if kind == "langchain" else result
+                assert text.strip() == "nested", text
+            finally:
+                reset_current_session(token)
+        else:
+            worker = asyncio.create_task(asyncio.to_thread(sync, "echo hi"))
+            while not lock._waiters:
+                await asyncio.sleep(0)
+            assert not worker.done()
+    finally:
+        lock.release()
+    if mode == "thread":
+        result = await worker
+        text = result.output if kind == "langchain" else result
+        assert text.strip() == "hi", text
+    await lock.acquire()
+    next_call = asyncio.create_task(ws.shell("echo next", session_id="s"))
+    while not lock._waiters:
+        await asyncio.sleep(0)
+    lock.release()
+    assert (await (await next_call).stdout_str()).strip() == "next"
+    await ws.close()
+
+if mode in ("git", "git_thread"):
+    ws.register_cli("git", GIT)
+    setup = (
+        "git init -q /repo && cd /repo && echo one > a.txt && "
+        "git add a.txt && git commit -m seed"
+    )
+    command = "git -C /repo cat-file tree HEAD > /tree"
+
+    def check_next():
+        result = sync("test -s /tree && echo next")
+        text = result.output if kind == "langchain" else result
+        assert text.strip() == "next", text
+
+    if mode == "git":
+        try:
+            sync(setup)
+            result = sync(command)
+            if kind == "langchain":
+                assert result.exit_code == 0, result.output
+            check_next()
+        finally:
+            asyncio.run(ws.close())
+    else:
+        async def git_tool():
+            try:
+                result = await ws.shell(setup, session_id="s")
+                assert result.exit_code == 0, await result.stderr_str()
+                result = await asyncio.to_thread(sync, command)
+                if kind == "langchain":
+                    assert result.exit_code == 0, result.output
+                await asyncio.to_thread(check_next)
+            finally:
+                await ws.close()
+
+        asyncio.run(git_tool())
+elif mode == "borrowed_context":
+    async def borrowed_context():
+        owner = asyncio.get_running_loop()
+        await ws.shell("echo seed", session_id="s")
+        with ws:
+            with open("/context.txt", "w") as handle:
+                handle.write("context")
+            result = await asyncio.to_thread(sync, "cat /context.txt")
+            text = result.output if kind == "langchain" else result
+            assert text.strip() == "context"
+            assert ws._sync_bridge._loop is owner
+        assert owner.is_running()
+
+    asyncio.run(borrowed_context())
+elif mode == "context_close":
+    with ws:
+        sync("echo context")
+        owner = ws._sync_bridge._loop
+        asyncio.run(ws.close())
+    assert owner.is_closed()
+elif mode == "context":
+    first_entered, second_entered = threading.Event(), threading.Event()
+    first_release, second_release = asyncio.Event(), asyncio.Event()
+    original_shell = ws._shell
+
+    async def controlled_shell(command, *args, **kwargs):
+        if command == "echo first":
+            first_entered.set()
+            await first_release.wait()
+        elif command == "echo second":
+            second_entered.set()
+            await second_release.wait()
+        return await original_shell(command, *args, **kwargs)
+
+    ws._shell = controlled_shell
+    with ThreadPoolExecutor(2) as pool:
+        with ws:
+            owner = ws._vfs_loop
+            first = pool.submit(sync, "echo first")
+            assert first_entered.wait(3)
+            second = pool.submit(sync, "echo second")
+            assert second_entered.wait(3)
+            owner.call_soon_threadsafe(first_release.set)
+            result = first.result(timeout=3)
+            text = result.output if kind == "langchain" else result
+            assert text.strip() == "first"
+            owner.call_soon_threadsafe(second_release.set)
+            result = second.result(timeout=3)
+            text = result.output if kind == "langchain" else result
+            assert text.strip() == "second"
+    assert owner.is_closed()
+elif mode in ("fuse", "fuse_first"):
+    fs = MirageFS(ws.vfs)
+    try:
+        if mode == "fuse_first":
+            fs.getattr("/")
+        result = sync("echo before")
+        text = result.output if kind == "langchain" else result
+        assert text.strip() == "before"
+        owner = ws._sync_bridge._loop
+        assert owner is not fs._loop
+        fs.getattr("/")
+        sync("echo file > /old")
+        fs.renamex("/old", "/new")
+        result = sync("echo after")
+        text = result.output if kind == "langchain" else result
+        assert text.strip() == "after"
+        assert ws._sync_bridge._loop is owner
+    finally:
+        asyncio.run(ws.close())
+        fs._loop.call_soon_threadsafe(fs._loop.stop)
+elif mode in ("cancel_cleanup", "cancel_blocking"):
+    entered = threading.Event()
+    cleaning = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+
+    def blocking():
+        entered.set()
+        assert release.wait(3)
+        finished.set()
+
+    async def held(config, paths, texts, ctx):
+        if mode == "cancel_blocking":
+            await run_blocking(blocking)
+        else:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await run_blocking(release.wait, 3)
+                assert release.is_set()
+                finished.set()
+        return None, IOResult()
+
+    ws.register_cli("held", CLI(
+        spec=CommandSpec(name="held"), handlers={"": CLIHandler(fn=held)}
+    ))
+    sync("echo seed")
+
+    async def cancelled_tool():
+        call = adapter.aexecute if kind == "langchain" else adapter.ashell
+        task = asyncio.create_task(call("held"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            task.cancel()
+            if mode == "cancel_cleanup":
+                assert await asyncio.to_thread(cleaning.wait, 3)
+            await asyncio.sleep(.05)
+            assert not task.done(), "caller returned before owner cleanup finished"
+            task.cancel()
+            await asyncio.sleep(.05)
+            assert not task.done(), "repeated cancellation abandoned owner cleanup"
+            release.set()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("cancellation was lost")
+            assert finished.is_set()
+            assert not ws._session_mgr.line_lock_for("s").locked()
+            result = await asyncio.wait_for(call("echo next"), 3)
+            text = result.output if kind == "langchain" else result
+            assert text.strip() == "next", text
+        finally:
+            release.set()
+            await ws.close()
+
+    asyncio.run(cancelled_tool())
+elif mode == "sync":
+    result = sync("echo sync")
+    text = result.output if kind == "langchain" else result
+    assert text.strip() == "sync"
+    owner = ws._sync_bridge._loop
+
+    async def async_tool():
+        if kind == "langchain":
+            assert (await adapter.aexecute("echo async")).output.strip() == "async"
+        else:
+            assert (await adapter.ashell("echo async")).strip() == "async"
+
+    asyncio.run(async_tool())
+    with ws:
+        assert sync("echo context")
+    assert owner.is_closed()
+else:
+    asyncio.run(main())
+"""
+
+
+@pytest.mark.parametrize("kind", ["langchain", "agno"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "loop",
+        "thread",
+        "sync",
+        "nested",
+        "context",
+        "context_close",
+        "borrowed_context",
+        "fuse",
+        "fuse_first",
+        "cancel_cleanup",
+        "cancel_blocking",
+        "git",
+        "git_thread",
+    ],
+)
+def test_contended_sync_adapter_in_bounded_process(kind, mode):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-Werror::RuntimeWarning",
+            "-c",
+            CONTENTION_REPRO,
+            kind,
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Unclosed client session" not in result.stderr
+
 
 @pytest.fixture
 def workspace():
-    return Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    yield ws
+    asyncio.run(ws.close())
 
 
 @pytest.fixture
@@ -54,10 +350,26 @@ async def test_aexecute_failing_command(backend):
 
 
 @pytest.mark.asyncio
-async def test_sync_execute_is_safe_inside_running_event_loop(backend):
-    resp = backend.execute("echo nested")
-    assert resp.exit_code == 0
-    assert "nested" in resp.output
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("execute", ("echo nested",)),
+        ("ls", ("/",)),
+        ("read", ("/file",)),
+        ("write", ("/file", "text")),
+        ("edit", ("/file", "old", "new")),
+        ("grep", ("pattern",)),
+        ("glob", ("*",)),
+        ("upload_files", ([("/file", b"text")],)),
+        ("download_files", (["/file"],)),
+    ],
+)
+async def test_sync_tool_recommends_async_inside_running_event_loop(
+    backend, name, args
+):
+    with pytest.raises(RuntimeError, match=f"await a{name}"):
+        getattr(backend, name)(*args)
+    assert (await backend.aexecute("echo next")).output.strip() == "next"
 
 
 @pytest.mark.asyncio

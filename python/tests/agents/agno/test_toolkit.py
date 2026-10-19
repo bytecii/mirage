@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+
 import pytest
 
 from mirage import RAMVFS, MountMode, Workspace
@@ -20,7 +22,9 @@ from mirage.agents.agno import MirageToolkit
 
 @pytest.fixture
 def workspace():
-    return Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    yield ws
+    asyncio.run(ws.close())
 
 
 @pytest.fixture
@@ -60,6 +64,25 @@ async def test_async_tools(toolkit):
     )
     assert await toolkit.aglob("*.txt", "/notes") == "/notes/hello.txt\n"
     assert await toolkit.ashell("find /notes -type f | wc -l") == "1\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("shell", ("echo nested",)),
+        ("read", ("/file",)),
+        ("write", ("/file", "text")),
+        ("edit", ("/file", "old", "new")),
+        ("ls", ("/",)),
+        ("grep", ("pattern", "/")),
+        ("glob", ("*",)),
+    ],
+)
+async def test_sync_tool_recommends_its_async_method(toolkit, name, args):
+    with pytest.raises(RuntimeError, match=f"await a{name}"):
+        getattr(toolkit, name)(*args)
+    assert await toolkit.ashell("echo next") == "next\n"
 
 
 @pytest.mark.asyncio
