@@ -204,10 +204,13 @@ extracted from the filesystem:
 ls /email/INBOX/2026-04-14/
 # -> Meeting_Notes__12345.email.json   <- uid = 12345
 
-# Read a message then reply
-himalaya message read --uid 12345 --folder INBOX
-himalaya message reply --uid 12345 --folder INBOX --body "Thanks for the notes"
+# Read a message, then send a reply
+himalaya message read -m INBOX 12345
+himalaya message reply -m INBOX 12345 --body "Thanks for the notes" --send
 ```
+
+For composing and sending mail, see the
+[Himalaya CLI](/python/cli/himalaya#compose-reply-and-send).
 
 ## Shell Commands
 

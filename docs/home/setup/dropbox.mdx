@@ -41,8 +41,8 @@ On the app's settings page, click the **Permissions** tab and check:
 - `files.metadata.read`, list folders, read file metadata
 - `files.content.read`, download file bytes
 
-If you also want write/delete (not used by the read-only VFS yet), check
-`files.content.write` and `files.metadata.write`.
+For a write mount, also check `files.content.write`. Mirage uses it for
+uploads, overwrites, creates, deletes, moves and copies.
 
 Click **Submit** at the bottom of the Permissions tab. **Required**: Dropbox does not include
 unchecked scopes in tokens, even if the auth URL requests them.
@@ -155,14 +155,10 @@ access token whenever the cached one is within 5 minutes of expiry.
 | Scope                    | Purpose                              |
 | ------------------------ | ------------------------------------ |
 | `files.metadata.read`    | List folders, read file metadata     |
-| `files.metadata.write`   | Move, rename, create folders         |
 | `files.content.read`     | Download file bytes                  |
-| `files.content.write`    | Upload, overwrite, delete files      |
+| `files.content.write`    | Upload, overwrite, create, delete, move and copy |
 | `sharing.read`           | List shared links and shared folders |
 | `account_info.read`      | Account email, country, user info    |
-
-The Mirage VFS only needs `files.metadata.read` + `files.content.read` for the read-only
-mount. Add the `*.write` scopes if/when write commands land.
 
 ## Troubleshooting
 
