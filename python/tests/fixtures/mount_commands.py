@@ -99,7 +99,7 @@ def registered_commands() -> tuple[list[Command], list[str]]:
             failed.append(f"{info.name}: {exc}")
             continue
         for value in vars(module).values():
-            cmds = getattr(value, "registered_commands_commands", None)
+            cmds = getattr(value, "_registered_commands", None)
             if cmds is None or id(value) in seen:
                 continue
             seen.add(id(value))
