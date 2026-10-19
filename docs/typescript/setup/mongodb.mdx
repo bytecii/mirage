@@ -4,7 +4,8 @@ icon: /images/mongodb-logo.svg
 description: Mount a MongoDB cluster as a Mirage filesystem of databases, collections, and documents.
 ---
 
-`MongoDBVFS` exposes a MongoDB connection as a read-only filesystem: databases at the top level, collections inside, individual documents at the leaves.
+`MongoDBVFS` exposes databases containing `collections/` and `views/` directories.
+Each collection or view contains `schema.json` and `documents.jsonl`.
 
 Setup steps for the connection URI live at [MongoDB Credentials](/home/setup/mongodb).
 
@@ -18,12 +19,17 @@ pnpm add @struktoai/mirage-node mongodb
 import { MongoDBVFS, MountMode, Workspace } from '@struktoai/mirage-node'
 
 const mongo = new MongoDBVFS({
-  uri: process.env.MONGO_URI!,
+  uri: process.env.MONGODB_URI!,
   databases: ['app', 'analytics'],
 })
 
 const ws = new Workspace({ '/mongo': mongo }, { mode: MountMode.READ })
-await ws.shell('ls /mongo/app/users/')
+try {
+  const result = await ws.shell('ls /mongo/app/collections/users/')
+  console.log(result.stdoutText)
+} finally {
+  await ws.close()
+}
 ```
 
 ## Browser
@@ -32,22 +38,32 @@ await ws.shell('ls /mongo/app/users/')
 pnpm add @struktoai/mirage-browser
 ```
 
-The browser variant routes Mongo operations through an HTTP driver (no direct DB connection from the page). The browser examples ship a `mongo_proxy` Vite plugin that forwards to a server-side `mongodb` driver:
+The browser VFS sends HTTP requests to a backend route, which keeps the MongoDB
+connection URI on the server. This example expects `/api/mongo` on the same origin.
+The repository's [Vite middleware](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/browser/scripts/mongo_proxy.ts)
+supports the database listing below for local development.
 
 ```ts
 import { MongoDBVFS, MountMode, Workspace } from '@struktoai/mirage-browser'
 
-const mongo = new MongoDBVFS({
-  uri: 'mongodb-proxy://app',
-  httpDriver: { fetch: window.fetch },
-})
+const mongo = new MongoDBVFS({ uri: '/api/mongo' })
+const ws = new Workspace({ '/mongo': mongo }, { mode: MountMode.READ })
+
+try {
+  const result = await ws.shell('ls /mongo/')
+  console.log(result.stdoutText)
+} finally {
+  await ws.close()
+}
 ```
+
+The development proxy does not yet support document streaming or schema reads.
 
 ## Config
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `uri` | required | Mongo connection URI. Redacted in snapshots. |
+| `uri` | required | MongoDB connection URI in Node; HTTP endpoint in the browser. Redacted in snapshots. |
 | `databases` | none | Optional allowlist of database names. |
 | `maxDocLimit` | `5000` | Most documents one `tail -n` fetches; a count past it on a collection that long is refused (`File too large`). |
 
