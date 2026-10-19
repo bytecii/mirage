@@ -26,8 +26,8 @@ from mirage.vfs.types import VfsCall
 from mirage.view.types import SessionView
 
 if TYPE_CHECKING:
-    from mirage.context.session_context import Caller
     from mirage.workspace.files import Files
+    from mirage.workspace.session.session import SessionState
 
 
 class MountRootQuery(Protocol):
@@ -699,6 +699,44 @@ class CommandWord:
 
 
 @dataclass(frozen=True, slots=True)
+class CallerSession:
+    """The session a call is made as, as a method reads it.
+
+    Args:
+        session_id (str): the session's id.
+        cwd (str): its working directory when the method was asked.
+    """
+
+    session_id: str
+    cwd: str
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyCaller:
+    """Who makes the call a method judges, as the method reads it: a
+    copy of the facts, so nothing a method does to it reaches the
+    session or the call.
+
+    Args:
+        session (CallerSession | None): the session the call is made as,
+            None for the unbound host view.
+    """
+
+    session: CallerSession | None = None
+
+
+def policy_caller(session: "SessionState | None") -> PolicyCaller:
+    """``session`` as a method's ``ctx.caller`` reads it.
+
+    Args:
+        session (SessionState | None): the session the call is made as.
+    """
+    if session is None:
+        return PolicyCaller()
+    return PolicyCaller(CallerSession(session.session_id, session.cwd))
+
+
+@dataclass(frozen=True, slots=True)
 class CommandContext:
     """Facts about one classified command, as pre_command methods see it.
 
@@ -752,7 +790,7 @@ class CommandContext:
         vfs (Files | None): the session's files, read only: a write is
             refused and no method runs again for a read. Filled when a
             method is asked.
-        caller (Caller | None): who makes the call, read only: its
+        caller (PolicyCaller | None): who makes the call, read only: its
             ``session`` is the session above (``session_id``, ``cwd``).
             Filled when a method is asked.
     """
@@ -771,7 +809,7 @@ class CommandContext:
     write: bool = False
     session: SessionView | None = None
     vfs: "Files | None" = None
-    caller: "Caller | None" = None
+    caller: PolicyCaller | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -820,7 +858,7 @@ class RouteContext:
         session (SessionView | None): the session, read only: a write
             through it is refused.
         vfs (Files | None): the session's files, read only.
-        caller (Caller | None): who makes the call, read only: its
+        caller (PolicyCaller | None): who makes the call, read only: its
             ``session`` is the session above.
     """
 
@@ -829,7 +867,7 @@ class RouteContext:
     session_id: str
     session: SessionView | None = None
     vfs: "Files | None" = None
-    caller: "Caller | None" = None
+    caller: PolicyCaller | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -856,7 +894,7 @@ class VfsContext:
             None at an entry point that judges the mode itself.
         session (SessionView | None): the session, read only.
         vfs (Files | None): the session's files, read only.
-        caller (Caller | None): who makes the call, read only: its
+        caller (PolicyCaller | None): who makes the call, read only: its
             ``session`` is the session above.
     """
 
@@ -868,7 +906,7 @@ class VfsContext:
     mode: MountMode | None = None
     session: SessionView | None = None
     vfs: "Files | None" = None
-    caller: "Caller | None" = None
+    caller: PolicyCaller | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -928,7 +966,7 @@ class SessionContext:
             scope a rule to one agent (deny ``set`` for session X).
         session (SessionView | None): the session, read only.
         vfs (Files | None): the session's files, read only.
-        caller (Caller | None): who makes the call, read only: its
+        caller (PolicyCaller | None): who makes the call, read only: its
             ``session`` is the session above.
     """
 
@@ -938,7 +976,7 @@ class SessionContext:
     session_id: str = ""
     session: SessionView | None = None
     vfs: "Files | None" = None
-    caller: "Caller | None" = None
+    caller: PolicyCaller | None = None
 
 
 @dataclass(frozen=True, slots=True)

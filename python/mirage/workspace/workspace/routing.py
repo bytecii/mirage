@@ -17,7 +17,6 @@ import dataclasses
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from mirage.context.session_context import Caller
 from mirage.policy.decisions import op_question
 from mirage.policy.policies import agreed, settled
 from mirage.policy.types import (
@@ -27,6 +26,7 @@ from mirage.policy.types import (
     CommandContext,
     Deny,
     Pending,
+    PolicyCaller,
     Route,
     RouteContext,
 )
@@ -299,8 +299,8 @@ class Router:
 
         def handles(
             walked: SessionState,
-        ) -> tuple[SessionView | None, Files | None, Caller | None]:
-            found = views(walked.session_id, walked, None) if views else None
+        ) -> tuple[SessionView | None, Files | None, PolicyCaller | None]:
+            found = views(walked.session_id, walked) if views else None
             return found or (None, None, None)
 
         commands: list[CommandContext] = []

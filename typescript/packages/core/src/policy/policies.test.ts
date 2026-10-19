@@ -21,7 +21,6 @@ import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { Limit, MountMode, OnExceed, PathSpec } from '../types.ts'
 import { MountRegistry } from '../workspace/mount/registry.ts'
 import { Session, Workspace } from '../workspace/workspace/workspace.ts'
-import type { Caller } from '../context/session_context.ts'
 import type { Policy } from './base.ts'
 import { ebusy } from '../errors/fs.ts'
 import { MountRootPolicy } from './builtin/mount_root.ts'
@@ -39,7 +38,7 @@ import {
 } from './policies.ts'
 import { RulePolicy } from './rule.ts'
 import { scriptContext } from './script.ts'
-import { Outcome, type RouteContext } from './types.ts'
+import { Outcome, type PolicyCaller, type RouteContext } from './types.ts'
 import type {
   Action,
   Ask,
@@ -1240,7 +1239,7 @@ describe('what a method sees', () => {
   class SeesCaller implements Policy {
     readonly seen: [string, string, string][] = []
 
-    private note(method: string, ctx: { caller?: Caller }): void {
+    private note(method: string, ctx: { caller?: PolicyCaller }): void {
       const session = ctx.caller?.session
       if (session === undefined || session === null) throw new Error('no caller')
       this.seen.push([method, session.sessionId, session.cwd])
@@ -1280,6 +1279,40 @@ describe('what a method sees', () => {
       ])
       await ws.explain('cat /data/owner.txt', 'agent')
       expect(seer.seen.at(-1)).toEqual(['preCommand', 'agent', '/data'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class TouchesCaller implements Policy {
+    readonly refused: string[] = []
+    keys: string[] = []
+
+    preCommand(ctx: CommandContext): Action | null {
+      if (ctx.command !== 'cat') return null
+      const session = ctx.caller?.session
+      if (session === undefined || session === null) throw new Error('no caller')
+      try {
+        ;(session as { cwd: string }).cwd = '/'
+      } catch (err) {
+        if (err instanceof TypeError) this.refused.push('cwd')
+      }
+      this.keys = Object.keys(ctx.caller ?? {})
+      return null
+    }
+  }
+
+  it('cannot change the session through its caller', async () => {
+    const toucher = new TouchesCaller()
+    const ws = executableWorkspace(undefined, [toucher])
+    try {
+      await ws.vfs.write('/data/owner.txt', 'core\n')
+      ws.createSession('agent')
+      await ws.shell('cd /data', { sessionId: 'agent' })
+      await ws.shell('cat /data/owner.txt', { sessionId: 'agent' })
+      expect(toucher.refused).toEqual(['cwd'])
+      expect(toucher.keys).toEqual(['session'])
+      expect((await ws.shell('pwd', { sessionId: 'agent' })).stdoutText).toBe('/data\n')
     } finally {
       await ws.close()
     }

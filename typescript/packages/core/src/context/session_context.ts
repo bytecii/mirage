@@ -125,24 +125,6 @@ export interface Caller {
   readonly enclosing: JobConsole | null
 }
 
-// Who makes the call a method judges: added to the method contexts here,
-// where `Caller` lives. Read only: its `session` is the session the method
-// sees (`sessionId`, `cwd`). Filled when a method is asked.
-declare module '../policy/types.ts' {
-  interface CommandContext {
-    caller?: Caller
-  }
-  interface VfsContext {
-    caller?: Caller
-  }
-  interface SessionContext {
-    caller?: Caller
-  }
-  interface RouteContext {
-    caller?: Caller
-  }
-}
-
 /**
  * A dispatch that takes who makes the op: the dispatcher's own, and each
  * workspace function that hands it a caller. The runtime's DispatchFn

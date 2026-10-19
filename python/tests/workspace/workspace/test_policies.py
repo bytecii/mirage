@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
@@ -1781,6 +1781,43 @@ async def test_a_method_sees_who_makes_the_call():
         ]
         await ws.explain("cat /data/owner.txt", session_id="agent")
         assert seer.seen[-1] == ("pre_command", "agent", "/data")
+    finally:
+        await ws.close()
+
+
+class TouchesCaller(Policy):
+    def __init__(self) -> None:
+        self.refused: list[str] = []
+        self.fields: set[str] = set()
+
+    async def pre_command(self, ctx: CommandContext) -> Action | None:
+        if ctx.command == "cat":
+            caller = ctx.caller
+            assert caller is not None and caller.session is not None
+            try:
+                caller.session.cwd = "/"
+            except FrozenInstanceError:
+                self.refused.append("cwd")
+            self.fields = {f.name for f in fields(caller)}
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_method_cannot_change_the_session_through_its_caller():
+    toucher = TouchesCaller()
+    ws = Workspace(
+        {"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[toucher]
+    )
+    try:
+        await ws.vfs.write("/data/owner.txt", b"core\n")
+        ws.create_session("agent")
+        await ws.shell("cd /data", session_id="agent")
+        await ws.shell("cat /data/owner.txt", session_id="agent")
+        assert toucher.refused == ["cwd"]
+        assert toucher.fields == {"session"}
+        assert (await ws.shell("pwd", session_id="agent")).stdout == (
+            b"/data\n"
+        )
     finally:
         await ws.close()
 

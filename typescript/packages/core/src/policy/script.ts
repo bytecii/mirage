@@ -22,7 +22,6 @@ import { scriptEngine } from '../runtime/script.ts'
 import type { DispatchFn, RunResult } from '../runtime/types.ts'
 import { FileStat, PathSpec, type JsonValue } from '../types.ts'
 import { compareCodePoints } from '../utils/sort.ts'
-import type { Caller } from '../context/session_context.ts'
 import type { Policy } from './base.ts'
 import {
   CTX_ENV,
@@ -42,6 +41,7 @@ import {
   type CommandResultContext,
   type Deny,
   type ExecuteResultContext,
+  type PolicyCaller,
   type PolicyMethod,
   type ProfileScript,
   type Route,
@@ -67,7 +67,7 @@ const LIVE = new Set(['session', 'vfs'])
  * it, its session's id and working directory. Mirrors the Python
  * `_caller_data`.
  */
-function callerData(caller: Caller | undefined): JsonValue {
+function callerData(caller: PolicyCaller | undefined): JsonValue {
   if (caller === undefined) return null
   const session = caller.session
   return { session: session === null ? null : { session_id: session.sessionId, cwd: session.cwd } }
@@ -114,7 +114,7 @@ function plain(value: unknown, data = false): JsonValue {
         .map(([key, item]) => [
           named ? key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`) : key,
           named && key === 'caller'
-            ? callerData(item as Caller)
+            ? callerData(item as PolicyCaller)
             : plain(item, data || (value instanceof FileStat && key === 'extra')),
         ]),
     )

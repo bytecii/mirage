@@ -84,7 +84,7 @@ from mirage.policy import (
     ShellExplanation,
 )
 from mirage.policy.builtin import PlacementPolicy
-from mirage.policy.types import DryRun
+from mirage.policy.types import DryRun, PolicyCaller, policy_caller
 from mirage.process.child import ChildProcess
 from mirage.process.stdio import ProcessInput, ProcessOutput
 from mirage.process.supervisor import ProcessSupervisor
@@ -418,12 +418,12 @@ class Workspace:
         # call is made under when the method's is it (a call's cwd and env
         # included), else the session the id names, the default for none;
         # nothing for an id this workspace holds no session for. Its
-        # caller is the one the call is made by, with that session.
+        # caller is a copy of that session's id and working directory,
+        # so nothing a method does to it reaches the session.
         def views(
             session_id: str,
             session: SessionState | None = None,
-            caller: Caller | None = None,
-        ) -> tuple[SessionView, Files, Caller] | None:
+        ) -> tuple[SessionView, Files, PolicyCaller] | None:
             if session is None:
                 session = get_current_session_unless_foreign(self._session_mgr)
             if session is None or session_id not in ("", session.session_id):
@@ -441,7 +441,7 @@ class Workspace:
             return (
                 session_view(session, self.policies),
                 self.vfs._for_session(session.session_id),
-                replace(caller or current_caller(), session=session),
+                policy_caller(session),
             )
 
         self._registry.policies.views = views

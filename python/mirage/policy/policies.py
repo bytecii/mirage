@@ -56,6 +56,7 @@ from mirage.policy.types import (
     Hide,
     Outcome,
     Pending,
+    PolicyCaller,
     Route,
     RouteContext,
     SessionContext,
@@ -63,6 +64,7 @@ from mirage.policy.types import (
     VfsContext,
     VfsExplanation,
     VfsResultContext,
+    policy_caller,
 )
 from mirage.types import Limit, MountMode, PathSpec, Refusal
 from mirage.utils.abort import MirageAbortError
@@ -245,7 +247,7 @@ async def pre_vfs_gate(
         prefix=prefix,
         session_id=session_id,
         mode=mode,
-        caller=caller,
+        caller=policy_caller(caller.session),
     )
     trace = caller.explaining
     line = caller.refusals is not None
@@ -409,7 +411,7 @@ async def post_vfs_gate(
         prefix=prefix,
         session_id=session_id,
         mode=mode,
-        caller=caller,
+        caller=policy_caller(caller.session),
         result=result,
     )
     await _refuse_op(ctx, await policies.post_vfs(ctx), decisions, caller)
@@ -627,8 +629,8 @@ class Policies:
         self.decisions = Decisions()
         self.views: (
             Callable[
-                [str, "SessionState | None", Caller | None],
-                tuple[SessionView, "Files", Caller] | None,
+                [str, "SessionState | None"],
+                tuple[SessionView, "Files", PolicyCaller] | None,
             ]
             | None
         ) = None
@@ -800,7 +802,7 @@ class Policies:
                 continue
             name = type(policy).__name__
             handles = (
-                self.views(ctx.session_id, None, ctx.caller)
+                self.views(ctx.session_id, None)
                 if not rules_only
                 and self.views is not None
                 and ctx.session is None

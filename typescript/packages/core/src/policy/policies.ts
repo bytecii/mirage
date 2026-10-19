@@ -40,6 +40,7 @@ import {
   DryRun,
   Outcome,
   VALIDITY,
+  policyCaller,
   type Ask,
   type Claimant,
   type CommandContext,
@@ -272,7 +273,7 @@ export async function preVfsGate(
     sessionId,
     ...(issuer !== undefined ? { issuer } : {}),
     ...context,
-    caller: caller ?? currentCaller(),
+    caller: policyCaller((caller ?? currentCaller()).session),
   }
   const trace = caller === undefined ? explaining() : caller.explaining
   const line = caller === undefined ? lineRunning() : caller.refusals !== null
@@ -359,7 +360,7 @@ export async function postVfsGate(
     sessionId,
     ...(issuer !== undefined ? { issuer } : {}),
     ...context,
-    caller: caller ?? currentCaller(),
+    caller: policyCaller((caller ?? currentCaller()).session),
     result,
   }
   await refuseOp(ctx, await policies.postVfs(ctx), decisions, caller)
@@ -485,7 +486,6 @@ export class Policies {
     | ((
         sessionId: string,
         session?: SessionState,
-        caller?: Caller,
       ) => (Required<Pick<RouteContext, 'session' | 'caller'>> & Pick<RouteContext, 'vfs'>) | null)
     | null = null
 
@@ -619,7 +619,7 @@ export class Policies {
       const name = policy.constructor.name || 'policy'
       const handles =
         !rulesOnly && this.views !== null && seen.session === undefined
-          ? this.views(seen.sessionId ?? '', undefined, seen.caller)
+          ? this.views(seen.sessionId ?? '', undefined)
           : null
       if (handles !== null) seen = { ...seen, ...handles }
       const asked = seen

@@ -569,7 +569,7 @@ async def gate(
     # line explain walks is the walked one, not the stored one.
     views = registry.policies.views
     handles = (
-        views(session.session_id, session, None)
+        views(session.session_id, session)
         if views is not None and not rules_only
         else None
     )

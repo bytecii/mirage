@@ -541,6 +541,34 @@ export class CommandWord {
   }
 }
 
+/** The session a call is made as, as a method reads it. Mirrors Python's `CallerSession`. */
+export interface CallerSession {
+  readonly sessionId: string
+  /** Its working directory when the method was asked. */
+  readonly cwd: string
+}
+
+/**
+ * Who makes the call a method judges, as the method reads it: a frozen copy
+ * of the facts, so nothing a method does to it reaches the session or the
+ * call. `session` is null for the unbound host view. Mirrors Python's
+ * `PolicyCaller`.
+ */
+export interface PolicyCaller {
+  readonly session: CallerSession | null
+}
+
+/**
+ * `session` as a method's `ctx.caller` reads it. Mirrors Python's
+ * `policy_caller`.
+ */
+export function policyCaller(session: { sessionId: string; cwd: string } | null): PolicyCaller {
+  return Object.freeze({
+    session:
+      session === null ? null : Object.freeze({ sessionId: session.sessionId, cwd: session.cwd }),
+  })
+}
+
 /** Facts about one classified command, as preCommand methods see it. */
 export interface CommandContext {
   /**
@@ -604,6 +632,11 @@ export interface CommandContext {
   write?: boolean
   /** The session, read only: a write through it is refused. Filled when a method is asked. */
   session?: SessionView
+  /**
+   * Who makes the call, read only: its `session` is the session above
+   * (`sessionId`, `cwd`). Filled when a method is asked.
+   */
+  caller?: PolicyCaller
 }
 
 /**
@@ -631,6 +664,11 @@ export interface RouteContext {
   sessionId: string
   /** The session, read only: a write through it is refused. */
   session?: SessionView
+  /**
+   * Who makes the call, read only: its `session` is the session above
+   * (`sessionId`, `cwd`). Filled when a method is asked.
+   */
+  caller?: PolicyCaller
 }
 
 /** Facts about one VFS op, as preVfs methods see it. Fires at the
@@ -664,6 +702,11 @@ export interface VfsContext {
   mode?: MountMode
   /** The session, read only. */
   session?: SessionView
+  /**
+   * Who makes the call, read only: its `session` is the session above
+   * (`sessionId`, `cwd`). Filled when a method is asked.
+   */
+  caller?: PolicyCaller
 }
 
 /**
@@ -722,6 +765,11 @@ export interface SessionContext {
   sessionId: string
   /** The session, read only. */
   session?: SessionView
+  /**
+   * Who makes the call, read only: its `session` is the session above
+   * (`sessionId`, `cwd`). Filled when a method is asked.
+   */
+  caller?: PolicyCaller
 }
 
 /**

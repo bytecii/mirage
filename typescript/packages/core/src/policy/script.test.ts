@@ -28,6 +28,7 @@ import { Policies } from './policies.ts'
 import { ScriptPolicy, scriptAction, scriptContext } from './script.ts'
 import {
   CommandWord,
+  policyCaller,
   type CommandContext,
   type CommandResultContext,
   type ExecuteResultContext,
@@ -38,7 +39,7 @@ import {
   type VfsContext,
   type VfsResultContext,
 } from './types.ts'
-import { currentCaller, sessionAccess } from '../context/session_context.ts'
+import { sessionAccess } from '../context/session_context.ts'
 import { SessionState } from '../workspace/session/session.ts'
 
 // Mirrors python/tests/policy/test_script.py.
@@ -345,9 +346,9 @@ describe('scriptContext', () => {
 
   it("reads a caller as its session's id and working directory", () => {
     const session = new SessionState({ sessionId: 's', cwd: '/data' })
-    const data = scriptContext(ctx('cat', { caller: { ...currentCaller(), session } }))
+    const data = scriptContext(ctx('cat', { caller: policyCaller(session) }))
     expect(data.caller).toEqual({ session: { session_id: 's', cwd: '/data' } })
-    expect(scriptContext(ctx('cat', { caller: currentCaller() })).caller).toEqual({
+    expect(scriptContext(ctx('cat', { caller: policyCaller(null) })).caller).toEqual({
       session: null,
     })
     expect(scriptContext(ctx('cat'))).not.toHaveProperty('caller')

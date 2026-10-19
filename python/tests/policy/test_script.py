@@ -8,7 +8,7 @@ import pytest
 from mirage.commands.config import Context
 from mirage.commands.spec.types import WordKind
 from mirage.context import bind_caller, current_caller, reset_caller
-from mirage.context.session_context import Caller, session_access
+from mirage.context.session_context import session_access
 from mirage.policy.constants import (
     CTX_ENV,
     DEFAULT_ASK_REASON,
@@ -28,12 +28,14 @@ from mirage.policy.types import (
     CommandWord,
     Deny,
     ExecuteResultContext,
+    PolicyCaller,
     ProfileScript,
     Route,
     RouteContext,
     SessionContext,
     VfsContext,
     VfsResultContext,
+    policy_caller,
 )
 from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.language import LanguageRuntime
@@ -200,7 +202,7 @@ def _ctx(
     session_id: str = "s",
     session: SessionView | None = None,
     vfs: Files | None = None,
-    caller: Caller | None = None,
+    caller: PolicyCaller | None = None,
 ) -> CommandContext:
     return CommandContext(
         command=command,
@@ -336,9 +338,11 @@ def test_a_context_reads_as_its_fields_with_the_session_as_data():
 
 def test_a_caller_reads_as_its_sessions_id_and_working_directory():
     state = SessionState(session_id="s", cwd="/data")
-    data = script_context(_ctx(caller=Caller(session=state)))
+    data = script_context(_ctx(caller=policy_caller(state)))
     assert data["caller"] == {"session": {"session_id": "s", "cwd": "/data"}}
-    assert script_context(_ctx(caller=Caller()))["caller"] == {"session": None}
+    assert script_context(_ctx(caller=PolicyCaller()))["caller"] == {
+        "session": None
+    }
     assert script_context(_ctx())["caller"] is None
     json.dumps(data)
 

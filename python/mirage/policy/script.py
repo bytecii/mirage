@@ -24,7 +24,6 @@ from pydantic import BaseModel, ValidationError
 
 from mirage.commands.config import Context
 from mirage.context.session_context import (
-    Caller,
     bind_caller,
     current_caller,
     reset_caller,
@@ -48,6 +47,7 @@ from mirage.policy.types import (
     CommandResultContext,
     Deny,
     ExecuteResultContext,
+    PolicyCaller,
     ProfileScript,
     Route,
     RouteContext,
@@ -73,12 +73,12 @@ logger = logging.getLogger(__name__)
 _LIVE = frozenset({"session", "vfs"})
 
 
-def _caller_data(caller: Caller | None) -> JsonValue:
+def _caller_data(caller: PolicyCaller | None) -> JsonValue:
     """A context's caller as a program reads it: the facts a policy
     reads of it, its session's id and working directory.
 
     Args:
-        caller (Caller | None): who makes the call.
+        caller (PolicyCaller | None): who makes the call.
     """
     if caller is None:
         return None
