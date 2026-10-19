@@ -785,7 +785,7 @@
     },
     {
       "source": "/typescript/python",
-      "destination": "/typescript/runtime/python"
+      "destination": "/home/setup/runtime/pyodide"
     },
     {
       "source": "/typescript/runtime/sandbox",

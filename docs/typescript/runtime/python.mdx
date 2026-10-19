@@ -49,9 +49,8 @@ decoded strings.
 - An installed Python CLI gets bare `argv` (its name at index 0) and `stdin`
   (bytes, or `None`), as on Monty; Pyodide also keeps `sys.argv` and
   `sys.stdin`.
-- `input()`, `print()` and the text and buffer methods on `sys.stdin`,
-  `sys.stdout` and `sys.stderr` work. They are not real OS file descriptors,
-  so `select`, `poll`, `fcntl` and `os.read()` on descriptors 0, 1 or 2 do not.
+- Standard streams support text and `.buffer` I/O, but do not expose native
+  OS file descriptors.
 
 ### Files
 
