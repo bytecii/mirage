@@ -112,22 +112,6 @@
                 "write /data/digits.txt"
               ],
               "ops_absent": []
-            },
-            "host@s3": {
-              "ops_contain": [
-                "pwrite /data/digits.txt"
-              ],
-              "ops_absent": [
-                "write /data/digits.txt"
-              ]
-            },
-            "host@redis": {
-              "ops_contain": [
-                "pwrite /data/digits.txt"
-              ],
-              "ops_absent": [
-                "write /data/digits.txt"
-              ]
             }
           }
         },

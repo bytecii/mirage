@@ -12,10 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, openSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { connect } from 'node:net'
 import { join } from 'node:path'
 import { AuthMode } from '@struktoai/mirage-server/auth/config'
 import { defaultTokenFile, ensureTokenFile } from '@struktoai/mirage-server/auth/storage'
@@ -170,9 +171,16 @@ export class DaemonClient {
     }
   }
 
+  /**
+   * Ensure the daemon is reachable, optionally spawning it. `timeoutMs` is
+   * how long a spawned daemon has to answer `/v1/health`: a first start
+   * loads the whole server. A daemon that exits first ends the wait, unless
+   * another daemon already holds the port. Mirrors Python's
+   * `ensure_running`.
+   */
   async ensureRunning(opts: { allowSpawn?: boolean; timeoutMs?: number } = {}): Promise<void> {
     const allowSpawn = opts.allowSpawn ?? true
-    const timeoutMs = opts.timeoutMs ?? 5000
+    const timeoutMs = opts.timeoutMs ?? 30_000
     if (await this.isReachable()) return
     if (!isLocalUrl(this.settings.url)) {
       throw new DaemonUnreachable(`daemon not reachable at ${this.settings.url}`)
@@ -182,10 +190,18 @@ export class DaemonClient {
         `daemon not reachable at ${this.settings.url}; run \`mirage workspace create CONFIG.yaml\` to spawn one`,
       )
     }
-    this.spawnDaemon()
+    const daemon = this.spawnDaemon()
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if (await this.isReachable(300)) return
+      // Gone without answering: a crash, or a bind lost to a daemon another
+      // command spawned, which holds the port and is waited for.
+      const code = daemon.exitCode ?? daemon.signalCode
+      if (code !== null && !(await this.listening())) {
+        throw new DaemonUnreachable(
+          `daemon exited with code ${String(code)} before answering /v1/health; see ${join(mirageHome(), 'daemon.log')}`,
+        )
+      }
       await new Promise((r) => setTimeout(r, 100))
     }
     throw new DaemonUnreachable(
@@ -193,7 +209,28 @@ export class DaemonClient {
     )
   }
 
-  private spawnDaemon(): void {
+  /** Whether anything accepts a connection on the daemon's port. */
+  private listening(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const sock = connect({ host: new URL(this.settings.url).hostname, port: this.portFromUrl() })
+      const done = (up: boolean): void => {
+        sock.destroy()
+        resolve(up)
+      }
+      sock.setTimeout(300)
+      sock.once('connect', () => {
+        done(true)
+      })
+      sock.once('timeout', () => {
+        done(false)
+      })
+      sock.once('error', () => {
+        done(false)
+      })
+    })
+  }
+
+  private spawnDaemon(): ChildProcess {
     const table = readDaemonTable(mirageHome())
     validateDaemonTable(table)
     const env: Record<string, string> = {}
@@ -229,6 +266,7 @@ export class DaemonClient {
       console.error('failed to spawn daemon:', err)
     })
     child.unref()
+    return child
   }
 
   private resolvePort(table: Record<string, string>): number {

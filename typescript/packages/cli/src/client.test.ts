@@ -12,7 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DaemonConfigError } from '@struktoai/mirage-server/daemon_config'
@@ -56,6 +59,73 @@ describe('DaemonClient spawn config validation', () => {
     await expect(client.ensureRunning({ timeoutMs: 500 })).rejects.toThrow(DaemonUnreachable)
     expect(existsSync(join(home, 'auth_token'))).toBe(false)
     expect(existsSync(join(home, 'daemon.log'))).toBe(false)
+  })
+})
+
+describe('DaemonClient spawn wait', () => {
+  // Twins of test_a_daemon_that_exits_ends_the_wait and
+  // test_a_daemon_that_lost_the_bind_waits_for_the_winner.
+  let home: string
+  let originalHome: string | undefined
+  const gone = { exitCode: 3, signalCode: null } as unknown as ChildProcess
+  const spawned = (): void => {
+    vi.spyOn(
+      DaemonClient.prototype as unknown as { spawnDaemon: () => ChildProcess },
+      'spawnDaemon',
+    ).mockReturnValue(gone)
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'mirage-cli-client-'))
+    originalHome = process.env.MIRAGE_HOME
+    process.env.MIRAGE_HOME = home
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    if (originalHome === undefined) delete process.env.MIRAGE_HOME
+    else process.env.MIRAGE_HOME = originalHome
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it('ends when the spawned daemon exits', async () => {
+    const probe = createServer()
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+    const { port } = probe.address() as AddressInfo
+    await new Promise((resolve) => probe.close(resolve))
+    spawned()
+    const client = new DaemonClient({
+      url: `http://127.0.0.1:${String(port)}`,
+      authToken: 't',
+      idleGraceSeconds: 30,
+    })
+    const started = Date.now()
+    await expect(client.ensureRunning()).rejects.toThrow(/exited with code 3/)
+    expect(Date.now() - started).toBeLessThan(5000)
+  })
+
+  it('waits for the daemon that won the bind', async () => {
+    // Two commands spawned at once: the loser exits on a held port while
+    // the winner, already listening, is still starting up.
+    const asked: string[] = []
+    const server = createServer((req, res) => {
+      asked.push(req.url ?? '')
+      res.writeHead(asked.length > 3 ? 200 : 503).end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    spawned()
+    const client = new DaemonClient({
+      url: `http://127.0.0.1:${String(port)}`,
+      authToken: 't',
+      idleGraceSeconds: 30,
+    })
+    try {
+      await client.ensureRunning()
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+    expect([asked.length, asked.at(-1)]).toEqual([4, '/v1/health'])
   })
 })
 
