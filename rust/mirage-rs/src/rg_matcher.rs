@@ -500,7 +500,6 @@ pub(crate) struct Search {
     group_count: usize,
     matches: Growing<Match>,
     captures: Growing<Capture>,
-    seek_prefix: bool,
 }
 
 impl Search {
@@ -523,7 +522,6 @@ impl Search {
             group_count: program.nfa.group_info().group_len(PatternID::ZERO),
             matches: Growing::new(),
             captures: Growing::new(),
-            seek_prefix: true,
         }
     }
 
@@ -582,7 +580,6 @@ impl Search {
         self.building = None;
         self.matches.clear();
         self.captures.clear();
-        self.seek_prefix = true;
         self.phase = Phase::Reject { cursor: 0 };
     }
 
@@ -604,7 +601,6 @@ impl Search {
             }
             let prefix = program.filters.prefix.as_ref().filter(|_| {
                 matches!(self.phase, Phase::Byte)
-                    && self.seek_prefix
                     && self.current.ids.is_empty()
                     && !self.has_candidate
                     && !program.nfa.is_always_start_anchored()
@@ -621,7 +617,7 @@ impl Search {
                         self.phase = Phase::Done;
                         continue;
                     }
-                    Scan::UseExact => self.seek_prefix = false,
+                    Scan::UseExact => {}
                 }
             }
             self.one(program);
@@ -1153,6 +1149,38 @@ mod tests {
                 _ => panic!("the full prefix must remain reachable"),
             }
         }
+    }
+
+    #[test]
+    fn short_poll_keeps_prefix_scanning_available_to_later_polls() {
+        let program = rg_matcher::Program::with_options(
+            &["needle".to_owned()],
+            rg_matcher::Options::default(),
+        )
+        .unwrap();
+        let mut haystack = vec![b'x'; 2 * 1024 * 1024];
+        let start = haystack.len();
+        haystack.extend_from_slice(b"needle");
+        let mut search = program.start(haystack, true);
+        let mut calls = 0;
+        while !matches!(search.phase, rg_matcher::Phase::Byte) {
+            assert!(!search.step(&program, &mut 1));
+            calls += 1;
+            assert!(calls < 100);
+        }
+        assert!(!search.step(&program, &mut 1));
+        calls = 0;
+        while !search.step(&program, &mut 16_384) {
+            calls += 1;
+            assert!(calls < 256, "later polls needed {calls} calls");
+        }
+        assert_eq!(
+            search.matches(),
+            [rg_matcher::Match {
+                start,
+                end: start + 6
+            }]
+        );
     }
 
     #[test]
