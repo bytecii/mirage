@@ -1,15 +1,18 @@
 mod backtrack;
+mod class;
 mod hir;
 pub(crate) mod parse;
+pub(crate) mod posix;
+pub(crate) mod stream;
 
 use regex_automata::nfa::thompson::{self, WhichCaptures};
 use regex_automata::util::look::LookMatcher;
 use regex_automata::{Anchored, Input, MatchKind, hybrid, meta};
 use regex_syntax::hir::Hir;
 
-use self::backtrack::{Program, Scratch, unit_at};
+use self::backtrack::{Program, Scratch, Shape, unit_at};
 use self::hir::Lower;
-use self::parse::{Ast, TOO_BIG, Unit};
+use self::parse::{Ast, Dialect, TOO_BIG, Unit};
 
 /// What a search that may run out of steps comes back with.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,7 +43,7 @@ pub(crate) struct Options {
     pub(crate) extents: bool,
 }
 
-struct Automata {
+pub(crate) struct Automata {
     first: meta::Regex,
     cache: meta::Cache,
     longest: Option<(hybrid::dfa::DFA, hybrid::dfa::Cache)>,
@@ -76,7 +79,7 @@ pub(crate) struct Compiled {
 
 /// A byte that is no part of a character, which only a literal match of
 /// that same byte may take; in a set one matches nothing.
-fn has_raw_byte(ast: &Ast) -> bool {
+pub(crate) fn has_raw_byte(ast: &Ast) -> bool {
     let raw = |unit: &Unit| matches!(unit, Unit::Byte(_));
     match ast {
         Ast::Unit(unit) => raw(unit),
@@ -87,7 +90,7 @@ fn has_raw_byte(ast: &Ast) -> bool {
 }
 
 /// Whether `pos` falls inside a UTF-8 character of `hay`.
-fn splits_char(hay: &[u8], pos: usize) -> bool {
+pub(crate) fn splits_char(hay: &[u8], pos: usize) -> bool {
     (pos.saturating_sub(3)..pos).any(|start| {
         unit_at(hay, start, hay.len(), true)
             .is_some_and(|(unit, len)| matches!(unit, Unit::Char(_)) && start + len > pos)
@@ -95,7 +98,11 @@ fn splits_char(hay: &[u8], pos: usize) -> bool {
 }
 
 impl Automata {
-    fn new(hirs: &[Hir], terminator: u8, extents: bool) -> Result<Automata, &'static str> {
+    pub(crate) fn new(
+        hirs: &[Hir],
+        terminator: u8,
+        extents: bool,
+    ) -> Result<Automata, &'static str> {
         let first = meta::Builder::new()
             .configure(
                 meta::Config::new()
@@ -137,7 +144,7 @@ impl Automata {
 
     /// The leftmost match in `hay[from..to]`, never an empty one inside a
     /// character.
-    fn first(
+    pub(crate) fn first(
         &mut self,
         hay: &[u8],
         mut from: usize,
@@ -157,13 +164,18 @@ impl Automata {
 
     /// Where the longest match starting at `start` ends.
     fn longest(&mut self, hay: &[u8], start: usize, to: usize, first_end: usize) -> usize {
-        let Some((dfa, cache)) = &mut self.longest else {
-            return first_end;
-        };
+        self.longest_end(hay, start, to)
+            .map_or(first_end, |end| end.max(first_end))
+    }
+
+    /// Where the longest match starting at `start` ends, or None when the
+    /// automaton gave up.
+    pub(crate) fn longest_end(&mut self, hay: &[u8], start: usize, to: usize) -> Option<usize> {
+        let (dfa, cache) = self.longest.as_mut()?;
         let input = Input::new(hay).span(start..to).anchored(Anchored::Yes);
         match dfa.try_search_fwd(cache, &input) {
-            Ok(Some(end)) => end.offset().max(first_end),
-            _ => first_end,
+            Ok(Some(end)) => Some(end.offset()),
+            _ => None,
         }
     }
 }
@@ -174,19 +186,28 @@ impl Engine {
         let lower = Lower {
             ignore_case: options.ignore_case,
             utf8: options.utf8,
-            terminator: options.terminator,
+            terminator: Some(options.terminator),
+            multiline: false,
+            dot_skips_nul: false,
+        };
+        // Under UTF-8 a word is made of the locale's letters and digits, which
+        // the automata's word checks do not read: -w and the word anchors go
+        // to the backtracker, as they do for sed.
+        let shape = Shape {
+            ignore_case: options.ignore_case,
+            utf8: options.utf8,
+            multiline: false,
+            unicode_words: options.utf8,
+            consumed_newlines: false,
+            dot_skips_nul: false,
         };
         let mut hirs = Vec::new();
         let mut programs = Vec::new();
         for &ast in asts {
-            if ast.has_backref() || (options.utf8 && has_raw_byte(ast)) {
-                programs.push(Program::new(
-                    ast,
-                    word,
-                    options.line,
-                    options.ignore_case,
-                    options.utf8,
-                )?);
+            if ast.has_backref()
+                || (options.utf8 && (has_raw_byte(ast) || word || ast.has_word_look()))
+            {
+                programs.push(Program::new(ast, word, options.line, shape)?);
             } else {
                 hirs.push(lower.pattern(ast, word, options.line));
             }
@@ -328,7 +349,12 @@ impl Regex {
                     extents.push(None);
                 }
                 syntax => {
-                    let parsed = parse::parse(pattern, syntax == Syntax::Extended, options.utf8)?;
+                    let parsed = parse::parse(
+                        pattern,
+                        syntax == Syntax::Extended,
+                        options.utf8,
+                        Dialect::Grep,
+                    )?;
                     warnings.extend(parsed.warnings);
                     selects.push(parsed.ast);
                     extents.push(parsed.extents);
@@ -512,9 +538,11 @@ mod tests {
         assert_eq!(done(regex.find(hay, 0, 3, &mut unlimited())), None);
         let mut regex = compile(&["a.b"], Syntax::Extended, "");
         assert_eq!(done(regex.find(hay, 0, 3, &mut unlimited())), Some(0));
-        // Case folds ASCII only.
+        // Case folds by Unicode, as GNU does in C.UTF-8.
         let mut regex = compile(&["É"], Syntax::Extended, "ui");
-        assert!(matches(&mut regex, "é").is_empty());
+        assert_eq!(matches(&mut regex, "é"), ["é"]);
+        let mut regex = compile(&["[[:alpha:]]"], Syntax::Extended, "u");
+        assert_eq!(matches(&mut regex, "-é-"), ["é"]);
     }
 
     #[test]

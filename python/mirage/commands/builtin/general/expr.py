@@ -15,11 +15,12 @@
 import re
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.utils.bre import BreError, compile_bre
 from mirage.commands.config import Context, command
 from mirage.commands.quote import quote_word
 from mirage.commands.spec import SPECS
 from mirage.io.types import ByteSource, IOResult
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import posix_regex
 from mirage.shell.bytes import byte_view, from_byte_view, utf8_locale
 from mirage.types import PathSpec
 
@@ -391,13 +392,17 @@ def colon_match(subject: str, pattern: str, utf8: bool = False) -> str:
             expr's own prefix.
     """
     try:
-        compiled, groups = compile_bre(pattern, utf8)
-    except BreError as exc:
-        raise ExprError(f"expr: {exc}") from exc
-    found = compiled.match(subject)
-    if groups:
-        return "" if found is None else found.group(1) or ""
-    return "0" if found is None else str(found.end())
+        regex = posix_regex(pattern, utf8=utf8)
+    except RegexError as exc:
+        raise ExprError(f"expr: {exc.message}") from exc
+    found = regex.search(subject)
+    # The leftmost match is the one at the start, when there is one.
+    if found is not None and found[0] is not None and found[0][0] != 0:
+        found = None
+    if regex.groups:
+        group = None if found is None else found[1]
+        return "" if group is None else subject[group[0] : group[1]]
+    return "0" if found is None or found[0] is None else str(found[0][1])
 
 
 def do_index(text: str, chars: str) -> str:

@@ -36,6 +36,80 @@
       "flags": [
         "r"
       ]
+    },
+    {
+      "id": "sed_R_cuts_its_file_at_newlines_only",
+      "seq": 9970022,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'left\\rright\\nnext\\n' > /data/raux; printf '1\\n2\\n' > /data/rin; sed -s 'R /data/raux' /data/rin | od -An -c; rm /data/raux /data/rin",
+      "expect": {
+        "exit": 0,
+        "stdout": "   1  \\n   l   e   f   t  \\r   r   i   g   h   t  \\n   2  \\n   n\n   e   x   t  \\n\n",
+        "stderr": ""
+      },
+      "flags": [
+        "s"
+      ]
+    },
+    {
+      "id": "sed_0r_runs_where_the_script_reaches_it",
+      "seq": 9970030,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'AUX\\n' > /data/aux0; printf 'x\\n' | sed -e 'b done' -e '0r /data/aux0' -e ':done'; printf 'x\\n' | sed -e 'p' -e '0r /data/aux0'; printf 'x\\ny\\n' | sed -e '1d' -e '0r /data/aux0'; printf 'x\\n' | sed -e 'a A' -e '0r /data/aux0'; rm /data/aux0",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\nx\nAUX\nx\ny\nAUX\nx\nA\n",
+        "stderr": ""
+      },
+      "flags": [
+        "e"
+      ]
     }
   ]
 }

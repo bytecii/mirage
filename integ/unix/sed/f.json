@@ -147,6 +147,44 @@
       "flags": [
         "f"
       ]
+    },
+    {
+      "id": "sed_f_s_command_ends_at_a_crlf",
+      "seq": 9970018,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 's/a/b/g\\r\\n' > /data/crlf.sed; echo aa | sed -f /data/crlf.sed; printf 'p\\r\\n' > /data/crlf.sed; echo a | sed -n -f /data/crlf.sed; echo rc=$?; rm /data/crlf.sed",
+      "expect": {
+        "exit": 0,
+        "stdout": "bb\nrc=1\n",
+        "stderr": "sed: file /data/crlf.sed line 1: extra characters after command\n"
+      },
+      "flags": [
+        "f",
+        "n"
+      ]
     }
   ]
 }

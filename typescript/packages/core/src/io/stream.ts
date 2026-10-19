@@ -62,7 +62,9 @@ export async function drain(stream: ByteSource | null): Promise<void> {
   }
 }
 
-export async function closeQuietly<T>(stream: Uint8Array | AsyncIterable<T> | null): Promise<void> {
+export async function closeQuietly<T>(
+  stream: Uint8Array | AsyncIterable<T> | AsyncIterator<T> | null,
+): Promise<void> {
   if (stream === null || stream instanceof Uint8Array) return
   const closer = (stream as { return?: () => Promise<unknown> }).return
   if (typeof closer !== 'function') return

@@ -30,7 +30,12 @@ regex-automata = { version = "=0.4.7", default-features = false, features = [
   "perf-literal-substring",
   "perf-literal-multisubstring",
 ] }
-regex-syntax = { version = "=0.8.4", default-features = false, features = ["std"] }
+regex-syntax = { version = "=0.8.4", default-features = false, features = [
+  "std",
+  "unicode-bool",
+  "unicode-case",
+  "unicode-gencat",
+] }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 pyo3 = { version = "0.30", features = ["abi3-py311"] }

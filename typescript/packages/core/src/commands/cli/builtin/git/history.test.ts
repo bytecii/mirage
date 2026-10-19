@@ -1,9 +1,14 @@
 import { expect, it } from 'vitest'
 import { GIT } from './index.ts'
-import { decorationStyle, parseFlags } from './history.ts'
+import { decorationStyle, parseFlags, type LinePattern } from './history.ts'
 import { Decoration } from './types.ts'
 import { parseCommand, parseToKwargs } from '../../../spec/parser.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
+
+function hits(pattern: LinePattern | undefined, text: string): boolean {
+  if (pattern === undefined) return false
+  return pattern instanceof RegExp ? pattern.test(text) : pattern.search(text) !== null
+}
 
 it.each([
   [['--date-order', '--topo-order'], 'topo'],
@@ -45,7 +50,7 @@ it.each([
 
 it('keeps every --grep in both spellings', () => {
   const flags = logFlags(['--grep=fix', '--grep', 'typo'])
-  expect(flags.greps.map((pattern) => pattern.test('a typo'))).toEqual([false, true])
+  expect(flags.greps.map((pattern) => hits(pattern, 'a typo'))).toEqual([false, true])
   expect(flags.ignoreCase).toBe(false)
 })
 
@@ -54,8 +59,8 @@ it.each([[['-i']], [['--regexp-ignore-case']]])(
   (argv) => {
     const flags = logFlags(['--grep=FIX', '--author=BOB', ...argv])
     expect(flags.ignoreCase).toBe(true)
-    expect(flags.greps[0]?.test('fix: flag')).toBe(true)
-    expect(flags.authors[0]?.test('Bob <bob@example.com>')).toBe(true)
+    expect(hits(flags.greps[0], 'fix: flag')).toBe(true)
+    expect(hits(flags.authors[0], 'Bob <bob@example.com>')).toBe(true)
   },
 )
 
@@ -75,7 +80,7 @@ it.each([
   [['-P', '--grep=[]x]'], ']', true],
   [['-P', '--grep=a{x}'], 'a{x}', true],
 ])('reads every pattern with the last syntax in %j', (argv, line, expected) => {
-  expect(logFlags(argv).greps[0]?.test(line)).toBe(expected)
+  expect(hits(logFlags(argv).greps[0], line)).toBe(expected)
 })
 
 it.each([

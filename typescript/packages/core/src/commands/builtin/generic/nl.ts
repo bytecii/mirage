@@ -16,7 +16,9 @@ import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
-import { BreError, searchBre } from '../utils/bre.ts'
+import { RegexError } from '../../../rs/errors.ts'
+import { posixRegex, type PosixRegex } from '../../../rs/regex.ts'
+import { byteView, decodeText, encodeText, utf8Locale } from '../../../shell/bytes.ts'
 import { quoteText } from '../../quote.ts'
 import { stdinStream } from '../utils/stream.ts'
 import { perOperand } from '../utils/operands.ts'
@@ -27,12 +29,16 @@ import { specOf } from '../../spec/builtins.ts'
 import { C_SPACE, EOVERFLOW_TEXT, ERANGE_TEXT, INTMAX, INTMAX_MIN } from '../constants.ts'
 
 const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true })
 
-function shouldNumber(line: string, numbering: string, pattern: RegExp | null): boolean {
+function shouldNumber(
+  line: string,
+  numbering: string,
+  pattern: PosixRegex | null,
+  utf8: boolean,
+): boolean {
   if (numbering === 'n') return false
   if (numbering === 'a') return true
-  if (numbering === 'p' && pattern !== null) return pattern.test(line)
+  if (numbering === 'p' && pattern !== null) return pattern.search(byteView(line, utf8)) !== null
   return line.trim() !== ''
 }
 
@@ -68,7 +74,7 @@ function sectionDelimiters(delimiter: string): Record<string, string> {
 
 interface NlConfig {
   numbering: Record<string, string>
-  patterns: Record<string, RegExp | null>
+  patterns: Record<string, PosixRegex | null>
   start: bigint
   increment: bigint
   width: number
@@ -77,6 +83,7 @@ interface NlConfig {
   delimiters: Record<string, string>
   joinBlankLines: number
   noRenumber: boolean
+  utf8: boolean
 }
 
 interface NlState {
@@ -135,7 +142,7 @@ function renderLine(line: string, config: NlConfig, state: NlState): Uint8Array 
   }
   const numbering = config.numbering[state.section] ?? 'n'
   const pattern = config.patterns[state.section] ?? null
-  let numberLine = shouldNumber(line, numbering, pattern)
+  let numberLine = shouldNumber(line, numbering, pattern, config.utf8)
   if (numbering === 'a' && line === '') {
     state.blankRun += 1
     numberLine = state.blankRun >= config.joinBlankLines
@@ -152,9 +159,9 @@ function renderLine(line: string, config: NlConfig, state: NlState): Uint8Array 
     } else {
       state.number = advanced
     }
-    return ENC.encode(`${prefix}${config.separator}${line}\n`)
+    return encodeText(`${prefix}${config.separator}${line}\n`)
   }
-  return ENC.encode(`${blankPrefix(config)}${line}\n`)
+  return encodeText(`${blankPrefix(config)}${line}\n`)
 }
 
 // Number one source's lines, stopping if the counter overflows.
@@ -182,7 +189,9 @@ async function* nlStream(
   const iter = new AsyncLineIterator(source)
   try {
     for await (const raw of iter) {
-      const line = DEC.decode(raw)
+      // A byte that is no part of a character stays itself, for the match and
+      // the output alike.
+      const line = decodeText(raw)
       const rendered = renderLine(line, config, state)
       if (rendered === null) {
         io.exitCode = 1
@@ -205,16 +214,17 @@ async function* nlStream(
 // Anything but a/t/n/p was already refused by optionErrors, and so was a `p`
 // style whose BRE does not compile, so this cannot throw.
 //
-// The pattern is a POSIX BRE, not this host's dialect: GNU compiles it with
-// `RE_SYNTAX_POSIX_BASIC`, where `\(` groups and a bare `(` is a literal --
-// the inverse of both JavaScript `RegExp` and python `re`. It goes through the
-// shared translator so the two hosts cannot answer differently, which is what
-// they did when each handed the text to its own engine (`nl -b 'p['` said
-// `Invalid regular expression: /[/: Unterminated character class` here and
-// `unterminated character set at position 0` there, and neither was GNU's
-// `Invalid regular expression`).
-function parseNumbering(raw: string): [string, RegExp | null] {
-  if (raw.startsWith('p')) return ['p', searchBre(raw.slice(1))]
+// The pattern is a POSIX BRE, not this host's dialect: `\(` groups and a bare
+// `(` is a literal -- the inverse of both JavaScript `RegExp` and python `re`.
+// Both hosts match it in mirage-rs, so they cannot answer differently, which
+// is what they did when each handed the text to its own engine (`nl -b 'p['`
+// said `Invalid regular expression: /[/: Unterminated character class` here
+// and `unterminated character set at position 0` there, and neither was GNU's
+// `Invalid regular expression`). Lines are matched by characters under a UTF-8
+// locale and by bytes in the C locale, as GNU matches them.
+function parseNumbering(raw: string, utf8: boolean): [string, PosixRegex | null] {
+  if (raw.startsWith('p'))
+    return ['p', posixRegex(byteView(raw.slice(1), utf8), false, 'posix', false, utf8)]
   return [raw.slice(0, 1), null]
 }
 
@@ -354,12 +364,12 @@ function styleError(dest: string, raw: string): string | null {
 // FATAL family: `nl -b 'p[' -h bogus` prints the regex line alone, so nothing
 // to its right is scanned and the `--help` hint never arrives (section U6).
 // Only the three style options carry a pattern; `-n` never does.
-function patternError(dest: string, raw: string): string | null {
+function patternError(dest: string, raw: string, utf8: boolean): string | null {
   if (STYLE_OPTIONS[dest] === undefined || !raw.startsWith('p')) return null
   try {
-    searchBre(raw.slice(1))
+    posixRegex(byteView(raw.slice(1), utf8), false, 'posix', false, utf8)
   } catch (err) {
-    if (!(err instanceof BreError)) throw err
+    if (!(err instanceof RegexError)) throw err
     return `nl: ${err.message}`
   }
   return null
@@ -402,7 +412,7 @@ function patternError(dest: string, raw: string): string | null {
 //
 // Returns the stderr text, one newline-terminated line per error, or null
 // when GNU accepts every value.
-function optionErrors(fl: FlagView): string | null {
+function optionErrors(fl: FlagView, utf8: boolean): string | null {
   const camps = new Map<string, readonly [string, bigint, bigint | null, bigint | null]>(
     NUMERIC_OPTIONS.map(([dest, label, low, high, overflowLow]) => [
       dest,
@@ -429,7 +439,7 @@ function optionErrors(fl: FlagView): string | null {
       // The style was accepted, so a `p` style now compiles its BRE, and a
       // failure is fatal where it stands -- with every style line deferred
       // before it flushed first.
-      const fatal = patternError(dest, raw)
+      const fatal = patternError(dest, raw, utf8)
       if (fatal !== null) return render([...deferred, fatal])
     }
   }
@@ -464,9 +474,9 @@ function last(fl: FlagView, name: string): string | undefined {
   return fl.asList(name).at(-1)
 }
 
-export function parseFlags(bag: Record<string, FlagValue>): NlFlags | string {
+export function parseFlags(bag: Record<string, FlagValue>, utf8 = false): NlFlags | string {
   const fl = new FlagView(bag, specOf('nl'))
-  const optionErr = optionErrors(fl)
+  const optionErr = optionErrors(fl, utf8)
   if (optionErr !== null) return optionErr
   const rawDelimiter = fl.asStr('section_delimiter')
   return {
@@ -490,10 +500,10 @@ export function parseFlags(bag: Record<string, FlagValue>): NlFlags | string {
 // Turn nl's raw option words into the config the renderer reads, the way the
 // python `nl()` entry point does. Every value here was already validated by
 // parseFlags, so no parse can fail and no style can fall through.
-function buildConfig(parsed: NlFlags): NlConfig {
-  const [bodyNumbering, bodyPattern] = parseNumbering(parsed.bodyNumberingRaw ?? 't')
-  const [footerNumbering, footerPattern] = parseNumbering(parsed.footerNumberingRaw ?? 'n')
-  const [headerNumbering, headerPattern] = parseNumbering(parsed.headerNumberingRaw ?? 'n')
+function buildConfig(parsed: NlFlags, utf8: boolean): NlConfig {
+  const [bodyNumbering, bodyPattern] = parseNumbering(parsed.bodyNumberingRaw ?? 't', utf8)
+  const [footerNumbering, footerPattern] = parseNumbering(parsed.footerNumberingRaw ?? 'n', utf8)
+  const [headerNumbering, headerPattern] = parseNumbering(parsed.headerNumberingRaw ?? 'n', utf8)
   return {
     numbering: { body: bodyNumbering, footer: footerNumbering, header: headerNumbering },
     patterns: { body: bodyPattern, footer: footerPattern, header: headerPattern },
@@ -506,6 +516,7 @@ function buildConfig(parsed: NlFlags): NlConfig {
     joinBlankLines:
       parsed.joinBlankLinesRaw === undefined ? 1 : Number.parseInt(parsed.joinBlankLinesRaw, 10),
     noRenumber: parsed.noRenumber,
+    utf8,
   }
 }
 
@@ -515,11 +526,12 @@ export function nlGeneric(
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): CommandFnResult {
   stream = stdinStream(stream, ctx.stdin)
-  const parsed = parseFlags(ctx.flags)
+  const utf8 = utf8Locale(ctx.env)
+  const parsed = parseFlags(ctx.flags, utf8)
   if (typeof parsed === 'string') {
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(parsed) })]
   }
-  const config = buildConfig(parsed)
+  const config = buildConfig(parsed, utf8)
   // The IOResult is handed back before the stream is drained, so the
   // overflow abort reports by mutating it as it goes.
   const io = new IOResult()

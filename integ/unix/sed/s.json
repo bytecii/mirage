@@ -140,6 +140,74 @@
         "stdout": "z\nZZ\nb\nQb\nab\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "sed_s_control_backslash_takes_both_backslashes",
+      "seq": 9970020,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'a\\034b\\n' | sed 's/\\c\\\\/X/'; printf 'ab\\n' | sed 's/a/<\\c\\\\>/' | od -An -c; printf 'a\\034b\\n' | sed 'y/\\c\\\\/Z/'; printf 'ab\\n' | sed 's/a/\\c/'",
+      "expect": {
+        "exit": 0,
+        "stdout": "aXb\n   < 034   >   b  \\n\naZb\n\\b\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sed_s_control_escape_capitalizes_ascii_only",
+      "seq": 9970027,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'a\\237b\\001\\n' | LC_ALL=C sed \"s/\\\\c$(printf '\\337')/X/;s/\\\\ca/Y/\" | od -An -c",
+      "expect": {
+        "exit": 0,
+        "stdout": "   a   X   b   Y  \\n\n",
+        "stderr": ""
+      }
     }
   ]
 }

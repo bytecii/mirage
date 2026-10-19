@@ -20,6 +20,7 @@ from mirage.commands.builtin.grep_prefilter import (
     folds_by_unicode,
     required_needles,
 )
+from mirage.rs.regex import LineRegex
 
 
 def classify_pattern(
@@ -106,7 +107,7 @@ def whole_word_literals(
 
 def search_terms(
     pattern: str | None,
-    matcher: re.Pattern[str],
+    matcher: re.Pattern[str] | LineRegex,
     fixed_string: bool,
     whole_word: bool,
     line_regexp: bool,
@@ -123,25 +124,31 @@ def search_terms(
 
     Args:
         pattern (str | None): the newline-joined patterns.
-        matcher (re.Pattern[str]): the compiled line matcher.
+        matcher (re.Pattern[str] | LineRegex): the compiled line matcher.
         fixed_string (bool): True if -F is set.
         whole_word (bool): True if -w is set.
         line_regexp (bool): True if -x is set.
         ignore_case (bool): the match folds case.
     """
     words = whole_word_literals(pattern, fixed_string, whole_word, line_regexp)
+    unicode = (
+        matcher.unicode_folds
+        if isinstance(matcher, LineRegex)
+        else folds_by_unicode(matcher)
+    )
     if words is not None and not (
         ignore_case
         and not all(
-            w.isascii()
-            and not (
-                folds_by_unicode(matcher) and UNICODE_FOLDED & set(w.lower())
-            )
+            w.isascii() and not (unicode and UNICODE_FOLDED & set(w.lower()))
             for w in words
         )
     ):
         return tuple(words), True
-    needles = required_needles(matcher)
+    needles = (
+        matcher.needles
+        if isinstance(matcher, LineRegex)
+        else required_needles(matcher)
+    )
     if needles is None or any(len(n) < _MIN_SEARCH_LITERAL for n in needles):
         return None
     return tuple(n.decode("ascii") for n in needles), False

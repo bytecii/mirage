@@ -6,8 +6,9 @@ import { FULL_SHA } from './format.ts'
 import git from 'isomorphic-git'
 import { VERSION } from '../../../../version.ts'
 
-import { compilePosixRegex } from '../../../../utils/posix.ts'
-import { BreError, PosixSyntax, translateEre } from '../../../builtin/utils/bre.ts'
+import { RegexError } from '../../../../rs/errors.ts'
+import { posixRegex, type PosixRegex } from '../../../../rs/regex.ts'
+import { byteView, utf8Locale } from '../../../../shell/bytes.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import { IOResult } from '../../../../io/types.ts'
 import type { CommandFnResult, Context } from '../../../config.ts'
@@ -316,13 +317,15 @@ export async function config(
         new IOResult({ exitCode: 129, stderr: ENC.encode('error: wrong number of arguments\n') }),
       ]
     const key = texts[0] ?? ''
-    let pattern: RegExp | null
+    // git matches keys by the locale: bytes in C, characters in UTF-8.
+    const utf8 = utf8Locale(ctx.env)
+    let pattern: PosixRegex | null
     try {
       pattern = regexp
-        ? compilePosixRegex(translateEre(configKey(key), PosixSyntax.EXTENDED)[0])
+        ? posixRegex(byteView(configKey(key), utf8), true, 'posix', false, utf8)
         : null
     } catch (err) {
-      if (!(err instanceof SyntaxError) && !(err instanceof BreError)) throw err
+      if (!(err instanceof RegexError)) throw err
       return [
         null,
         new IOResult({ exitCode: 6, stderr: ENC.encode(`error: invalid key pattern: ${key}\n`) }),
@@ -331,7 +334,12 @@ export async function config(
     const values: [string, string, string][] = []
     for (const { source, data } of sources) {
       for (const line of await configLines(new TextDecoder().decode(data))) {
-        if (listing || (pattern ? pattern.test(line.path) : line.path === configKey(key)))
+        if (
+          listing ||
+          (pattern
+            ? pattern.search(byteView(line.path, utf8)) !== null
+            : line.path === configKey(key))
+        )
           values.push([source, line.path, line.value ?? ''])
       }
     }

@@ -12,17 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import re
-
-from mirage.commands.builtin.utils.bre import (
-    BreError,
-    PosixSyntax,
-    translate_ere,
-)
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import posix_escape, posix_regex
 from mirage.shell.array import make_array
+from mirage.shell.bytes import byte_view, text_view, utf8_locale
 from mirage.shell.errors import ArithError, ReadonlyError
 from mirage.utils.fnmatch import fnmatch
-from mirage.utils.posix import compile_posix_regex
 from mirage.workspace.executor.builtins.condition.constants import (
     FILE_PAIR_BINARY,
     INT_COMPARATORS,
@@ -48,11 +43,17 @@ from mirage.workspace.session.state import (
     random_reader,
     seed_var,
     session_arith,
+    visible_env,
 )
 
 
-async def eval_cond(ctx: CondContext, node: CondNode) -> bool:
-    """Evaluate a structured ``[[ ]]`` expression tree.
+async def eval_cond(ctx: CondContext, node: CondNode) -> int:
+    """Evaluate a structured ``[[ ]]`` expression tree to its status.
+
+    A test answers 0 or 1, and a regex that does not compile answers 2
+    without a word. The expression answers what its last test did:
+    ``&&`` stops at the first failure, ``||`` at the first success, and
+    ``!`` turns any failure into 0.
 
     Args:
         ctx (CondContext): evaluation context.
@@ -61,26 +62,60 @@ async def eval_cond(ctx: CondContext, node: CondNode) -> bool:
     if isinstance(node, CondLazy):
         return await eval_cond(ctx, await node.expand())
     if isinstance(node, CondAnd):
-        return await eval_cond(ctx, node.left) and await eval_cond(
-            ctx, node.right
-        )
+        left = await eval_cond(ctx, node.left)
+        return left if left else await eval_cond(ctx, node.right)
     if isinstance(node, CondOr):
-        return await eval_cond(ctx, node.left) or await eval_cond(
-            ctx, node.right
-        )
+        left = await eval_cond(ctx, node.left)
+        return 0 if left == 0 else await eval_cond(ctx, node.right)
     if isinstance(node, CondNot):
-        return not await eval_cond(ctx, node.inner)
+        return 0 if await eval_cond(ctx, node.inner) else 1
     if isinstance(node, CondUnary):
         if node.op not in UNARY_OPS:
             raise CondError("mirage: conditional unary operator expected")
-        return await apply_unary(ctx, node.op, node.operand)
+        return 0 if await apply_unary(ctx, node.op, node.operand) else 1
     if isinstance(node, CondBinary):
-        return await _eval_cond_binary(ctx, node)
-    return node.value != ""
+        if node.op == "=~":
+            return _regex_status(ctx, node)
+        return 0 if await _eval_cond_binary(ctx, node) else 1
+    return 0 if node.value != "" else 1
+
+
+def _regex_status(ctx: CondContext, node: CondBinary) -> int:
+    """Match ``[[ left =~ right ]]``, filling BASH_REMATCH on a match.
+
+    Args:
+        ctx (CondContext): evaluation context.
+        node (CondBinary): the ``=~`` condition.
+    """
+    pattern = posix_escape(node.right) if node.right_literal else node.right
+    # The shell's own locale, which an unexported LC_ALL sets as well.
+    utf8 = utf8_locale(visible_env(ctx.session))
+    left = byte_view(node.left, utf8)
+    # bash hands the pattern to regcomp(REG_EXTENDED): glibc's
+    # POSIX_EXTENDED syntax, where `\d` is a `d` and `(?` is refused.
+    try:
+        found = posix_regex(byte_view(pattern, utf8), True, utf8=utf8).search(
+            left
+        )
+    except RegexError:
+        return 2
+    if found is None:
+        return 1
+    seed_var(
+        ctx.session,
+        "BASH_REMATCH",
+        make_array(
+            [
+                "" if span is None else text_view(left[slice(*span)], utf8)
+                for span in found
+            ]
+        ),
+    )
+    return 0
 
 
 async def _eval_cond_binary(ctx: CondContext, node: CondBinary) -> bool:
-    """Evaluate a ``[[ ]]`` binary: pattern/regex/string/arith semantics.
+    """Evaluate a ``[[ ]]`` binary: pattern/string/arith semantics.
 
     Args:
         ctx (CondContext): evaluation context.
@@ -93,22 +128,6 @@ async def _eval_cond_binary(ctx: CondContext, node: CondBinary) -> bool:
         return fnmatch(node.left, node.right, extglob=True)
     if node.op == "!=":
         return not fnmatch(node.left, node.right, extglob=True)
-    if node.op == "=~":
-        pattern = re.escape(node.right) if node.right_literal else node.right
-        # bash hands the pattern to regcomp(REG_EXTENDED): glibc's
-        # POSIX_EXTENDED syntax, where `\d` is a `d` and `(?` is refused.
-        try:
-            source = translate_ere(pattern, PosixSyntax.EXTENDED)[0]
-            match = compile_posix_regex(source).search(node.left)
-        except (BreError, re.error):
-            raise CondError("mirage: syntax error in conditional expression")
-        if match is None:
-            return False
-        groups = [g if g is not None else "" for g in match.groups()]
-        seed_var(
-            ctx.session, "BASH_REMATCH", make_array([match.group(0), *groups])
-        )
-        return True
     if node.op == "<":
         return node.left < node.right
     if node.op == ">":

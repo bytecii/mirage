@@ -286,6 +286,7 @@ pub fn open(kind: &str, config: &[u8]) -> Result<Box<dyn Stream>, StreamError> {
         "jq_format" => jq::open_format(config),
         "jq_decode" => jq::open_decode(config),
         "printf" => printf::open(config),
+        "regex" => regex::stream::open(config),
         "rg" => rg::open(config),
         "rg_format" => rg_format::open(config),
         "sort" => sort::open(config),

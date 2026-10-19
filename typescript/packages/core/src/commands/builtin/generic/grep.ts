@@ -30,7 +30,8 @@ import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
 import {
   NEVER_MATCH,
-  compilePattern,
+  compilePerl,
+  type LineMatcher,
   matcherSyntax,
   patternWarnings,
   resolvePattern,
@@ -154,15 +155,10 @@ function ignoresCase(fl: FlagView): boolean {
  * What grep warns once for the line, before it reads a file: an obsolete -u,
  * then the pattern's compile-time warnings. Mirrors Python's `line_warnings`.
  */
-export function lineWarnings(
-  fl: FlagView,
-  f: FlagSet,
-  pattern: string,
-  neverMatch: boolean,
-): string {
+export function lineWarnings(fl: FlagView, matcher: LineMatcher | null): string {
   return (
     (fl.asBool('unix_byte_offsets') ? UNIX_BYTE_OFFSETS : '') +
-    (neverMatch || f.fixedString ? '' : patternWarnings(pattern, f.syntax))
+    (matcher === null ? '' : patternWarnings(matcher))
   )
 }
 
@@ -316,16 +312,14 @@ export async function grepGeneric(
     if (f.syntax === RegexSyntax.PERL) {
       pat = resolution.neverMatch
         ? new RegExp(NEVER_MATCH)
-        : compilePattern(
+        : compilePerl(
             byteView(resolution.pattern, utf8),
             f.ignoreCase,
-            f.fixedString,
             f.wholeWord,
-            f.syntax,
             utf8,
             f.lineRegexp,
           )
-      warning = ENC.encode(lineWarnings(fl, f, resolution.pattern, resolution.neverMatch))
+      warning = ENC.encode(lineWarnings(fl, null))
     } else {
       const [opened, warnings] = await openGrep(
         streamConfig(f, resolution.neverMatch ? null : resolution.pattern, utf8),

@@ -13,44 +13,45 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-import re
 from collections.abc import (
     AsyncGenerator,
     AsyncIterator,
     Awaitable,
     Callable,
     Mapping,
+    Sequence,
 )
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from typing import TypeAlias
 
 from mirage.commands.builtin.sed_script import (
     SED_STDERR,
     SED_STDOUT,
-    SedAddr,
+    AddressKind,
+    ReplacementPart,
+    SedAddress,
     SedCommand,
     SedProgram,
     SedRegex,
-    sed_regex_flags,
+    SedSubstitution,
 )
-from mirage.commands.builtin.utils.stream import never_opened
-from mirage.commands.spec.usage import read_fail_exit_code
-from mirage.errors.constants import FS_ERRORS, READ_FAILURES
+from mirage.errors.constants import FS_ERRORS
 from mirage.errors.fs import fs_strerror
-from mirage.errors.render import fs_error_line
-from mirage.io.async_line_iterator import AsyncLineIterator
-from mirage.io.cooperative import chunks
+from mirage.errors.types import DotWalkLoop
+from mirage.io.stream import close_quietly, ensure_stream
 from mirage.io.types import ByteSource
 from mirage.io.yield_budget import YieldBudget
+from mirage.rs.regex import Groups, PosixRegex
 from mirage.shell.bytes import byte_view, from_byte_view, text_view
-from mirage.types import PathSpec
-from mirage.utils.posix import compile_posix_regex
 
 logger = logging.getLogger(__name__)
 
 SED_LINE_LENGTH = 70
-
-_LIST_ESCAPES = {
+# How many pieces of output a run holds before it hands them on.
+_CHUNK = 1 << 12
+_ESCAPES = {
+    0x5C: "\\\\",
     0x07: "\\a",
     0x08: "\\b",
     0x0C: "\\f",
@@ -60,119 +61,45 @@ _LIST_ESCAPES = {
     0x0B: "\\v",
 }
 
-_RANGE_INACTIVE = 0
-_RANGE_ACTIVE = 1
-_RANGE_CLOSED = 2
 
-
-def list_line(text: str, width: int, utf8: bool = False) -> str:
-    """Render a pattern space the way GNU's ``l`` (do_list) does.
-
-    A printable ASCII byte is itself and a backslash is doubled; ``\\a \\b
-    \\f \\n \\r \\t \\v`` are C escapes; every other byte, each byte of a
-    multibyte character included and whatever the locale, is three octal
-    digits. A line is folded with ``\\`` before an escape that would reach
-    ``width`` columns, so 69 characters and the ``\\`` fill a 70-column
-    line; ``width`` 0 turns folding off, and 1 folds before every
-    character. The end is ``$``.
-
-    Args:
-        text (str): the pattern space.
-        width (int): the line length.
-        utf8 (bool): the pattern space is text under a UTF-8 locale.
-    """
-    out: list[str] = []
-    col = 0
-    for ch in text:
-        for byte in from_byte_view(ch, utf8):
-            if 0x20 <= byte < 0x7F:
-                piece = "\\\\" if byte == 0x5C else chr(byte)
-            else:
-                piece = _LIST_ESCAPES.get(byte, f"\\{byte:03o}")
-            if width > 0 and col + len(piece) >= width:
-                out.append("\\\n")
-                col = 0
-            out.append(piece)
-            col += len(piece)
-    out.append("$\n")
-    return "".join(out)
-
-
-@dataclass
-class SedOutput:
-    """One output stream and whether its last line lacked a newline."""
-
-    chunks: list[str] = field(default_factory=list)
-    missing_newline: bool = False
-
-    def flush_newline(self) -> None:
-        """GNU's output_missing_newline.
-
-        A line written without its newline gets it the moment anything
-        else goes to the same stream.
-        """
-        if self.missing_newline:
-            self.chunks.append("\n")
-            self.missing_newline = False
-
-    def line(self, text: str, newline: bool) -> None:
-        self.flush_newline()
-        self.chunks.append(text)
-        if newline:
-            self.chunks.append("\n")
-        else:
-            self.missing_newline = True
-
-    def raw(self, text: str) -> None:
-        self.chunks.append(text)
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SedFileText:
-    """A file ``r`` or ``R`` names, read before the run."""
+    """An ``r`` or ``R`` file read whole, as a byte view."""
 
     text: str
 
 
-@dataclass(frozen=True)
-class SedFileError:
-    """A file ``r`` or ``R`` names that opened and failed to read.
-
-    A directory does: GNU panics with ``error`` when it gets there.
-    """
-
-    error: str
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SedFileSource:
-    """A lazily opened auxiliary file."""
+    """An ``r`` or ``R`` file read when the script gets to it."""
 
-    read: Callable[[], AsyncIterator[bytes]]
-
-
-# A file `r` or `R` names: None when it could not be opened (GNU reads
-# that as empty).
-SedFileContent = SedFileText | SedFileError | SedFileSource | None
+    open: Callable[[], AsyncIterator[bytes]]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class SedFileError:
+    """An ``r`` or ``R`` file that opens and cannot be read: GNU reports
+    ``message`` and exits 4 when it gets there."""
+
+    message: str
+
+
+SedFileContent: TypeAlias = SedFileText | SedFileSource | SedFileError | None
+
+
+@dataclass(slots=True)
 class SedInput:
-    """One input operand in order: its text, or the stream it is read
-    from as the run reaches it."""
+    """One input: its name as ``F`` prints it (``-`` for stdin) and its
+    bytes."""
 
     name: str
-    text: str | None = None
-    source: ByteSource | None = None
+    source: ByteSource
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class SedRunOptions:
-    """How a machine runs.
-
-    ``files`` is what each ``r`` file holds now; ``reader_files`` what
-    each ``R`` file held when the script was compiled.
-    """
+    """How a script runs: -n, -s (which -i implies), -l, the ``r`` and
+    ``R`` files and whether the text is UTF-8."""
 
     suppress: bool = False
     separate: bool = False
@@ -182,717 +109,1037 @@ class SedRunOptions:
     utf8: bool = False
 
 
-class SedPanic(Exception):
-    """Stop the run the way GNU's panic exits: a message, then exit 4."""
+@dataclass(slots=True)
+class SedOutput:
+    """One output sed writes, as byte views, and whether its last line
+    went out without the newline the input lacked: anything written
+    after it puts that newline first."""
 
-    def __init__(self, message: str, code: int = 4) -> None:
+    chunks: list[str] = field(default_factory=list)
+    missing_newline: bool = False
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        if self.missing_newline:
+            self.chunks.append("\n")
+            self.missing_newline = False
+        self.chunks.append(text)
+
+    def line(self, text: str, newline: bool) -> None:
+        if self.missing_newline:
+            self.chunks.append("\n")
+            self.missing_newline = False
+        self.chunks.append(text)
+        if newline:
+            self.chunks.append("\n")
+        else:
+            self.missing_newline = True
+
+
+class _Panic(Exception):
+    """sed stops: ``message`` goes to stderr and it exits ``code``."""
+
+    def __init__(self, message: str, code: int) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
 
 
-@dataclass
-class _InputLine:
-    text: str
-    chomped: bool
+# The failures of opening an input, which GNU reports and reads on past
+# (exit 2); any other is a read error that stops it (exit 4).
+_OPEN_ERRORS = (
+    FileNotFoundError,
+    PermissionError,
+    NotADirectoryError,
+    DotWalkLoop,
+)
 
 
-@dataclass
-class _Reader:
-    lines: list[str]
-    pos: int = 0
+_Entry: TypeAlias = tuple[str, str]
 
 
-def _reader_lines(text: str) -> list[str]:
-    """Cut an ``R`` file into lines, each with its newline if it had one.
+def _opens_failed(exc: BaseException) -> bool:
+    return isinstance(exc, _OPEN_ERRORS)
 
-    Args:
-        text (str): the file's text.
-    """
-    out: list[str] = []
-    start = 0
-    while start < len(text):
-        nl = text.find("\n", start)
-        end = len(text) if nl < 0 else nl + 1
-        out.append(text[start:end])
-        start = end
+
+def _read_error(name: str, exc: BaseException) -> _Panic:
+    return _Panic(f"sed: read error on {name}: {fs_strerror(exc) or exc}\n", 4)
+
+
+def _quit_code(number: int | None) -> int:
+    """The status ``q`` and ``Q`` exit with: the low byte of their number,
+    except that -1 (low 32 bits all ones) exits 0, as sed 4.9 does."""
+    if number is None or number == -1:
+        return 0
+    return number & 0xFF
+
+
+def _zero_line(cmd: SedCommand) -> bool:
+    """Whether the command is addressed by line 0 alone (``0r``)."""
+    first = cmd.addr1
+    return (
+        first is not None
+        and cmd.addr2 is None
+        and first.kind is AddressKind.LINE
+        and first.number == 0
+    )
+
+
+def _cut_lines(text: str) -> list[str]:
+    """``text`` cut after each newline, and only there."""
+    lines = text.split("\n")
+    out = [line + "\n" for line in lines[:-1]]
+    if lines[-1]:
+        out.append(lines[-1])
     return out
 
 
-def _case_mapped(text: str, upper: bool, utf8: bool = False) -> str:
-    """``text`` with its ASCII letters mapped, as the C locale maps them.
+@dataclass(slots=True)
+class _Line:
+    text: str
+    newline: bool
+    source: int
+
+
+class _Reader:
+    """The lines of one byte source, read through one growing buffer: a
+    line's pieces are searched once each and copied once, however many
+    chunks it arrives in.
 
     Args:
-        text (str): a byte view.
-        upper (bool): map to upper case rather than lower.
-        utf8 (bool): ``text`` is the text itself, under a UTF-8 locale.
+        source (ByteSource): the bytes.
+        utf8 (bool): a UTF-8 locale.
+        budget (YieldBudget): the machine's budget, which each pull
+            takes too, so a line that never ends still lets the loop run.
     """
-    raw = from_byte_view(text, utf8)
-    return byte_view(raw.upper() if upper else raw.lower(), utf8)
 
+    def __init__(
+        self, source: ByteSource, utf8: bool, budget: YieldBudget
+    ) -> None:
+        self.chunks = ensure_stream(source)
+        self.utf8 = utf8
+        self.budget = budget
+        self.buffer = bytearray()
+        # Where the unread bytes start, and how far a newline was looked
+        # for among them.
+        self.start = 0
+        self.scanned = 0
+        self.ended = False
+        self.started = False
 
-def _apply_repl(m: "re.Match[str]", repl: str, utf8: bool = False) -> str:
-    """Expand a GNU sed replacement against a match.
-
-    ``&`` is the whole match, ``\\1``..``\\9`` are groups, ``\\&`` is a
-    literal ``&``, ``\\n``/``\\t`` are newline/tab, and ``\\X`` is a
-    literal X.
-
-    ``\\U`` and ``\\L`` map everything after them to upper or lower case
-    until ``\\E`` or the other one; ``\\u`` and ``\\l`` map only the next
-    character, and one that lands on an empty group passes to what
-    directly follows the group. Every case escape drops a one-shot still
-    waiting, written before it or carried to it, so the later of two
-    one-shots wins: GNU sed 4.9's ``setup_replacement`` cuts the
-    replacement at each escape and ``append_replacement`` hands a carried
-    one-shot to the next piece only. The C locale maps ASCII letters only,
-    so a byte above 0x7f is written as it is; GNU 4.9 writes 0xff for it,
-    which is not copied.
-
-    Args:
-        m (re.Match): The regex match for the current substitution.
-        repl (str): The sed replacement template.
-        utf8 (bool): the match is text under a UTF-8 locale; the case
-            escapes still map ASCII letters only.
-    """
-    out: list[str] = []
-    sticky: bool | None = None
-    pending: bool | None = None
-    carried: bool | None = None
-
-    def emit(piece: str, group: bool = False) -> None:
-        nonlocal pending, carried
-        first = pending if pending is not None else carried
-        own = pending is not None
-        pending = carried = None
-        if not piece:
-            if group and own:
-                carried = first
+    async def _pull(self) -> None:
+        await self.budget.run()
+        chunk = await anext(self.chunks, None)
+        if chunk is None:
+            self.ended = True
             return
-        if first is not None:
-            out.append(_case_mapped(piece[0], first, utf8))
-            piece = piece[1:]
-        out.append(
-            piece if sticky is None else _case_mapped(piece, sticky, utf8)
-        )
+        self.started = True
+        if self.start > len(self.buffer) // 2:
+            del self.buffer[: self.start]
+            self.scanned -= self.start
+            self.start = 0
+        self.buffer += chunk
 
-    i = 0
-    while i < len(repl):
-        ch = repl[i]
-        if ch == "\\" and i + 1 < len(repl):
-            nxt = repl[i + 1]
-            if nxt in "0123456789":
-                emit(m.group(int(nxt)) or "", group=True)
-            elif nxt in "ULE":
-                sticky = None if nxt == "E" else nxt == "U"
-                pending = carried = None
-            elif nxt in "ul":
-                pending = nxt == "u"
-                carried = None
-            elif nxt == "n":
-                emit("\n")
-            elif nxt == "t":
-                emit("\t")
+    async def peek(self) -> bool:
+        """Whether another byte follows, pulling no more than it takes
+        to see one."""
+        while self.start >= len(self.buffer):
+            if self.ended:
+                return False
+            await self._pull()
+        return True
+
+    def _newline(self) -> int:
+        cut = self.buffer.find(b"\n", max(self.scanned, self.start))
+        if cut < 0:
+            self.scanned = len(self.buffer)
+        return cut
+
+    def has_line(self) -> bool:
+        """Whether the next line is in hand without a pull."""
+        return self.ended or self._newline() >= 0
+
+    async def line(self) -> tuple[str, bool] | None:
+        while True:
+            cut = self._newline()
+            if cut >= 0:
+                raw = bytes(self.buffer[self.start : cut])
+                self.start = self.scanned = cut + 1
+                return byte_view(raw, self.utf8), True
+            if self.ended:
+                if self.start >= len(self.buffer):
+                    return None
+                raw = bytes(self.buffer[self.start :])
+                self.start = self.scanned = len(self.buffer)
+                return byte_view(raw, self.utf8), False
+            await self._pull()
+
+
+class _Feed:
+    """The input lines, one input after another, with the one-byte
+    look-ahead sed needs for ``$``, ``n`` and ``N``: an input that fails
+    as it is looked into ends there without a word, where reading on
+    reports it.
+
+    Args:
+        machine (SedMachine): whose diagnostics the feed records.
+        inputs (Sequence[SedInput]): the inputs in order.
+    """
+
+    def __init__(self, machine: "SedMachine", inputs: Sequence[SedInput]):
+        self.machine = machine
+        self.inputs = list(inputs)
+        self.index = -1
+        self.reader: _Reader | None = None
+
+    def name(self, index: int) -> str:
+        return self.inputs[index].name
+
+    def waits(self) -> bool:
+        """Whether the next line takes a pull, which may wait on the
+        input."""
+        if self.reader is None:
+            return self.index + 1 < len(self.inputs)
+        return not self.reader.has_line()
+
+    async def _next_of_reader(self) -> _Line | None:
+        reader = self.reader
+        assert reader is not None
+        name = self.name(self.index)
+        try:
+            got = await reader.line()
+        except FS_ERRORS as exc:
+            self.reader = None
+            if _opens_failed(exc) and not reader.started:
+                self.machine.bad_input(name, exc)
+                return None
+            shown = "stdin" if name == "-" else name
+            raise _Panic(
+                f"sed: read error on {shown}: {fs_strerror(exc) or exc}\n", 4
+            ) from exc
+        if got is None:
+            self.reader = None
+            return None
+        return _Line(got[0], got[1], self.index)
+
+    def _advance(self) -> bool:
+        if self.index + 1 >= len(self.inputs):
+            return False
+        self.index += 1
+        self.reader = _Reader(
+            self.inputs[self.index].source,
+            self.machine.opts.utf8,
+            self.machine.budget,
+        )
+        return True
+
+    async def read(self) -> _Line | None:
+        while True:
+            if self.reader is not None:
+                got = await self._next_of_reader()
+                if got is not None:
+                    return got
+            if not self._advance():
+                return None
+
+    async def _peek(self) -> bool:
+        reader = self.reader
+        assert reader is not None
+        try:
+            if await reader.peek():
+                return True
+        except FS_ERRORS as exc:
+            if _opens_failed(exc) and not reader.started:
+                self.machine.bad_input(self.name(self.index), exc)
             else:
-                emit(nxt)
-            i += 2
-        elif ch == "&":
-            emit(m.group(0), group=True)
-            i += 1
-        else:
-            emit(ch)
-            i += 1
+                logger.debug("sed look-ahead ends at a failed read: %s", exc)
+        self.reader = None
+        return False
+
+    async def more(self, within: bool) -> bool:
+        """Whether another line follows, in the current input only when
+        ``within``.
+
+        Args:
+            within (bool): stop at the end of the current input.
+        """
+        while True:
+            if self.reader is not None and await self._peek():
+                return True
+            if within or not self._advance():
+                return False
+
+
+def _ascii_case(text: str, upper: bool) -> str:
+    if text.isascii():
+        return text.upper() if upper else text.lower()
+    return "".join(
+        (ch.upper() if upper else ch.lower()) if ch.isascii() else ch
+        for ch in text
+    )
+
+
+def _unicode_case(text: str, upper: bool) -> str:
+    out = []
+    for ch in text:
+        other = ch.upper() if upper else ch.lower()
+        out.append(other if len(other) == 1 else ch)
     return "".join(out)
 
 
 class SedMachine:
-    """GNU sed 4.9's execute.c over a compiled program.
+    """Runs a compiled script over its inputs as GNU sed 4.9 does.
 
-    One machine lives for the whole command: the ``w`` files, the ``R``
-    readers, the hold space and the last regex carry across its runs, so
-    -i can run it once per file. ``stdout`` collects what goes to stdout
-    and /dev/stdout; ``process`` returns the main output, which is stdout
-    itself unless -i sends it to the file.
+    The pattern and hold spaces, the append queue, the ranges and the
+    ``w`` outputs live here; ``process`` reads the inputs and yields what
+    the script prints, as byte views.
+
+    Args:
+        program (SedProgram): the compiled script.
+        opts (SedRunOptions): how it runs.
     """
 
     def __init__(self, program: SedProgram, opts: SedRunOptions) -> None:
-        self._budget = YieldBudget()
-        self._reader: AsyncLineIterator | None = None
         self.program = program
         self.opts = opts
-        self._files = opts.files
-        self.no_default_output = opts.suppress or program.no_default_output
-        self.stdout = SedOutput()
-        self.stderr_lines: list[str] = []
+        self.quiet = opts.suppress or program.quiet
         self.wfiles: dict[str, SedOutput] = {
             name: SedOutput()
             for name in program.wfiles
             if name not in (SED_STDOUT, SED_STDERR)
         }
-        self.quit_code: int | None = None
+        self.stdout = SedOutput()
+        self._stderr: list[str] = []
+        self._error_out = SedOutput()
         self.panic_code: int | None = None
-        self.bad_code = 0
-        self._compiled: dict[tuple[SedRegex, bool], re.Pattern[str]] = {}
-        self._readers: dict[str, _Reader | AsyncLineIterator | None] = {}
-        self._range_state = [_RANGE_INACTIVE] * len(program.commands)
-        self._a2_number = [0] * len(program.commands)
-        self._special_out = SedOutput(self.stdout.chunks)
-        self._special_err = SedOutput()
-        self._last_regex: SedRegex | None = None
-        self._main = self.stdout
-        self._inputs: list[SedInput] = []
-        self._file_idx = 0
-        self._next_line: _InputLine | None = None
-        self._file_name = "-"
-        self._reset_at_next_file = True
-        self._line_number = 0
-        self._pattern = ""
-        self._chomped = True
-        self._hold = ""
+        self._bad = False
+        self._quit: int | None = None
+        self._last: PosixRegex | None = None
+        self.hold = ""
+        # Whether the hold space's text ended in a newline when read: it
+        # travels with the text into the pattern space.
+        self._hold_newline = True
+        self.line = 0
+        # Each open range and, for `addr,+N`, the line it ends on.
+        self._ranges: dict[int, int] = {}
+        # Line-number ranges that have started, which never start again.
+        self._begun: set[int] = set()
+        self._readers: dict[str, list[str] | _Reader | None] = {}
+        # Readers a new input under -s left behind, closed with the rest.
+        self._stale: list[_Reader] = []
+        self._out = SedOutput()
+        # The rest of each `r` file in `_out`: the piece it follows, its
+        # name and its stream.
+        self._tails: list[tuple[int, str, AsyncIterator[bytes]]] = []
+        self.budget = YieldBudget()
+        # Where the line `_cycle` hands back resumes: 0 for `D`, a branch's
+        # target for a cycle that stopped to hand its output on.
+        self._resume = 0
+        # Whether that line resumes the `n` it stopped in after its print.
+        self._reading = False
+        # The commands that may look ahead or read: before one of them,
+        # output waiting on the input goes out first.
+        self._reads = [
+            cmd.name in "nN"
+            or any(
+                addr is not None and addr.kind is AddressKind.LAST
+                for addr in (cmd.addr1, cmd.addr2)
+            )
+            for cmd in program.commands
+        ]
+        self._queue: list[_Entry] = []
         self._replaced = False
-        self._append_queue: list[tuple[str, str | None]] = []
-
-    def stderr(self) -> str:
-        """What the program wrote to /dev/stderr, then the error lines."""
-        return text_view(
-            "".join(self._special_err.chunks), self.opts.utf8
-        ) + "".join(self.stderr_lines)
-
-    def exit_code(self) -> int:
-        """The exit status GNU would end with after the runs so far."""
-        if self.panic_code is not None:
-            return self.panic_code
-        if self.bad_code:
-            return self.bad_code
-        return (self.quit_code or 0) & 0xFF
+        self._source = -1
+        self._started = False
+        self._inline = True
+        self._stdout_alias = SedOutput(self._out.chunks)
+        self._feed = _Feed(self, [])
+        self._case = _unicode_case if opts.utf8 else _ascii_case
 
     def stopped(self) -> bool:
-        """Whether a ``q``, ``Q`` or panic ended the run."""
-        return self.quit_code is not None or self.panic_code is not None
+        return self._quit is not None or self.panic_code is not None
+
+    def set_files(self, files: Mapping[str, SedFileContent]) -> None:
+        self.opts.files = files
+
+    def stderr(self) -> str:
+        return "".join(self._stderr)
+
+    def exit_code(self) -> int:
+        if self.panic_code is not None:
+            return self.panic_code
+        if self._bad:
+            return 2
+        return self._quit or 0
+
+    def bad_input(self, name: str, exc: BaseException) -> None:
+        self._bad = True
+        self._stderr.append(
+            f"sed: can't read {name}: {fs_strerror(exc) or exc}\n"
+        )
+
+    def _output(self, name: str) -> SedOutput:
+        if name == SED_STDOUT:
+            return self._stdout_alias if self._inline else self.stdout
+        if name == SED_STDERR:
+            return self._error_out
+        return self.wfiles[name]
+
+    def _restart(self) -> None:
+        """A new input under -s or -i: line numbers, the hold space,
+        ranges and ``R`` readers start over."""
+        self.line = 0
+        self.hold = ""
+        self._hold_newline = True
+        self._ranges = {}
+        self._begun = set()
+        self._readers, stale = {}, self._readers
+        self._stale.extend(
+            reader for reader in stale.values() if isinstance(reader, _Reader)
+        )
+        self._open_ranges()
+
+    def _open_ranges(self) -> None:
+        for index, cmd in enumerate(self.program.commands):
+            first = cmd.addr1
+            if (
+                first is not None
+                and cmd.addr2 is not None
+                and first.kind is AddressKind.LINE
+                and first.number == 0
+            ):
+                self._ranges[index] = 0
+                self._begun.add(index)
+
+    async def _take(self, feed: _Feed) -> _Line | None:
+        got = await feed.read()
+        if got is None:
+            return None
+        if got.source != self._source:
+            if self.opts.separate and self._source != -1:
+                self._restart()
+            self._source = got.source
+        self.line += 1
+        self._replaced = False
+        return got
 
     async def process(
         self,
-        inputs: list[SedInput],
-        to_stdout: bool,
-        flush: Callable[[], Awaitable[None]] | None = None,
+        inputs: Sequence[SedInput],
+        inline: bool,
+        flush: Callable[[], Awaitable[None]],
     ) -> AsyncGenerator[str, None]:
-        """Run the program over ``inputs`` as one stream.
-
-        With ``separate`` each file is its own stream. The main output is
-        yielded as it is reached: stdout's, or, when ``to_stdout`` is
-        False, a fresh stream's (-i's per-file output).
+        """Run the script over ``inputs`` and yield what it prints.
 
         Args:
-            inputs (list[SedInput]): the operands in order.
-            to_stdout (bool): whether the main output is stdout.
+            inputs (Sequence[SedInput]): the inputs, in order.
+            inline (bool): ``w /dev/stdout`` writes into what is yielded;
+                otherwise it collects in ``stdout`` (-i).
+            flush (Callable[[], Awaitable[None]]): drains the ``w``
+                files, called after a cycle that wrote to one.
         """
-        out = self.stdout if to_stdout else SedOutput()
-        self._main = out
-        self._inputs = inputs
-        self._file_idx = 0
-        self._next_line = None
-        self._reset_at_next_file = True
+        self._inline = inline
+        self._out = SedOutput()
+        # `w /dev/stdout` is its own stream into the same output, so a line
+        # it writes without a newline does not hold back the next print.
+        self._stdout_alias = SedOutput(self._out.chunks)
+        self._source = -1
+        if self.opts.separate or not self._started:
+            self._restart()
+        self._started = True
+        feed = _Feed(self, inputs)
+        self._feed = feed
         try:
-            while not self.stopped():
-                if flush is not None:
-                    await flush()
-                if self._append_queue:
-                    async with aclosing(self._dump_append_queue()) as steps:
-                        async for _ in steps:
-                            if out.chunks:
-                                chunk = "".join(out.chunks)
-                                out.chunks.clear()
-                                yield chunk
-                if out.chunks:
-                    chunk = "".join(out.chunks)
-                    out.chunks.clear()
+            async with aclosing(self._run(feed, flush)) as chunks:
+                async for chunk in chunks:
                     yield chunk
-                if not await self._read_pattern_space(False):
-                    break
-                async with aclosing(self._execute_program()) as steps:
-                    async for status in steps:
-                        if flush is not None:
-                            await flush()
-                        if status != -1:
-                            self.quit_code = status
-                        if out.chunks:
-                            yield "".join(out.chunks)
-                            out.chunks.clear()
-        except SedPanic as exc:
-            self.panic_code = exc.code
-            self.stderr_lines.append(exc.message)
         finally:
-            if self._reader is not None:
-                await self._reader.discard()
-            for reader in self._readers.values():
-                if isinstance(reader, AsyncLineIterator):
-                    await reader.discard()
-        if out.chunks:
-            yield "".join(out.chunks)
-            out.chunks.clear()
+            # Inputs a `q` or a failure left unread, the `r` files a reader
+            # left before their end and the `R` readers close here rather
+            # than when they are collected.
+            for given in inputs:
+                await close_quietly(given.source)
+            tails, self._tails = self._tails, []
+            for _, _, tail in tails:
+                await close_quietly(tail)
+            await self._close_readers()
 
-    def _reset_addresses(self) -> None:
-        for i, cmd in enumerate(self.program.commands):
-            a1 = cmd.a1
-            self._range_state[i] = (
-                _RANGE_ACTIVE
-                if a1 is not None and a1.kind == "num" and a1.n == 0
-                else _RANGE_INACTIVE
-            )
+    async def _close_readers(self) -> None:
+        readers, self._readers = self._readers, {}
+        stale, self._stale = self._stale, []
+        for reader in [*stale, *readers.values()]:
+            if isinstance(reader, _Reader):
+                await close_quietly(reader.chunks)
 
-    def _open_next_file(self) -> bool:
-        if self._file_idx >= len(self._inputs):
-            return False
-        nxt = self._inputs[self._file_idx]
-        self._file_idx += 1
-        self._file_name = nxt.name
-        self._reader = AsyncLineIterator(
-            nxt.source
-            if nxt.source is not None
-            else from_byte_view(nxt.text or "", self.opts.utf8)
-        )
-        self._next_line = None
-        return True
-
-    async def _more(self, peek: bool = False) -> bool:
-        """Read this operand's next line ahead; whether there is one.
-
-        A failed operand goes GNU sed 4.9's ways. One that never opens (a
-        missing file; stdin is always open) is reported, exit 2, and the
-        run reads on. One that opens and then fails to read (a directory,
-        or a read that breaks off) panics, exit 4. The look-ahead of
-        ``$``, ``n`` and ``N`` only peeks for one more byte, so a line
-        still arriving never holds it up: a peek that fails reads as the
-        operand's end, and a byte already buffered leaves the failure to
-        the read that takes the line.
-
-        Args:
-            peek (bool): ask for one more byte rather than read the line.
-        """
-        if self._next_line is not None:
-            return True
-        if self._reader is None:
-            return False
+    async def _run(
+        self, feed: _Feed, flush: Callable[[], Awaitable[None]]
+    ) -> AsyncGenerator[str, None]:
         try:
-            if peek:
-                return await self._reader.peek()
-            raw, chomped = await self._reader.read_until(b"\n")
-        except FS_ERRORS as exc:
-            path = PathSpec.from_str_path(self._file_name)
-            unopened = never_opened(self._reader, path, exc)
-            await self._reader.discard()
-            self._reader = None
-            if unopened:
-                self.stderr_lines.append(fs_error_line("sed", path, exc))
-                self.bad_code = max(
-                    self.bad_code, read_fail_exit_code("sed", exc)
+            line = await self._take(feed)
+            pc = 0
+            while line is not None and not self.stopped():
+                again = await self._cycle(line, pc)
+                pc = self._resume
+                if any(out.chunks for out in self.wfiles.values()):
+                    await flush()
+                if self._error_out.chunks:
+                    self._stderr.append(
+                        text_view(
+                            "".join(self._error_out.chunks), self.opts.utf8
+                        )
+                    )
+                    self._error_out.chunks.clear()
+                if self._full() or (self._pending() and feed.waits()):
+                    async with aclosing(self._drain()) as pieces:
+                        async for piece in pieces:
+                            yield piece
+                if again is not None:
+                    line = again
+                    continue
+                if self.stopped():
+                    break
+                line = await self._take(feed)
+        except _Panic as exc:
+            self._stderr.append(exc.message)
+            self.panic_code = exc.code
+        if self._error_out.chunks:
+            self._stderr.append(
+                text_view("".join(self._error_out.chunks), self.opts.utf8)
+            )
+            self._error_out.chunks.clear()
+        async with aclosing(self._drain()) as pieces:
+            async for piece in pieces:
+                yield piece
+
+    def _full(self) -> bool:
+        """Whether what a loop has printed, to the output or to a ``w``
+        file, should go out before it runs on."""
+        return (
+            bool(self._tails)
+            or len(self._out.chunks) >= _CHUNK
+            or any(len(out.chunks) >= _CHUNK for out in self.wfiles.values())
+        )
+
+    def _pending(self) -> bool:
+        return bool(self._tails or self._out.chunks)
+
+    def _held(self) -> bool:
+        """Whether output would wait behind a read that may wait."""
+        return self._pending() and self._feed.waits()
+
+    async def _drain(self) -> AsyncGenerator[str, None]:
+        """Hand on what the run has printed, each ``r`` file streamed
+        where it goes out."""
+        chunks = self._out.chunks
+        tails = self._tails
+        at = 0
+        for index, (cut, name, tail) in enumerate(tails):
+            # The files not streamed yet stay where an early close of the
+            # run finds them.
+            self._tails = tails[index:]
+            if cut > at:
+                yield "".join(chunks[at:cut])
+            at = cut
+            try:
+                async for chunk in tail:
+                    if chunk:
+                        yield byte_view(chunk, self.opts.utf8)
+            except FS_ERRORS as exc:
+                # GNU stops where the file fails: what was printed after
+                # it never goes out.
+                failed = _read_error(name, exc)
+                self._stderr.append(failed.message)
+                self.panic_code = failed.code
+                for _, _, later in tails[index + 1 :]:
+                    await close_quietly(later)
+                self._tails = []
+                chunks.clear()
+                return
+            finally:
+                await close_quietly(tail)
+        self._tails = []
+        rest = "".join(chunks[at:])
+        chunks.clear()
+        if rest:
+            yield rest
+
+    async def _is_last(self) -> bool:
+        return not await self._feed.more(self.opts.separate)
+
+    async def _more(self) -> bool:
+        """Whether ``n`` or ``N`` has a line to read: under -s only in
+        the input they are in, whose end is then theirs as the last
+        input's would be, and sed goes on with the next."""
+        return await self._feed.more(self.opts.separate)
+
+    def _regex(self, sed_regex: SedRegex) -> PosixRegex:
+        regex = sed_regex.regex
+        if regex is None:
+            if self._last is None:
+                raise _Panic(
+                    "sed: -e expression #1, char 0: "
+                    "no previous regular expression\n",
+                    1,
                 )
-                return False
-            if peek:
-                return False
-            name = "stdin" if self._file_name == "-" else self._file_name
-            raise SedPanic(
-                f"sed: read error on {name}: {fs_strerror(exc) or exc}\n"
-            ) from exc
-        if raw or chomped:
-            self._next_line = _InputLine(
-                byte_view(raw, self.opts.utf8), chomped
-            )
-        return self._next_line is not None
+            return self._last
+        self._last = regex
+        return regex
 
-    async def _read_pattern_space(self, append: bool) -> bool:
-        self._replaced = False
-        while not await self._more():
-            if self._file_idx >= len(self._inputs):
-                return False
-            if self._reset_at_next_file:
-                self._line_number = 0
-                self._hold = ""
-                self._reset_addresses()
-                for reader in self._readers.values():
-                    if isinstance(reader, _Reader):
-                        reader.pos = 0
-                self._reset_at_next_file = self.opts.separate
-            if not self._open_next_file():
-                return False
-        line, self._next_line = self._next_line, None
-        assert line is not None
-        self._pattern = self._pattern + line.text if append else line.text
-        self._chomped = line.chomped
-        self._line_number += 1
-        return True
+    def _search(self, sed_regex: SedRegex, text: str) -> Groups | None:
+        return self._regex(sed_regex).search(text)
 
-    async def _test_eof(self) -> bool:
-        """GNU's test_eof for ``$``, ``n`` and ``N``.
-
-        This operand has no more lines and, unless files are separate,
-        neither has any later one. The later operands are opened on the
-        way, so their errors are reported now.
-        """
-        if await self._more(peek=True):
-            return False
-        if self.opts.separate:
-            return True
-        while self._open_next_file():
-            if await self._more(peek=True):
-                return False
-        return True
-
-    def _regex(self, regex: SedRegex | None, global_: bool) -> re.Pattern[str]:
-        use = regex if regex is not None else self._last_regex
-        if use is None:
-            raise SedPanic(
-                f"sed: {self.program.end_where}: "
-                "no previous regular expression\n",
-                1,
-            )
-        self._last_regex = use
-        key = (use, global_)
-        hit = self._compiled.get(key)
-        if hit is None:
-            hit = compile_posix_regex(
-                use.source, sed_regex_flags(use), self.opts.utf8
-            )
-            self._compiled[key] = hit
-        return hit
-
-    async def _match_one(self, addr: SedAddr, index: int) -> bool:
+    async def _match(self, addr: SedAddress, ps: str) -> bool:
         kind = addr.kind
-        if kind == "null":
-            return True
-        if kind == "regex":
+        if kind is AddressKind.LINE:
+            # `0r` is the one command line 0 addresses: it runs on the
+            # first line, where the script reaches it.
+            return self.line == max(addr.number, 1)
+        if kind is AddressKind.LAST:
+            return await self._is_last()
+        if kind is AddressKind.REGEX:
+            assert addr.regex is not None
+            return self._search(addr.regex, ps) is not None
+        if kind is AddressKind.STEP:
+            if addr.step <= 0:
+                return self.line == addr.number
             return (
-                self._regex(addr.re, False).search(self._pattern) is not None
+                self.line >= addr.number
+                and (self.line - addr.number) % addr.step == 0
             )
-        if kind == "mod":
-            return (
-                self._line_number >= addr.n
-                and (self._line_number - addr.n) % addr.step == 0
-            )
-        if kind in ("step", "stepmod"):
-            return self._a2_number[index] <= self._line_number
-        if kind == "last":
-            return await self._test_eof()
-        return addr.n == self._line_number
+        return False
 
-    async def _match_address(self, cmd: SedCommand, index: int) -> bool:
-        """GNU's match_address_p, range states and all.
-
-        Args:
-            cmd (SedCommand): the command.
-            index (int): its position, which keys its range state.
-        """
-        a1 = cmd.a1
-        a2 = cmd.a2
-        if a1 is None:
+    async def _in_range(self, index: int, cmd: SedCommand, ps: str) -> bool:
+        first, second = cmd.addr1, cmd.addr2
+        assert first is not None and second is not None
+        end = self._ranges.get(index)
+        if end is not None:
+            kind = second.kind
+            if kind is AddressKind.LINE:
+                if self.line >= second.number:
+                    del self._ranges[index]
+                    return self.line == second.number
+                return True
+            if kind is AddressKind.PLUS:
+                if self.line >= end:
+                    del self._ranges[index]
+                return True
+            if kind is AddressKind.MULTIPLE:
+                if second.number <= 0 or self.line % second.number == 0:
+                    del self._ranges[index]
+                return True
+            if kind is AddressKind.STEP:
+                if await self._match(second, ps):
+                    del self._ranges[index]
+                return True
+            if kind is AddressKind.LAST:
+                if await self._is_last():
+                    del self._ranges[index]
+                return True
+            assert second.regex is not None
+            if self._search(second.regex, ps) is not None:
+                del self._ranges[index]
             return True
-        line = self._line_number
-        if self._range_state[index] != _RANGE_ACTIVE:
-            if a2 is None:
-                return await self._match_one(a1, index)
-            if a1.kind == "num":
-                if self._range_state[index] == _RANGE_CLOSED or line < a1.n:
-                    return False
-            elif not await self._match_one(a1, index):
+        if first.kind is AddressKind.LINE:
+            # A range from a line number starts on the first line at or
+            # past it, so one an `n` read over still opens, unless its
+            # numbered end has gone by; it starts only once.
+            if index in self._begun or self.line < first.number:
                 return False
-            self._range_state[index] = _RANGE_ACTIVE
-            if a2.kind == "regex":
-                return True
-            if a2.kind == "num":
-                if line >= a2.n:
-                    self._range_state[index] = _RANGE_CLOSED
-                return line <= a2.n or await self._match_one(a1, index)
-            if a2.kind == "step":
-                self._a2_number[index] = line + a2.n
-                return True
-            if a2.kind == "stepmod":
-                self._a2_number[index] = line + a2.n - (line % a2.n)
-                return True
-        if a2 is None:
-            return True
-        if a2.kind == "num":
-            if line >= a2.n:
-                self._range_state[index] = _RANGE_CLOSED
-            return line <= a2.n
-        if await self._match_one(a2, index):
-            self._range_state[index] = _RANGE_CLOSED
+            if (
+                self.line > first.number
+                and second.kind is AddressKind.LINE
+                and self.line > second.number
+            ):
+                return False
+            self._begun.add(index)
+        elif not await self._match(first, ps):
+            return False
+        kind = second.kind
+        if kind is AddressKind.LINE:
+            if second.number > self.line:
+                self._ranges[index] = 0
+        elif kind is AddressKind.PLUS:
+            if second.number > 0:
+                # Counted in 64 bits, as sed counts, so the end can wrap.
+                self._ranges[index] = (self.line + second.number) % (1 << 64)
+        elif kind is AddressKind.MULTIPLE:
+            if second.number > 0:
+                self._ranges[index] = 0
+        elif kind is AddressKind.STEP:
+            # Unlike `addr1,~N`, a `first~step` end can be the line that
+            # opens the range.
+            if not await self._match(second, ps):
+                self._ranges[index] = 0
+        elif kind is AddressKind.LAST:
+            if not await self._is_last():
+                self._ranges[index] = 0
+        else:
+            self._ranges[index] = 0
         return True
 
-    def set_files(self, files: Mapping[str, SedFileContent]) -> None:
-        """Replace what the ``r`` files hold.
+    async def _applies(self, index: int, cmd: SedCommand, ps: str) -> bool:
+        if cmd.addr1 is None:
+            return not cmd.negate
+        if cmd.addr2 is None:
+            hit = await self._match(cmd.addr1, ps)
+        else:
+            hit = await self._in_range(index, cmd, ps)
+        return hit != cmd.negate
 
-        GNU opens an ``r`` file each time the append queue is written, so
-        under -i a file edited earlier in the command reads with its new
-        content; within one run nothing it reads changes (a ``w`` file
-        stays in its stdio buffer until sed exits).
-
-        Args:
-            files (Mapping[str, SedFileContent]): the ``r`` files now.
-        """
-        self._files = files
-
-    async def _file_stream(
-        self, name: str, content: SedFileContent
-    ) -> AsyncGenerator[bytes, None]:
-        if isinstance(content, SedFileError):
-            raise SedPanic(content.error)
+    async def _emit_file(self, name: str) -> None:
+        content = self.opts.files.get(name)
         if content is None:
             return
+        if isinstance(content, SedFileError):
+            raise _Panic(content.message, 4)
         if isinstance(content, SedFileText):
-            yield from_byte_view(content.text, self.opts.utf8)
+            self._out.write(content.text)
             return
+        # The first piece is read here, where a directory fails as GNU
+        # reports it; the rest streams out when the output gets to it.
+        stream = content.open()
+        first = b""
         try:
-            async with aclosing(chunks(content.read())) as source:
-                async for part in source:
-                    yield part
-        except READ_FAILURES as exc:
-            raise SedPanic(
-                f"sed: read error on {name}: {fs_strerror(exc)}\n"
-            ) from exc
+            while not first:
+                got = await anext(stream, None)
+                if got is None:
+                    return
+                first = got
         except FS_ERRORS as exc:
-            logger.debug("sed auxiliary file %s: %s", name, exc)
+            await close_quietly(stream)
+            if not _opens_failed(exc):
+                raise _read_error(name, exc) from exc
+            # A file that cannot be opened reads as empty, as POSIX asks.
+            logger.debug("sed r file %s does not open: %s", name, exc)
+            return
+        self._out.write(byte_view(first, self.opts.utf8))
+        self._tails.append((len(self._out.chunks), name, stream))
 
-    async def _dump_append_queue(
-        self, queue: list[tuple[str, str | None]] | None = None
-    ) -> AsyncGenerator[int, None]:
-        self._main.flush_newline()
-        if queue is None:
-            queue, self._append_queue = self._append_queue, []
-        for text, rfile in queue:
-            self._main.raw(text)
-            if rfile is not None:
-                async with aclosing(
-                    self._file_stream(rfile, self._files.get(rfile))
-                ) as source:
-                    async for part in source:
-                        self._main.raw(byte_view(part, self.opts.utf8))
-                        yield -1
-
-    def _output_for(self, name: str) -> SedOutput:
-        if name == SED_STDOUT:
-            return self._special_out
-        if name == SED_STDERR:
-            return self._special_err
-        return self.wfiles.setdefault(name, SedOutput())
-
-    async def _read_line(self, name: str) -> str | None:
+    async def _reader_line(self, name: str) -> str | None:
+        """The next line of an ``R`` file, its newline kept."""
         if name not in self._readers:
             content = self.opts.reader_files.get(name)
             if isinstance(content, SedFileError):
-                raise SedPanic(content.error)
-            self._readers[name] = (
-                AsyncLineIterator(self._file_stream(name, content))
-                if isinstance(content, SedFileSource)
-                else None
-                if content is None
-                else _Reader(_reader_lines(content.text))
-            )
+                raise _Panic(content.message, 4)
+            if isinstance(content, SedFileText):
+                self._readers[name] = _cut_lines(content.text)[::-1]
+            elif isinstance(content, SedFileSource):
+                self._readers[name] = _Reader(
+                    content.open(), self.opts.utf8, self.budget
+                )
+            else:
+                self._readers[name] = None
         reader = self._readers[name]
-        if isinstance(reader, AsyncLineIterator):
-            raw, ended = await reader.read_until(b"\n")
-            return (
-                byte_view(raw, self.opts.utf8) + ("\n" if ended else "")
-                if raw or ended
-                else None
-            )
-        if reader is None or reader.pos >= len(reader.lines):
+        if reader is None:
             return None
-        line = reader.lines[reader.pos]
-        reader.pos += 1
-        return line
+        if isinstance(reader, list):
+            return reader.pop() if reader else None
+        try:
+            got = await reader.line()
+        except FS_ERRORS as exc:
+            self._readers[name] = None
+            await close_quietly(reader.chunks)
+            if not _opens_failed(exc) or reader.started:
+                raise _read_error(name, exc) from exc
+            # A file that cannot be opened reads as empty, as POSIX asks.
+            logger.debug("sed R file %s does not open: %s", name, exc)
+            return None
+        if got is None:
+            return None
+        return got[0] + ("\n" if got[1] else "")
 
-    def _substitute(self, cmd: SedCommand) -> None:
-        sub = cmd.subst
-        if sub is None:
-            return
-        scan = self._regex(sub.re, True)
-        nth = sub.numb or 1
-        counter = 0
-        last_end = -1
-        done = False
+    async def _dump(self) -> None:
+        queue, self._queue = self._queue, []
+        for kind, value in queue:
+            if kind == "file":
+                await self._emit_file(value)
+            else:
+                self._out.write(value)
 
-        def replace(m: "re.Match[str]") -> str:
-            nonlocal counter, last_end, done
-            if m.start() == m.end() == last_end:
-                return ""
-            if m.end() > m.start():
-                last_end = m.end()
-            counter += 1
-            hit = counter >= nth if sub.global_ else counter == nth
-            if not hit:
-                return m.group(0)
-            done = True
-            return _apply_repl(m, sub.replacement, self.opts.utf8)
+    def _list(self, ps: str, width: int) -> str:
+        pieces: list[str] = []
+        for byte in from_byte_view(ps, self.opts.utf8):
+            if byte in _ESCAPES:
+                pieces.append(_ESCAPES[byte])
+            elif 0x20 <= byte < 0x7F:
+                pieces.append(chr(byte))
+            else:
+                pieces.append(f"\\{byte:03o}")
+        out: list[str] = []
+        used = 0
+        limit = width - 1
+        for piece in pieces:
+            if width > 0 and used + len(piece) > limit:
+                out.append("\\\n")
+                used = 0
+            out.append(piece)
+            used += len(piece)
+        out.append("$\n")
+        return "".join(out)
 
-        result = scan.sub(replace, self._pattern)
-        if not done:
-            return
-        self._replaced = True
-        self._pattern = result
-        if sub.print_:
-            self._main.line(self._pattern, self._chomped)
-        if sub.outf is not None:
-            self._output_for(sub.outf).line(self._pattern, self._chomped)
+    def _expand(
+        self, parts: list[ReplacementPart], ps: str, groups: Groups
+    ) -> str:
+        out: list[str] = []
+        mode: str | None = None
+        pending: str | None = None
+        passed = 0
+        case = self._case
+        for part in parts:
+            if part.case is not None:
+                if part.case in "ul":
+                    pending, passed = part.case, 0
+                else:
+                    pending = None
+                    mode = None if part.case == "E" else part.case
+                continue
+            if part.group is not None:
+                span = groups[part.group] if part.group < len(groups) else None
+                text = "" if span is None else ps[span[0] : span[1]]
+            else:
+                text = part.text
+            if mode is not None:
+                text = case(text, mode == "U")
+            if pending is not None:
+                if text:
+                    text = case(text[0], pending == "u") + text[1:]
+                    pending = None
+                else:
+                    passed += 1
+                    if passed > 1:
+                        pending = None
+            out.append(text)
+        return "".join(out)
 
-    def _transliterate(self, cmd: SedCommand) -> None:
-        table = dict(zip(cmd.y_src, cmd.y_dst))
-        self._pattern = "".join(table.get(ch, ch) for ch in self._pattern)
+    def _substitute(self, sub: SedSubstitution, ps: str) -> str | None:
+        regex = self._regex(sub.regex)
+        if sub.regex.regex is None:
+            # An empty expression's groups are known only now.
+            wanted = max((part.group or 0 for part in sub.parts), default=0)
+            if wanted > regex.groups:
+                raise _Panic(
+                    "sed: -e expression #1, char 0: invalid reference "
+                    f"\\{wanted} on `s' command's RHS\n",
+                    1,
+                )
+        if sub.global_ or sub.occurrence > 1:
+            found = regex.all(ps)
+        else:
+            one = regex.search(ps)
+            found = [] if one is None else [one]
+        chosen = (
+            found[sub.occurrence - 1 :]
+            if sub.global_
+            else found[sub.occurrence - 1 : sub.occurrence]
+        )
+        if not chosen:
+            return None
+        out: list[str] = []
+        at = 0
+        for groups in chosen:
+            whole = groups[0]
+            assert whole is not None
+            out.append(ps[at : whole[0]])
+            out.append(self._expand(sub.parts, ps, groups))
+            at = whole[1]
+        out.append(ps[at:])
+        return "".join(out)
 
-    async def _execute_program(self) -> AsyncGenerator[int, None]:
-        """One cycle of the script.
+    async def _cycle(self, line: _Line, pc: int) -> _Line | None:
+        """One cycle over ``line`` from command ``pc``; the line to run
+        again without reading, from ``_resume``, or None.
 
-        Yields -1 wherever the output so far may go out (before each
-        command, and before ``n`` or ``N`` reads on), or the exit status
-        ``q`` or ``Q`` stops with.
+        A loop that prints stops at its branch once the output fills, and
+        a command that may wait on the input stops before it while output
+        is held, so what was printed goes out first.
+
+        Args:
+            line (_Line): the pattern space.
+            pc (int): the command to start at.
         """
+        # A script that loops without reading still lets the loop run.
+        await self.budget.run()
+        self._resume = 0
+        reading, self._reading = self._reading, False
+        ps = line.text
+        newline = line.newline
         commands = self.program.commands
-        pc = 0
-        while pc < len(commands):
-            await self._budget.run()
-            yield -1
+        count = len(commands)
+        printing = not self.quiet
+        while pc < count:
             cmd = commands[pc]
-            c = cmd.cmd
-            if await self._match_address(cmd, pc) == cmd.bang:
-                pc += 1
+            if reading:
+                # The `n` this cycle stopped in, its address taken.
+                pass
+            elif self._reads[pc] and self._held():
+                self._resume = pc
+                return _Line(ps, newline, line.source)
+            elif not await self._applies(pc, cmd, ps):
+                pc = cmd.block_end + 1 if cmd.name == "{" else pc + 1
                 continue
-            if c == "a":
-                if cmd.text is not None:
-                    self._append_queue.append((cmd.text, None))
-            elif c in ("{", "b"):
-                pc = cmd.jump
-                continue
-            elif c == "c":
-                if (
-                    self._range_state[pc] != _RANGE_ACTIVE
-                    and cmd.text is not None
-                ):
-                    self._main.line(cmd.text[:-1], True)
-                return
-            elif c == "d":
-                return
-            elif c == "D":
-                nl = self._pattern.find("\n")
-                if nl < 0:
-                    return
-                self._pattern = self._pattern[nl + 1 :]
-                pc = 0
-                continue
-            elif c == "g":
-                self._pattern = self._hold
-            elif c == "G":
-                self._pattern += "\n" + self._hold
-            elif c == "h":
-                self._hold = self._pattern
-            elif c == "H":
-                self._hold += "\n" + self._pattern
-            elif c == "i":
-                if cmd.text is not None:
-                    self._main.line(cmd.text[:-1], True)
-            elif c == "l":
-                width = (
-                    self.opts.line_length if cmd.int_arg == -1 else cmd.int_arg
-                )
-                self._main.flush_newline()
-                self._main.raw(list_line(self._pattern, width, self.opts.utf8))
-            elif c == "L":
-                # GNU 4.9 still compiles the removed `L` and then has no
-                # case for it: an internal error the moment it runs.
-                raise SedPanic("sed: INTERNAL ERROR: Bad cmd L\n")
-            elif c == "n":
-                if not self.no_default_output:
-                    self._main.line(self._pattern, self._chomped)
-                if self._append_queue:
-                    async with aclosing(self._dump_append_queue()) as steps:
-                        async for status in steps:
-                            yield status
-                yield -1
-                if (
-                    await self._test_eof()
-                    or not await self._read_pattern_space(False)
-                ):
-                    return
-            elif c == "N":
-                self._pattern += "\n"
-                if self._append_queue:
-                    async with aclosing(self._dump_append_queue()) as steps:
-                        async for status in steps:
-                            yield status
-                yield -1
-                if (
-                    await self._test_eof()
-                    or not await self._read_pattern_space(True)
-                ):
-                    self._pattern = self._pattern[:-1]
-                    if not self.no_default_output:
-                        self._main.line(self._pattern, self._chomped)
-                    return
-            elif c == "p":
-                self._main.line(self._pattern, self._chomped)
-            elif c == "P":
-                nl = self._pattern.find("\n")
-                if nl >= 0:
-                    self._main.line(self._pattern[:nl], True)
-                else:
-                    self._main.line(self._pattern, self._chomped)
-            elif c == "q":
-                if not self.no_default_output:
-                    self._main.line(self._pattern, self._chomped)
-                async with aclosing(self._dump_append_queue()) as steps:
-                    async for status in steps:
-                        yield status
-                yield 0 if cmd.int_arg == -1 else cmd.int_arg
-                return
-            elif c == "Q":
-                yield 0 if cmd.int_arg == -1 else cmd.int_arg
-                return
-            elif c == "r":
-                if cmd.prepend:
-                    async with aclosing(
-                        self._dump_append_queue([("", cmd.fname)])
-                    ) as steps:
-                        async for status in steps:
-                            yield status
-                else:
-                    self._append_queue.append(("", cmd.fname))
-            elif c == "R":
-                text = await self._read_line(cmd.fname)
-                if text is not None:
-                    self._append_queue.append((text, None))
-            elif c == "s":
-                self._substitute(cmd)
-            elif c == "t":
-                if self._replaced:
-                    self._replaced = False
-                    pc = cmd.jump
-                    continue
-            elif c == "T":
-                if not self._replaced:
-                    pc = cmd.jump
-                    continue
-                self._replaced = False
-            elif c == "w":
-                self._output_for(cmd.fname).line(self._pattern, self._chomped)
-            elif c == "W":
-                out = self._output_for(cmd.fname)
-                nl = self._pattern.find("\n")
-                if nl >= 0:
-                    out.line(self._pattern[:nl], True)
-                else:
-                    out.line(self._pattern, self._chomped)
-            elif c == "x":
-                self._pattern, self._hold = self._hold, self._pattern
-            elif c == "y":
-                self._transliterate(cmd)
-            elif c == "z":
-                self._pattern = ""
-            elif c == "=":
-                self._main.flush_newline()
-                self._main.raw(f"{self._line_number}\n")
-            elif c == "F":
-                self._main.flush_newline()
-                self._main.raw(
-                    byte_view(f"{self._file_name}\n", self.opts.utf8)
-                )
+            name = cmd.name
             pc += 1
-        if not self.no_default_output:
-            self._main.line(self._pattern, self._chomped)
+            if name in "{}:":
+                continue
+            if name == "p":
+                self._out.line(ps, newline)
+            elif name == "s":
+                assert cmd.subst is not None
+                result = self._substitute(cmd.subst, ps)
+                if result is not None:
+                    ps = result
+                    self._replaced = True
+                    if cmd.subst.print_:
+                        self._out.line(ps, newline)
+                    if cmd.subst.wfile is not None:
+                        self._output(cmd.subst.wfile).line(ps, newline)
+            elif name == "d":
+                await self._dump()
+                return None
+            elif name == "D":
+                cut = ps.find("\n")
+                if cut < 0:
+                    await self._dump()
+                    return None
+                # The cycle restarts without reading, and the appends wait
+                # for the line it ends on.
+                return _Line(ps[cut + 1 :], newline, line.source)
+            elif name in "bt":
+                if name == "b" or self._replaced:
+                    if name == "t":
+                        self._replaced = False
+                    assert cmd.target is not None
+                    pc = cmd.target
+                    if self._full():
+                        self._resume = pc
+                        return _Line(ps, newline, line.source)
+                    await self.budget.run()
+            elif name == "T":
+                if not self._replaced:
+                    assert cmd.target is not None
+                    pc = cmd.target
+                    if self._full():
+                        self._resume = pc
+                        return _Line(ps, newline, line.source)
+                    await self.budget.run()
+                else:
+                    self._replaced = False
+            elif name == "n":
+                # GNU prints and appends whether or not a line follows.
+                if not reading:
+                    if printing:
+                        self._out.line(ps, newline)
+                    await self._dump()
+                    if self._held():
+                        self._resume, self._reading = pc - 1, True
+                        return _Line(ps, newline, line.source)
+                reading = False
+                if not await self._more():
+                    return None
+                got = await self._take(self._feed)
+                if got is None:
+                    return None
+                ps, newline = got.text, got.newline
+            elif name == "N":
+                if not await self._more():
+                    break
+                await self._dump()
+                got = await self._take(self._feed)
+                if got is None:
+                    break
+                ps = ps + "\n" + got.text
+                newline = got.newline
+            elif name == "a":
+                if cmd.text is not None:
+                    self._queue.append(("text", cmd.text))
+            elif name == "i":
+                if cmd.text is not None:
+                    self._out.write(cmd.text)
+            elif name == "c":
+                ranged = cmd.addr2 is not None and not cmd.negate
+                if (not ranged or pc - 1 not in self._ranges) and (
+                    cmd.text is not None
+                ):
+                    self._out.write(cmd.text)
+                await self._dump()
+                return None
+            elif name == "=":
+                self._out.write(f"{self.line}\n")
+            elif name == "L":
+                raise _Panic("sed: INTERNAL ERROR: Bad cmd L\n", 4)
+            elif name == "l":
+                width = (
+                    cmd.number
+                    if cmd.number is not None
+                    else self.opts.line_length
+                )
+                self._out.write(self._list(ps, width))
+            elif name == "q":
+                # `q` ends what it prints with a newline the input lacked.
+                if printing:
+                    self._out.line(ps, True)
+                await self._dump()
+                self._quit = _quit_code(cmd.number)
+                return None
+            elif name == "Q":
+                self._queue = []
+                self._quit = _quit_code(cmd.number)
+                return None
+            elif name == "r":
+                if cmd.filename is None:
+                    pass
+                elif _zero_line(cmd):
+                    # `0r` writes its file where it runs, ahead of the line.
+                    await self._emit_file(cmd.filename)
+                else:
+                    self._queue.append(("file", cmd.filename))
+            elif name == "R":
+                if cmd.filename is not None:
+                    got_line = await self._reader_line(cmd.filename)
+                    if got_line is not None:
+                        self._queue.append(("text", got_line))
+            elif name == "w":
+                assert cmd.filename is not None
+                self._output(cmd.filename).line(ps, newline)
+            elif name == "W":
+                assert cmd.filename is not None
+                cut = ps.find("\n")
+                if cut < 0:
+                    self._output(cmd.filename).line(ps, newline)
+                else:
+                    self._output(cmd.filename).line(ps[:cut], True)
+            elif name == "P":
+                cut = ps.find("\n")
+                if cut < 0:
+                    self._out.line(ps, newline)
+                else:
+                    self._out.line(ps[:cut], True)
+            elif name == "h":
+                self.hold, self._hold_newline = ps, newline
+            elif name == "H":
+                self.hold = self.hold + "\n" + ps
+                self._hold_newline = newline
+            elif name == "g":
+                ps, newline = self.hold, self._hold_newline
+            elif name == "G":
+                ps = ps + "\n" + self.hold
+                newline = self._hold_newline
+            elif name == "x":
+                ps, self.hold = self.hold, ps
+                newline, self._hold_newline = self._hold_newline, newline
+            elif name == "y":
+                assert cmd.translit is not None
+                table = cmd.translit
+                ps = "".join(table.get(ch, ch) for ch in ps)
+            elif name == "z":
+                ps = ""
+            elif name == "F":
+                # The input opened last, which a look-ahead may have moved
+                # past the line's own.
+                name = self._feed.name(self._feed.index)
+                self._out.write(byte_view(name, self.opts.utf8) + "\n")
+        if printing:
+            self._out.line(ps, newline)
+        await self._dump()
+        return None

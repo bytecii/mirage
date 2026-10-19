@@ -7,7 +7,7 @@ import pytest
 
 from mirage.commands.builtin.generic.grep import parse_flags
 from mirage.commands.builtin.grep_binary import PROBE_BLOCK_BYTES, grep_input
-from mirage.commands.builtin.grep_pattern import compile_pattern
+from mirage.commands.builtin.grep_pattern import compile_perl
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -1081,7 +1081,7 @@ async def test_a_utf8_scan_leaves_out_a_line_no_character_owns(
     out = await materialize(
         grep_input(
             source(),
-            compile_pattern(pattern, utf8=True),
+            compile_perl(pattern, utf8=True),
             f,
             "f",
             False,

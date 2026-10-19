@@ -20,7 +20,6 @@ import { MountMode } from '../../../types.ts'
 import { getTestParser } from '../../../../tests/workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { GENERAL_EXPR, isNull } from './expr.ts'
-import { translateBre } from '../utils/bre.ts'
 
 const DEC = new TextDecoder()
 
@@ -460,18 +459,18 @@ describe('expr : is a POSIX BRE, not a JavaScript RegExp', () => {
     await expectRefusal(['abc', ':', 'a\\{1,'], 'expr: Unmatched \\{')
   })
 
-  it('emits the inverted spellings the host engine needs', () => {
-    expect(translateBre('a\\(bc\\)')).toEqual(['a(bc)', 1])
-    expect(translateBre('a(bc)')).toEqual(['a\\(bc\\)', 0])
-    expect(translateBre('a\\|b')).toEqual(['a|b', 0])
-    expect(translateBre('a|b')).toEqual(['a\\|b', 0])
-    expect(translateBre('a\\+')).toEqual(['a+', 0])
-    expect(translateBre('a+')).toEqual(['a\\+', 0])
-    expect(translateBre('a\\{2,3\\}')).toEqual(['a{2,3}', 0])
-    expect(translateBre('a{2}')).toEqual(['a\\{2\\}', 0])
-    expect(translateBre('*a')).toEqual(['\\*a', 0])
-    expect(translateBre('[[:alpha:]]')).toEqual(['[A-Za-z]', 0])
-    expect(translateBre('\\w')).toEqual(['[0-9A-Za-z_]', 0])
+  it("reads basic expressions, not the host engine's syntax", async () => {
+    await expectValue(['abc', ':', 'a\\(bc\\)'], 'bc', 0)
+    await expectValue(['a(bc)', ':', 'a(bc)'], '5', 0)
+    await expectValue(['b', ':', 'a\\|b'], '1', 0)
+    await expectValue(['a|b', ':', 'a|b'], '3', 0)
+    await expectValue(['aaa', ':', 'a\\+'], '3', 0)
+    await expectValue(['a+', ':', 'a+'], '2', 0)
+    await expectValue(['aaa', ':', 'a\\{2,3\\}'], '3', 0)
+    await expectValue(['a{2}', ':', 'a{2}'], '4', 0)
+    await expectValue(['*a', ':', '*a'], '2', 0)
+    await expectValue(['abc', ':', '[[:alpha:]]*'], '3', 0)
+    await expectValue(['x_', ':', '\\w*'], '2', 0)
   })
 })
 
@@ -702,7 +701,7 @@ describe('expr string operators count bytes, not characters', () => {
     [['a', ':', '[é]'], '0', 1],
     [['ééé', ':', 'é\\{2\\}'], '0', 1],
     // The C locale's classes are ASCII, so neither matches a byte above
-    // 0x7f -- which is what bre.ts's inlined expansions already emit.
+    // 0x7f.
     [['é', ':', '[[:alpha:]]*'], '0', 1],
     [['é', ':', '\\w*'], '0', 1],
     [['a\udcffb', ':', 'a.b'], '3', 0],

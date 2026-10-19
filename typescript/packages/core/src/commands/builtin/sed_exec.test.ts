@@ -13,751 +13,281 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { byteView, fromByteView } from '../../shell/bytes.ts'
-import { SedMachine, listLine, type SedFileContent, type SedInput } from './sed_exec.ts'
+import type { ByteSource } from '../../io/types.ts'
+import { SedMachine, type SedFileContent } from './sed_exec.ts'
 import { compileScript } from './sed_script.ts'
-import { enoent } from '../../errors/fs.ts'
 
-async function* missingSource(): AsyncIterable<Uint8Array> {
-  yield await Promise.reject<Uint8Array>(enoent('nope'))
+const ENC = new TextEncoder()
+
+function flush(): Promise<void> {
+  return Promise.resolve()
 }
 
-interface RunResult {
-  stdout: string
-  stderr: string
-  exitCode: number
-  wfiles: Map<string, string>
+interface RunOptions {
+  suppress?: boolean
+  separate?: boolean
+  files?: ReadonlyMap<string, SedFileContent>
 }
 
 async function run(
-  exprs: string | string[],
-  inputs: string | SedInput[],
-  opts: {
-    suppress?: boolean
-    extended?: boolean
-    separate?: boolean
-    lineLength?: number
-    files?: Record<string, SedFileContent>
-  } = {},
-): Promise<RunResult> {
-  const pieces = (Array.isArray(exprs) ? exprs : [exprs]).map((text) => ({
-    kind: 'expr' as const,
-    text,
-  }))
-  const machine = new SedMachine(compileScript(pieces, opts.extended ?? false), {
-    suppress: opts.suppress ?? false,
-    separate: opts.separate ?? false,
-    lineLength: opts.lineLength ?? 70,
-    files: new Map(Object.entries(opts.files ?? {})),
-    readerFiles: new Map(Object.entries(opts.files ?? {})),
+  script: string,
+  inputs: (string | ByteSource)[],
+  options: RunOptions = {},
+): Promise<[string, string, number, SedMachine]> {
+  const program = compileScript([{ kind: 'expr', text: script }], false)
+  const files = options.files ?? new Map()
+  const machine = new SedMachine(program, {
+    suppress: options.suppress ?? false,
+    separate: options.separate ?? false,
+    lineLength: 70,
+    files,
+    readerFiles: files,
+    utf8: false,
   })
-  let stdout = ''
-  for await (const chunk of machine.process(
-    typeof inputs === 'string' ? [{ name: '-', text: byteView(inputs) }] : inputs,
-    true,
-  ))
-    stdout += chunk
-  const wfiles = new Map<string, string>()
-  for (const [name, out] of machine.wfiles) wfiles.set(name, out.chunks.join(''))
+  let out = ''
+  const sources = inputs.map((source, i) => ({
+    name: `/in${String(i)}`,
+    source: typeof source === 'string' ? ENC.encode(source) : source,
+  }))
+  for await (const chunk of machine.process(sources, true, undefined, flush)) out += chunk
+  return [out, machine.stderr(), machine.exitCode(), machine]
+}
+
+function failingAfter(...chunks: string[]): AsyncIterable<Uint8Array> {
+  return (async function* () {
+    for (const chunk of chunks) yield ENC.encode(chunk)
+    await Promise.resolve()
+    throw Object.assign(new Error('denied'), { code: 'EACCES' })
+  })()
+}
+
+function failing(code: string, message: string): AsyncIterable<Uint8Array> {
   return {
-    stdout,
-    stderr: machine.stderr(),
-    exitCode: machine.exitCode(),
-    wfiles,
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => Promise.reject(Object.assign(new Error(message), { code })),
+      }
+    },
   }
 }
 
-async function sed(
-  expr: string,
-  input: string,
-  suppress = false,
-  extended = false,
-): Promise<string> {
-  return (await run(expr, input, { suppress, extended })).stdout
-}
-
-function latin1Bytes(text: string): number[] {
-  return Array.from({ length: text.length }, (_, i) => text.charCodeAt(i))
-}
-
-// ERE convenience: sed -E
-async function sedE(expr: string, input: string): Promise<string> {
-  return await sed(expr, input, false, true)
-}
-
-describe('sed line anchors (^ and $)', () => {
-  // Regression for #326: ^/$ must anchor per line, matching Python sed / GNU sed.
-  it('anchored substitution applies per line', async () => {
-    expect(await sed('s/^#[0-9]*$/#TS/', '#123\nls\n')).toBe('#TS\nls\n')
+describe('SedMachine', () => {
+  it.each([
+    [':a;N;$!ba;s/\\n/,/g', 'a\nb\nc\n', 'a,b,c\n'],
+    ['$!N;P;D', 'a\nb\nc\n', 'a\nb\nc\n'],
+    ['s/x*/-/g', 'abxd\n', '-a-b-d-\n'],
+    ['s/b*/X/2', 'abbb\n', 'aX\n'],
+    ['2,4cMID', '1\n2\n3\n4\n5\n', '1\nMID\n5\n'],
+    ['s/\\w\\+/\\u&/g', 'hello world\n', 'Hello World\n'],
+    ['s/.*/\\u\\L&/', 'hELLO\n', 'hello\n'],
+    ['s/.*/\\L\\u&/', 'hello\n', 'Hello\n'],
+    ['s/\\(x*\\)\\(a\\)/\\u\\1\\2/', 'ab\n', 'Ab\n'],
+    ['s/\\(x*\\)\\(y*\\)\\(a\\)/\\u\\1\\2\\3/', 'ab\n', 'ab\n'],
+    ['s/x/[\\x26\\x5c1]/', 'x\n', '[&\\1]\n'],
+    ['s/a\\x2eb/X/g', 'a.b axb\n', 'X X\n'],
+    ['y/el/ip/', 'hello\n', 'hippo\n'],
+    ['n;a X', 'a\nb\nc\n', 'a\nb\nX\nc\n'],
+    ['$G', 'a\nb', 'a\nb\n\n'],
+    ['p;q', 'abc', 'abc\nabc\n'],
+  ])('runs %j as GNU does', async (script, data, want) => {
+    const [out, err, code] = await run(script, [data])
+    expect([out, err, code]).toEqual([want, '', 0])
   })
 
-  it('anchored substitution with -E style + quantifier', async () => {
-    expect(await sedE('s/^#[0-9]+$/#TS/', '#123\nls\n')).toBe('#TS\nls\n')
+  it('holds a missing newline until more follows', async () => {
+    expect((await run('p', ['a']))[0]).toBe('a\na')
+    expect((await run('p;=', ['a\nb'], { suppress: true }))[0]).toBe('a\n1\nb\n2\n')
+    expect((await run('w /dev/stdout', ['a\nb']))[0]).toBe('a\na\nbb')
   })
 
-  it('anchored substitution with global flag', async () => {
-    expect(await sed('s/^#[0-9]*$/#TS/g', '#123\nls\n')).toBe('#TS\nls\n')
+  it('wraps a listing without splitting an escape', async () => {
+    expect((await run('l 5', ['aaa\tb\n'], { suppress: true }))[0]).toBe('aaa\\\n\\tb$\n')
+    expect((await run('l 1', ['abc\n'], { suppress: true }))[0]).toBe('\\\na\\\nb\\\nc$\n')
   })
 
-  it('unanchored substitution still works', async () => {
-    expect(await sed('s/#[0-9][0-9]*/#TS/', '#123\nls\n')).toBe('#TS\nls\n')
+  it('opens a line-number range late, once', async () => {
+    const data = '1\n2\n3\n4\n5\n6\n'
+    const quiet = { suppress: true }
+    expect((await run('1{n;b};2,3p', [data], quiet))[0]).toBe('3\n')
+    expect((await run('1{n;n;b};2,3p', [data], quiet))[0]).toBe('')
+    expect((await run('2,/4/p', [data], quiet))[0]).toBe('2\n3\n4\n')
+    expect((await run('2,~4p', [data], quiet))[0]).toBe('2\n3\n4\n')
+    expect((await run('4,~4p', [data], quiet))[0]).toBe('4\n5\n6\n')
   })
 
-  it('$ anchor does not match mid-line', async () => {
-    expect(await sed('s/o$/0/', 'foo\nfox\n')).toBe('fo0\nfox\n')
-  })
-
-  it('^ anchor only matches line start', async () => {
-    expect(await sed('s/^a/X/', 'abc\nbac\n')).toBe('Xbc\nbac\n')
-  })
-
-  it('anchored substitution on last line without trailing newline', async () => {
-    expect(await sed('s/^bar$/BAR/', 'foo\nbar')).toBe('foo\nBAR')
-  })
-
-  it('regex address with $ anchor matches per line', async () => {
-    // delete lines that consist solely of digits
-    expect(await sed('/^[0-9]*$/d', '12\nab\n34\n')).toBe('ab\n')
-  })
-})
-
-describe('sed s/// flags', () => {
-  it('numeric count replaces only the Nth occurrence', async () => {
-    expect(await sed('s/o/O/2', 'oooo\n')).toBe('oOoo\n')
-    expect(await sed('s/o/O/3', 'oooo\n')).toBe('ooOo\n')
-  })
-
-  it('numeric count with g replaces the Nth and all later occurrences', async () => {
-    expect(await sed('s/o/O/2g', 'oooo\n')).toBe('oOOO\n')
-  })
-
-  it('count is per line', async () => {
-    expect(await sed('s/o/O/2', 'oo\noo\n')).toBe('oO\noO\n')
-  })
-
-  it('no count, no g replaces first; g replaces all', async () => {
-    expect(await sed('s/o/O/', 'oooo\n')).toBe('Oooo\n')
-    expect(await sed('s/o/O/g', 'oooo\n')).toBe('OOOO\n')
-  })
-
-  it('p flag prints the pattern space when a substitution is made', async () => {
-    // without -n the line is emitted twice on a match, once via p
-    expect(await sed('s/hi/HI/p', 'hi\nbye\n')).toBe('HI\nHI\nbye\n')
-  })
-
-  it('p flag under -n prints only substituted lines', async () => {
-    expect(await sed('s/hi/HI/p', 'hi\nbye\n', true)).toBe('HI\n')
-  })
-
-  it('skips an empty match touching the previous match', async () => {
-    expect(await sedE('s/b*/X/g', 'abbb\n')).toBe('XaX\n')
-    expect(await sed('s/x*/-/g', 'abxd\n')).toBe('-a-b-d-\n')
-  })
-
-  it('does not count a skipped empty match', async () => {
-    expect(await sedE('s/b*/X/2', 'abbb\n')).toBe('aX\n')
-    expect(await sedE('s/b*/X/3', 'abbb\n')).toBe('abbb\n')
-  })
-
-  it('count combines with case-insensitive flag', async () => {
-    expect(await sed('s/o/X/2i', 'oOoO\n')).toBe('oXoO\n')
-  })
-})
-
-describe('sed y (transliterate)', () => {
-  it('translates characters by position', async () => {
-    expect(await sed('y/el/ip/', 'hello\n')).toBe('hippo\n')
-  })
-
-  it('leaves unmatched characters unchanged', async () => {
-    expect(await sed('y/-/ /', 'a-b-c\n')).toBe('a b c\n')
-  })
-
-  it('applies per line and preserves newlines', async () => {
-    expect(await sed('y/abc/xyz/', 'cab\nbac\n')).toBe('zxy\nyxz\n')
-  })
-
-  it('rejects mismatched source/dest lengths', async () => {
-    await expect(sed('y/ab/x/', '')).rejects.toThrow(
-      "strings for `y' command are different lengths",
+  it('restarts lines, hold and ranges for separate inputs', async () => {
+    expect((await run('x', ['a\n', 'b\n'], { separate: true }))[0]).toBe('\n\n')
+    expect((await run('$p', ['a\nb\n', 'c\n'], { suppress: true, separate: true }))[0]).toBe(
+      'b\nc\n',
     )
-  })
-})
-
-describe('sed c (change)', () => {
-  it('changes every line when given no address', async () => {
-    expect(await sed('c\\\nX', 'a\nb\nc\n')).toBe('X\nX\nX\n')
+    expect((await run('N', ['a\nb\nc\n', 'd\n'], { separate: true }))[0]).toBe('a\nb\nc\nd\n')
   })
 
-  it('changes a single addressed line', async () => {
-    expect(await sed('2c\\\nX', 'a\nb\nc\n')).toBe('a\nX\nc\n')
-  })
-
-  it('changes a regex-addressed line', async () => {
-    expect(await sed('/foo/c\\\nCHANGED', 'foo\nbar\n')).toBe('CHANGED\nbar\n')
-  })
-
-  it('emits the text once for a line range', async () => {
-    expect(await sed('2,3c\\\nX', 'a\nb\nc\nd\n')).toBe('a\nX\nd\n')
-  })
-})
-
-describe('sed a, i and c text (GNU sed 4.9)', () => {
-  it('drops a backslash before an ordinary character', async () => {
-    expect(await sed('a one\\/two', 'x\n')).toBe('x\none/two\n')
-    expect(await sed('i one\\/two', 'x\n')).toBe('one/two\nx\n')
-    expect(await sed('c one\\/two', 'x\n')).toBe('one/two\n')
-    expect(
-      await sed("/^bibtexurl:/a codeurl: 'https:\\/\\/github.com\\/u\\/r'", 'bibtexurl: x\n'),
-    ).toBe("bibtexurl: x\ncodeurl: 'https://github.com/u/r'\n")
-  })
-
-  it('decodes the text escapes', async () => {
-    expect(await sed('a one\\/two\\tthree', 'x\n')).toBe('x\none/two\tthree\n')
-    expect(await sed('a x\\ny', 'x\n')).toBe('x\nx\ny\n')
-    expect(await sed('a x\\\\y', 'x\n')).toBe('x\nx\\y\n')
-    expect(await sed('a x\\by', 'x\n')).toBe('x\nxby\n')
-    expect(await sed('a 1\\a2\\f3\\v4\\r5', 'x\n')).toBe('x\n1\x072\f3\v4\r5\n')
-  })
-
-  it('decodes numeric and control escapes', async () => {
-    expect(await sed('a [\\d065][\\x41][\\o101][\\x4][\\xZ][\\d300]', 'x\n')).toBe(
-      'x\n[A][A][A][\x04][xZ][,]\n',
+  it('passes over a directory when it looks ahead', async () => {
+    const quiet = { suppress: true }
+    const [out, err, code] = await run(
+      '$p',
+      ['one\ntwo\n', failing('EISDIR', 'dir'), 'L1\n'],
+      quiet,
     )
-    expect(await sed('a [\\cA][\\ca][\\c?][\\c\\\\]', 'x\n')).toBe('x\n[\x01][\x01][\x7f][\x1c]\n')
-    await expect(sed('a [\\c\\d]', 'x\n')).rejects.toThrow(
-      'recursive escaping after \\c not allowed',
+    expect([out, err, code]).toEqual(['L1\n', '', 0])
+    const [read, readErr, readCode] = await run(
+      'p',
+      ['one\n', failing('EISDIR', 'dir'), 'L1\n'],
+      quiet,
     )
-  })
-
-  it('writes numeric escapes above ASCII as raw bytes', async () => {
-    const out = await sed('a [\\xff][\\d200][\\o377][\\x80][\\xc3\\xa9][\\o400]', 'x\n')
-    expect([...fromByteView(out)]).toEqual(
-      latin1Bytes('x\n[\xff][\xc8][\xff][\x80][\xc3\xa9][\x00]\n'),
-    )
-  })
-
-  it('lets a final \\c take the closing newline', async () => {
-    expect(await sed('a foo\\c', 'x\ny\n')).toBe('x\nfooJy\nfooJ')
-    expect(await sed('i foo\\c', 'x\n')).toBe('foo\nx\n')
-  })
-
-  it('skips blanks before one-line text and keeps them after a backslash', async () => {
-    expect(await sed('a  \t foo', 'x\n')).toBe('x\nfoo\n')
-    expect(await sed('a\\   foo', 'x\n')).toBe('x\n   foo\n')
-    expect(await sed('a\\tfoo', 'x\n')).toBe('x\ntfoo\n')
-    expect(await sed('a \\tfoo', 'x\n')).toBe('x\ntfoo\n')
-    expect(await sed('a\\\\tfoo', 'x\n')).toBe('x\n\tfoo\n')
-  })
-
-  it('reads the classic form and continued lines', async () => {
-    expect(await sed('a\\\n  l1\\\n  l2', 'x\n')).toBe('x\n  l1\n  l2\n')
-    expect(await sed('i\\\nl1\\\nl2', 'x\n')).toBe('l1\nl2\nx\n')
-    expect(await sed('a foo\\\nbar', 'x\n')).toBe('x\nfoo\nbar\n')
-  })
-
-  it('ends the text at a newline and not at a semicolon', async () => {
-    expect(await sed('1a foo\n2d', 'x\ny\n')).toBe('x\nfoo\n')
-    expect(await sed('1a foo; 2d', 'x\ny\n')).toBe('x\nfoo; 2d\ny\n')
-    expect(await sed('a int x = 1; echo bar', 'x\n')).toBe('x\nint x = 1; echo bar\n')
-  })
-
-  it('keeps trailing blanks', async () => {
-    expect(await sed('1d\n$a foo   ', 'x\ny\n')).toBe('y\nfoo   \n')
-  })
-
-  it('leaves the text undecoded when the script ends on a backslash', async () => {
-    expect(await sed('a one\\/two\\', 'x\n')).toBe('x\none\\/two\n')
-    expect(await sed('a\\', 'x\ny\n')).toBe('x\ny\n')
-    expect(await sed('c\\', 'x\ny\n')).toBe('')
-  })
-
-  it('refuses a missing text and a block the text left open', async () => {
-    await expect(sed('a', 'x\n')).rejects.toThrow("expected \\ after `a', `c' or `i'")
-    await expect(sed('1{a foo;}', 'x\ny\n')).rejects.toThrow("unmatched `{'")
-    expect(await sed('1{a foo\n}', 'x\ny\n')).toBe('x\nfoo\ny\n')
-  })
-})
-
-describe('sed address negation (addr!cmd)', () => {
-  it('negated line address applies to all other lines', async () => {
-    expect(await sed('2!d', 'a\nb\nc\n')).toBe('b\n')
-  })
-
-  it('negated regex address keeps only non-matching lines', async () => {
-    expect(await sed('/b/!d', 'a\nb\nc\n')).toBe('b\n')
-  })
-
-  it('negated last-line with -n prints all but the last', async () => {
-    expect(await sed('$!p', 'a\nb\nc\n', true)).toBe('a\nb\n')
-  })
-
-  it('negated range substitutes outside the range', async () => {
-    expect(await sed('1,2!s/./X/', 'a\nb\nc\nd\n')).toBe('a\nb\nX\nX\n')
-  })
-
-  it('whitespace is allowed around the negation', async () => {
-    expect(await sed('2 ! d', 'a\nb\nc\n')).toBe('b\n')
-  })
-})
-
-describe('sed replacement & hold-space (GNU semantics)', () => {
-  it('unescaped & is the whole match', async () => {
-    expect(await sed('s/wor/[&]/', 'world\n')).toBe('[wor]ld\n')
-  })
-
-  it('escaped \\& is a literal ampersand', async () => {
-    expect(await sed('s/wor/[\\&]/', 'world\n')).toBe('[&]ld\n')
-  })
-
-  it('G appends a blank line when the hold space is empty', async () => {
-    expect(await sed('G', 'a\nb\n')).toBe('a\n\nb\n\n')
-  })
-
-  it('H accumulates with a leading newline from an empty hold', async () => {
-    expect(await sed('H;${x;p}', 'a\nb\n', true)).toBe('\na\nb\n')
-  })
-})
-
-describe('sed multi-line pattern space (N / join / final newline)', () => {
-  it('joins all lines (the :a;N;$!ba idiom) with no trailing separator', async () => {
-    expect(await sed(':a;N;$!ba;s/\\n/,/g', 'a\nb\nc\n')).toBe('a,b,c\n')
-  })
-
-  it('N joins line pairs', async () => {
-    expect(await sed('N;s/\\n/ /', 'a\nb\nc\nd\n')).toBe('a b\nc d\n')
-  })
-
-  it('preserves a missing final newline', async () => {
-    expect(await sed('s/o/O/', 'foo')).toBe('fOo')
-    expect(await sed('p', 'foo', true)).toBe('foo')
-  })
-
-  it('a line number address tracks the last line read after N', async () => {
-    // after N, line 2 is current → $ matches and appends the hold (blank line)
-    expect(await sed('N;$G', 'a\nb\n')).toBe('a\nb\n\n')
-  })
-})
-
-describe('sed BRE (default) vs ERE (-E)', () => {
-  it('BRE: \\( \\) are groups, bare () are literal', async () => {
-    expect(await sed('s/\\(foo\\)/[\\1]/', 'foo\n')).toBe('[foo]\n')
-    expect(await sed('s/(x)/Y/', '(x)\n')).toBe('Y\n')
-  })
-
-  it('BRE: \\+ is one-or-more, bare + is literal', async () => {
-    expect(await sed('s/a\\+/X/', 'aaab\n')).toBe('Xb\n')
-    expect(await sed('s/a+/X/', 'a+b\n')).toBe('Xb\n')
-  })
-
-  it('BRE: \\{n\\} interval and \\| alternation', async () => {
-    expect(await sed('s/a\\{2\\}/X/', 'aaa\n')).toBe('Xa\n')
-    expect(await sed('s/cat\\|dog/PET/', 'cat\n')).toBe('PET\n')
-  })
-
-  it('ERE: bare () are groups, + is one-or-more', async () => {
-    expect(await sedE('s/(foo)/[\\1]/', 'foo\n')).toBe('[foo]\n')
-    expect(await sedE('s/a+/X/', 'aaab\n')).toBe('Xb\n')
-    expect(await sedE('s/cat|dog/PET/', 'dog\n')).toBe('PET\n')
-  })
-
-  it('regex addresses honor BRE/ERE too', async () => {
-    expect(await sed('/a\\+/d', 'aaa\nbbb\n')).toBe('bbb\n')
-    expect(await sedE('/a+/d', 'aaa\nbbb\n')).toBe('bbb\n')
-  })
-})
-
-describe('sed s/// edge cases', () => {
-  it('handles an escaped delimiter in the pattern', async () => {
-    expect(await sed('s/a\\/b/c/', 'a/b\n')).toBe('c\n')
-  })
-
-  it('handles an escaped delimiter in the replacement', async () => {
-    expect(await sed('s/x/a\\/b/', 'x\n')).toBe('a/b\n')
-  })
-
-  it('rejects a zero occurrence count', async () => {
-    await expect(sed('s/o/O/0', '')).rejects.toThrow(/may not be zero/)
-  })
-})
-
-describe('sed address delimiters', () => {
-  it('escaped delimiter inside an address regex is a literal slash', async () => {
-    expect(await sed('/a\\/b/d', 'x\na/b\ny\n')).toBe('x\ny\n')
-  })
-
-  it('custom-delimiter address form \\cREc', async () => {
-    expect(await sed('\\%a/b%d', 'a/b\nz\n')).toBe('z\n')
-  })
-
-  it('BRE escapes inside an address survive to the regex', async () => {
-    expect(await sed('/a\\+b/d', 'x\na+b\naab\ny\n')).toBe('x\na+b\ny\n')
-  })
-
-  it('range addresses honor escaped delimiters', async () => {
-    expect(await sed('/a\\/b/,/c\\/d/d', 'x\na/b\nmid\nc/d\ny\n')).toBe('x\ny\n')
-  })
-
-  it('unterminated address regex throws', async () => {
-    await expect(sed('/a\\/b', 'x\n')).rejects.toThrow('unterminated address regex')
-  })
-})
-
-describe('sed replacement uses the original match', () => {
-  it('preserves word boundary context', async () => {
-    expect(await sed(String.raw`s/\Ba/X/g`, 'ba a\n')).toBe('bX a\n')
-  })
-  it('expands zero and single-digit captures without changing case', async () => {
-    expect(await sed(String.raw`s/\(a\)b/[\0:\1:&:\10]/I`, 'Ab\n')).toBe('[Ab:A:Ab:A0]\n')
-  })
-  it('keeps unmatched groups empty and dollar signs literal', async () => {
-    expect(await sedE(String.raw`s/(a)(b)?/[\1:\2:$&]/I`, 'A\n')).toBe('[A::$A]\n')
-  })
-})
-
-it.each([
-  ['2b\ns/./X/', 'a\nb\nc\nd\n', 'X\nb\nX\nX\n'],
-  ['1b\n$!d', 'a\nb\nc\nd\n', 'a\nd\n'],
-  ['s/a/A/\nt\ns/./X/', 'a\nb\n', 'A\nX\n'],
-  ['1b done\ns/./X/\n:done\ns/$/!/', 'a\nb\n', 'a!\nX!\n'],
-])('branch and label end at newline: %s', async (script, text, expected) => {
-  expect(await sed(script, text)).toBe(expected)
-})
-
-it.each([
-  ['s/.*/\\U&/', 'hello world\n', 'HELLO WORLD\n'],
-  ['s/\\w\\+/\\u&/g', 'hello world\n', 'Hello World\n'],
-  ['s/\\(o\\) \\(w\\)/\\U\\1\\E \\2/', 'hello world\n', 'hellO world\n'],
-  ['s/.*/\\u\\L&/', 'hELLO\n', 'hello\n'],
-  ['s/.*/\\L\\u&/', 'hELLO\n', 'Hello\n'],
-  ['s/\\(x*\\)\\(a\\)/\\u\\1\\2/', 'ab\n', 'Ab\n'],
-  ['s/abc/\\u\\lX/', 'abc\n', 'x\n'],
-  ['s/\\(x*\\)a/\\u\\1\\Lz/', 'a\n', 'z\n'],
-  ['s/\\(x*\\)a/\\l\\1\\UZz/', 'a\n', 'ZZ\n'],
-  ['s/\\(x*\\)a\\(b\\)/\\u\\1\\E\\2/', 'ab\n', 'b\n'],
-  ['s/\\(x*\\)a/\\u\\1\\l\\1\\Uq/', 'ab\n', 'Qb\n'],
-  ['s/\\(x*\\)\\(y*\\)\\(a\\)/\\u\\1\\2\\3/', 'ab\n', 'ab\n'],
-  ['s/.*/\\U&/', 'a\u00e9\n', byteView('A\u00e9\n')],
-])('case conversion: %s', async (script, text, expected) => {
-  expect(await sed(script, text)).toBe(expected)
-})
-
-describe('sed l (GNU sed 4.9)', () => {
-  it('shows C escapes, a doubled backslash and octal for other bytes', () => {
-    expect(listLine('a\tb\\c\x01', 70)).toBe('a\\tb\\\\c\\001$\n')
-    expect(listLine('x\x7f\x1b\r\f\v\b\x07', 70)).toBe('x\\177\\033\\r\\f\\v\\b\\a$\n')
-  })
-
-  it('shows every byte of a multibyte character in octal', () => {
-    expect(listLine(byteView('café'), 70)).toBe('caf\\303\\251$\n')
-  })
-
-  it('shows a raw byte as itself in octal', () => {
-    expect(listLine(byteView(new Uint8Array([0xff])), 70)).toBe('\\377$\n')
-  })
-
-  it('folds at 69 characters and a backslash', () => {
-    expect(listLine('0'.repeat(69), 70)).toBe(`${'0'.repeat(69)}$\n`)
-    expect(listLine('0'.repeat(70), 70)).toBe(`${'0'.repeat(69)}\\\n0$\n`)
-  })
-
-  it('never splits an escape across a fold', () => {
-    expect(listLine('aaa\tb', 5)).toBe('aaa\\\n\\tb$\n')
-  })
-
-  it('does not fold at width 0 and folds before every character at 1', () => {
-    expect(listLine('abc', 0)).toBe('abc$\n')
-    expect(listLine('ab', 1)).toBe('\\\na\\\nb$\n')
-  })
-
-  it('takes its width from `l N`, then -l, then 70', async () => {
-    expect((await run('l 5', 'abcdefgh\n', { suppress: true })).stdout).toBe('abcd\\\nefgh$\n')
-    expect((await run('l', 'abcdefgh\n', { suppress: true, lineLength: 5 })).stdout).toBe(
-      'abcd\\\nefgh$\n',
-    )
-    expect((await run('l;l 0', 'abcdefgh\n', { suppress: true, lineLength: 5 })).stdout).toBe(
-      'abcd\\\nefgh$\nabcdefgh$\n',
-    )
-  })
-
-  it('shows the embedded newline and always ends its own line', async () => {
-    expect((await run('N;l', 'a\nb\n', { suppress: true })).stdout).toBe('a\\nb$\n')
-    expect(await sed('l', 'abc')).toBe('abc$\nabc')
-  })
-})
-
-describe('sed = n N D', () => {
-  it('= prints the line number, before the missing newline is due', async () => {
-    expect((await run('$=', 'a\nb\nc\n', { suppress: true })).stdout).toBe('3\n')
-    expect((await run('p;=', 'a\nb', { suppress: true })).stdout).toBe('a\n1\nb\n2\n')
-  })
-
-  it('n prints and reads on; at the end it quits without printing again', async () => {
-    expect((await run('n;p', 'a\nb\nc\n', { suppress: true })).stdout).toBe('b\n')
-    expect(await sed('n;d', 'a\nb\nc\n')).toBe('a\nc\n')
-    expect(await sed('n', 'a\n')).toBe('a\n')
-    expect((await run('n;p', 'a\n', { suppress: true })).stdout).toBe('')
-  })
-
-  it('n and N write the append queue before reading', async () => {
-    expect(await sed('n;a X', 'a\nb\nc\n')).toBe('a\nb\nX\nc\n')
-    expect((await run(['a X', 'N'], 'a\nb\n')).stdout).toBe('X\na\nb\n')
-  })
-
-  it('reading a line clears the substitution flag', async () => {
-    expect(await sed('s/a/X/;n;T;s/$/!/', 'a\nb\n')).toBe('X\nb\n')
-  })
-
-  it('N at the end prints the pattern space', async () => {
-    expect(await sed('N', 'a\nb\nc\n')).toBe('a\nb\nc\n')
-    expect((await run('N;p', 'a\nb\nc\n', { suppress: true })).stdout).toBe('a\nb\n')
-    expect(await sed('$!N;P;D', 'a\nb\nc\n')).toBe('a\nb\nc\n')
-  })
-})
-
-describe('sed q Q T z', () => {
-  it('q prints, writes the append queue and exits with its code', async () => {
-    const r = await run(['1a X', '1q5'], 'a\nb\n')
-    expect(r.stdout).toBe('a\nX\n')
-    expect(r.exitCode).toBe(5)
-    expect((await run('2q 300', 'a\nb\nc\n')).exitCode).toBe(44)
-  })
-
-  it('Q quits without printing or the append queue', async () => {
-    const r = await run(['1a X', '1Q7'], 'a\nb\n')
-    expect(r.stdout).toBe('')
-    expect(r.exitCode).toBe(7)
-  })
-
-  it('T branches when there was no substitution', async () => {
-    expect(await sed('s/a/A/;T;s/$/!/', 'a\nb\nc\n')).toBe('A!\nb\nc\n')
-  })
-
-  it('z empties the pattern space', async () => {
-    expect(await sed('z;s/^$/E/', 'a\nb\n')).toBe('E\nE\n')
-  })
-})
-
-describe('sed r R w W F', () => {
-  const files = { '/r': { text: 'R1\nR2\n' }, '/nonl': { text: 'x' } }
-
-  it('r queues the file for the end of the cycle', async () => {
-    expect((await run('r /r', 'a\nb\n', { files })).stdout).toBe('a\nR1\nR2\nb\nR1\nR2\n')
-    expect((await run(['1r /r', '1a X'], 'a\nb\n', { files })).stdout).toBe('a\nR1\nR2\nX\nb\n')
-    expect((await run(['1r /r', '1d'], 'a\nb\n', { files })).stdout).toBe('R1\nR2\nb\n')
-  })
-
-  it('r writes a file without a final newline as it is', async () => {
-    expect((await run('r /nonl', 'a\nb\n', { files })).stdout).toBe('a\nxb\nx')
-  })
-
-  it('0r writes the file before the first line', async () => {
-    expect((await run('0r /r', 'a\nb\n', { files })).stdout).toBe('R1\nR2\na\nb\n')
-  })
-
-  it('r and R ignore a file that cannot be opened', async () => {
-    expect((await run('1r /nope', 'a\nb\n', { files })).stdout).toBe('a\nb\n')
-    expect((await run('R /nope', 'a\nb\n', { files })).stdout).toBe('a\nb\n')
-  })
-
-  it('r of a directory is a read error, exit 4', async () => {
-    const r = await run('r /d', 'a\nb\n', {
-      files: { '/d': { error: 'sed: read error on /d: Is a directory\n' } },
-    })
-    expect(r.stdout).toBe('a\n')
-    expect(r.stderr).toBe('sed: read error on /d: Is a directory\n')
-    expect(r.exitCode).toBe(4)
-  })
-
-  it('R appends one line per run and shares the reader', async () => {
-    expect((await run('R /r', 'a\nb\nc\n', { files })).stdout).toBe('a\nR1\nb\nR2\nc\n')
-    expect((await run(['R /r', 'R /r'], 'a\nb\n', { files })).stdout).toBe('a\nR1\nR2\nb\n')
-  })
-
-  it('R rewinds for each file under -s', async () => {
-    const inputs = [
-      { name: 'f', text: 'a\n' },
-      { name: 'f', text: 'a\n' },
-    ]
-    expect((await run('R /r', inputs, { files })).stdout).toBe('a\nR1\na\nR2\n')
-    expect((await run('R /r', inputs, { files, separate: true })).stdout).toBe('a\nR1\na\nR1\n')
-  })
-
-  it('w and W write the pattern space, s///w only a changed one', async () => {
-    expect((await run('w /o', 'a\nb', { suppress: true })).wfiles.get('/o')).toBe('a\nb')
-    expect((await run('N;W /o', 'a\nb\nc\n', { suppress: true })).wfiles.get('/o')).toBe('a\n')
-    expect((await run('s/a/X/w /o', 'a\nb\n')).wfiles.get('/o')).toBe('X\n')
-    expect((await run(['1w /o', '2w /o'], 'a\nb\n', { suppress: true })).wfiles.get('/o')).toBe(
-      'a\nb\n',
-    )
-  })
-
-  it('/dev/stdout interleaves with the output, with its own missing newline', async () => {
-    expect(await sed('w /dev/stdout', 'a\nb\n')).toBe('a\na\nb\nb\n')
-    expect(await sed('w /dev/stdout', 'a\nb')).toBe('a\na\nbb')
-    expect(await sed('s/a/X/w /dev/stdout', 'a\nb\n')).toBe('X\nX\nb\n')
-  })
-
-  it('/dev/stderr goes to the error stream', async () => {
-    const r = await run('1w /dev/stderr', 'a\nb\n', { suppress: true })
-    expect(r.stdout).toBe('')
-    expect(r.stderr).toBe('a\n')
-  })
-
-  it('F prints the file name, - for stdin', async () => {
-    expect(await sed('F', 'a\n')).toBe('-\na\n')
-    expect(
-      (
-        await run('F', [
-          { name: '/f1', text: 'a\n' },
-          { name: 'f2', text: 'b\n' },
-        ])
-      ).stdout,
-    ).toBe('/f1\na\nf2\nb\n')
-  })
-})
-
-describe('sed addresses (GNU sed 4.9)', () => {
-  it('reads first~step, addr,+N, addr,~N and 0,/re/', async () => {
-    expect(await sed('1~2!d', 'a\nb\nc\n')).toBe('a\nc\n')
-    expect((await run('2,+1p', 'a\nb\nc\n', { suppress: true })).stdout).toBe('b\nc\n')
-    expect((await run('2,~4p', 'a\nb\nc\nd\ne\n', { suppress: true })).stdout).toBe('b\nc\nd\n')
-    expect((await run('0,/a/p', 'a\nb\n', { suppress: true })).stdout).toBe('a\n')
-    expect((await run('1,/a/p', 'a\nb\n', { suppress: true })).stdout).toBe('a\nb\n')
-  })
-
-  it('a regex range spans at least two lines; a line range ending before it one', async () => {
-    expect((await run('/a/,/a/p', 'a\nb\na\nc\n', { suppress: true })).stdout).toBe('a\nb\na\n')
-    expect((await run('2,1p', 'a\nb\nc\n', { suppress: true })).stdout).toBe('b\n')
-    expect((await run('/b/,1p', 'a\nb\nc\n', { suppress: true })).stdout).toBe('b\n')
-  })
-
-  it('c on a range prints once, when it closes, and never if it stays open', async () => {
-    expect(await sed('2,3cX', 'a\nb\nc\nd\n')).toBe('a\nX\nd\n')
-    expect(await sed('1,/x/c\\\nX', 'a\nb\n')).toBe('')
-    expect(await sed('2,3!cX', 'a\nb\nc\nd\n')).toBe('X\nb\nc\nX\n')
-  })
-
-  it('an empty regex is the last one used', async () => {
-    expect((await run('/b/{//p}', 'abc\n', { suppress: true })).stdout).toBe('abc\n')
-    expect(await sed('s/b/X/;s//Y/', 'abc\n')).toBe('aXc\n')
-    const r = await run('//p', 'abc\n')
-    expect(r.stderr).toBe('sed: -e expression #1, char 0: no previous regular expression\n')
-    expect(r.exitCode).toBe(1)
-  })
-
-  it('I and M modify an address or s', async () => {
-    expect((await run('/A/Ip', 'a\nb\n', { suppress: true })).stdout).toBe('a\n')
-    expect(await sed('N;s/^b/>/M', 'a\nb\n')).toBe('a\n>\n')
-    expect(await sed('N;s/^b/>/', 'a\nb\n')).toBe('a\nb\n')
-  })
-})
-
-describe('sed streams and files', () => {
-  it('writes a missing newline before anything else goes out', async () => {
-    expect(await sed('p', 'a')).toBe('a\na')
-    expect(await sed('a X', 'a\nb')).toBe('a\nX\nb\nX\n')
-    expect(await sed('i X', 'a')).toBe('X\na')
-  })
-
-  it('reads $ across files, skipping empty ones, or per file under -s', async () => {
-    const inputs = [
-      { name: 'f', text: 'one\ntwo\n' },
-      { name: 'g', text: 'x\ny\n' },
-      { name: 'e', text: '' },
-    ]
-    expect((await run('$=', inputs, { suppress: true })).stdout).toBe('4\n')
-    expect((await run('$=', inputs, { suppress: true, separate: true })).stdout).toBe('2\n2\n')
-    expect((await run('1h;2G', inputs.slice(0, 2), { separate: true })).stdout).toBe(
-      'one\ntwo\none\nx\ny\nx\n',
-    )
-  })
-
-  it('never opens an operand after q, and a failed one outranks q', async () => {
-    const missing = (): SedInput => ({ name: 'nope', source: missingSource() })
-    const after = await run('2{p;q}', [{ name: 'f', text: 'one\ntwo\n' }, missing()], {
+    expect([read, readErr, readCode]).toEqual([
+      'one\n',
+      'sed: read error on /in1: Is a directory\n',
+      4,
+    ])
+  })
+
+  it('reads a line whole across chunks', async () => {
+    const pieces = ['ab', 'c\nd', '', 'e', 'f\n', ...Array<string>(2000).fill('x'), '\n']
+    const source = (async function* () {
+      for (const piece of pieces) {
+        await Promise.resolve()
+        yield ENC.encode(piece)
+      }
+    })()
+    expect((await run('', [source]))[0]).toBe('abc\ndef\n' + 'x'.repeat(2000) + '\n')
+  })
+
+  it("hands a loop's w file on as it runs", async () => {
+    const program = compileScript([{ kind: 'expr', text: ':a\nw /f\nba' }], false)
+    const machine = new SedMachine(program, {
       suppress: true,
+      separate: false,
+      lineLength: 70,
+      files: new Map(),
+      readerFiles: new Map(),
+      utf8: false,
     })
-    expect(after.stdout).toBe('two\n')
-    expect(after.exitCode).toBe(0)
-    const quit = await run('Q3', [missing(), { name: 'f', text: 'one\n' }])
-    expect([quit.stderr, quit.exitCode]).toEqual([
-      "sed: can't read nope: No such file or directory\n",
+    const stop = (): Promise<void> => Promise.reject(new Error('flushed'))
+    const drain = async (): Promise<void> => {
+      for await (const chunk of machine.process(
+        [{ name: '-', source: ENC.encode('x\n') }],
+        true,
+        undefined,
+        stop,
+      ))
+        void chunk
+    }
+    await expect(drain()).rejects.toThrow('flushed')
+  })
+
+  it('looks one byte ahead', async () => {
+    const [out, err, code] = await run('$!p;q', [failingAfter('one\nx')], { suppress: true })
+    expect([out, err, code]).toEqual(['one\n', '', 0])
+  })
+
+  it('ends an input that fails as it is looked into', async () => {
+    const quiet = { suppress: true }
+    expect((await run('$p', [failingAfter('first\n')], quiet)).slice(0, 3)).toEqual([
+      'first\n',
+      '',
+      0,
+    ])
+    expect((await run('p', [failingAfter('first\n'), 'good\n'], quiet)).slice(0, 3)).toEqual([
+      'first\n',
+      'sed: read error on /in0: Permission denied\n',
+      4,
+    ])
+  })
+
+  it('reports a missing input and reads on past it', async () => {
+    const [out, err, code] = await run('q5', [failing('ENOENT', 'gone'), 'one\n'])
+    expect([out, err, code]).toEqual([
+      'one\n',
+      "sed: can't read /in0: No such file or directory\n",
       2,
     ])
   })
 
-  it('reads r files anew after setFiles, R files once', async () => {
-    const machine = new SedMachine(
-      compileScript([
-        { kind: 'expr', text: '1r /r' },
-        { kind: 'expr', text: '1R /q' },
-      ]),
-      {
-        suppress: false,
-        separate: true,
-        lineLength: 70,
-        files: new Map([['/r', { text: 'old\n' }]]),
-        readerFiles: new Map([['/q', { text: 'Q1\nQ2\n' }]]),
-      },
+  it('queues appended text and files', async () => {
+    const files = new Map([['/r', { text: 'R1\n' }]])
+    expect((await run('1r /r\n1a X\n2r/r', ['a\nb\nc\n'], { files }))[0]).toBe(
+      'a\nR1\nX\nb\nR1\nc\n',
     )
-    expect(await collect(machine, [{ name: 'a', text: 'a\n' }])).toBe('a\nold\nQ1\n')
-    machine.setFiles(new Map([['/r', { text: 'new\n' }]]))
-    expect(await collect(machine, [{ name: 'b', text: 'b\n' }])).toBe('b\nnew\nQ1\n')
+    expect((await run('0r /r', ['a\n'], { files }))[0]).toBe('R1\na\n')
+    expect((await run('1r /r\n1Q', ['a\n'], { files }))[0]).toBe('')
   })
 
-  it('refuses the removed L as GNU 4.9 does when it runs', async () => {
-    const r = await run('L', 'a\n')
-    expect(r.stderr).toBe('sed: INTERNAL ERROR: Bad cmd L\n')
-    expect(r.exitCode).toBe(4)
+  it('streams an r file and reports a failed read', async () => {
+    const files = new Map([['/r', { read: () => failingAfter('R1\n', 'R2') }]])
+    const [out, err, code] = await run('1r /r\n$a X', ['a\nb\n'], { files })
+    expect([out, err, code]).toEqual(['a\nR1\nR2', 'sed: read error on /r: Permission denied\n', 4])
+  })
+
+  it('lets an abort end a stalled r or R read', async () => {
+    for (const script of ['1r /r', 'R /r']) {
+      let closed = false
+      const stalled = (): AsyncIterable<Uint8Array> => ({
+        [Symbol.asyncIterator]: () => {
+          let sent = false
+          return {
+            next: () => {
+              if (sent) return new Promise<IteratorResult<Uint8Array>>(() => undefined)
+              sent = true
+              return Promise.resolve({ done: false, value: ENC.encode('R') })
+            },
+            return: () => {
+              closed = true
+              return Promise.resolve({ done: true, value: undefined })
+            },
+          }
+        },
+      })
+      const files = new Map([['/r', { read: stalled }]])
+      const program = compileScript([{ kind: 'expr', text: script }], false)
+      const machine = new SedMachine(program, {
+        suppress: false,
+        separate: false,
+        lineLength: 70,
+        files,
+        readerFiles: files,
+        utf8: false,
+      })
+      const controller = new AbortController()
+      const drain = async (): Promise<void> => {
+        const inputs = [{ name: '-', source: ENC.encode('x\n') }]
+        for await (const chunk of machine.process(inputs, true, controller.signal, flush))
+          void chunk
+      }
+      const done = drain()
+      setTimeout(() => {
+        controller.abort()
+      }, 10)
+      await expect(done).rejects.toThrow('execute aborted')
+      expect(closed).toBe(true)
+    }
+  })
+
+  it('cuts an R file at newlines only', async () => {
+    const files = new Map([['/r', { text: 'left\rright\nnext\n' }]])
+    expect((await run('R /r', ['1\n2\n'], { files }))[0]).toBe('1\nleft\rright\n2\nnext\n')
+  })
+
+  it('keeps the append queue when D restarts', async () => {
+    expect((await run('$!N;a X\nP;D', ['a\nb\n']))[0]).toBe('a\nb\nX\nX\n')
+  })
+
+  it('runs 0r where the script reaches it', async () => {
+    const files = new Map([['/r', { text: 'R\n' }]])
+    expect((await run('p;0r /r', ['x\n'], { files }))[0]).toBe('x\nR\nx\n')
+    expect((await run('b;0r /r', ['x\n'], { files }))[0]).toBe('x\n')
+    expect((await run('1d;0r /r', ['x\ny\n'], { files }))[0]).toBe('y\n')
+  })
+
+  it('keeps quit codes and the empty regex as GNU does', async () => {
+    const [, , code, machine] = await run('2q300', ['a\nb\nc\n'])
+    expect([code, machine.stopped()]).toEqual([44, true])
+    const [, err, failed] = await run('2{/a/p};1{//p}', ['a\nb\n'], { suppress: true })
+    expect([err, failed]).toEqual([
+      'sed: -e expression #1, char 0: no previous regular expression\n',
+      1,
+    ])
+    expect((await run('/a/I{s//x/p}', ['AB\n'], { suppress: true }))[0]).toBe('xB\n')
   })
 })
-
-describe('sed regex meaning (GNU sed 4.9)', () => {
-  it('converts \\d \\o \\x \\t \\n \\cX before regcomp, in both syntaxes', async () => {
-    expect(await sed('s/\\d065/X/', 'A\n')).toBe('X\n')
-    expect(await sedE('s/\\d065/X/', 'A\n')).toBe('X\n')
-    expect(await sed('s/\\o101/X/', 'A\n')).toBe('X\n')
-    expect(await sedE('s/\\x41/X/', 'x41 A\n')).toBe('x41 X\n')
-    expect(await sedE('s/\\t/X/', 'a\tb t\n')).toBe('aXb t\n')
-    expect(await sed('s/\\cA/X/', 'a\x01b\n')).toBe('aXb\n')
-    expect(await sed('N;s/[\\n]/X/', 'a\nb\n')).toBe('aXb\n')
-    expect(await sed('s/[\\t]/X/', 'a\tb\n')).toBe('aXb\n')
-  })
-
-  it('reads \\d with no digits as d, and what \\x made as syntax', async () => {
-    expect(await sedE('s/\\d/X/', 'd 7\n')).toBe('X 7\n')
-    expect(await sedE('s/\\d+/<&>/g', 'abc 123 x45\n')).toBe('abc 123 x45\n')
-    expect(await sed('s/a\\x2eb/X/g', 'a.b axb\n')).toBe('X X\n')
-    expect(await sed('s/a\\x2ab/X/g', 'a*b aab\n')).toBe('a*X X\n')
-  })
-
-  it('keeps GNU operators and POSIX brackets', async () => {
-    expect(await sedE('s/\\<w/X/g', 'word sword\n')).toBe('Xord sword\n')
-    expect(await sedE('s/\\w+/X/g', 'a_b c\n')).toBe('X X\n')
-    expect(await sedE('s/a\\+/X/', 'a+b aab\n')).toBe('Xb aab\n')
-    expect(await sed('s/a\\+/X/', 'a+b aab\n')).toBe('X+b aab\n')
-    expect(await sed('s/a|b/X/', 'a|b\n')).toBe('X\n')
-    expect(await sedE('s/a|b/X/g', 'a|b\n')).toBe('X|X\n')
-    expect(await sed('s/[\\.]/X/g', 'a.b\\\n')).toBe('aXbX\n')
-    expect(await sed('s/*a/x/', 'a\n')).toBe('a\n')
-    expect(await sed('s/a{x}/y/', 'a{x}\n')).toBe('y\n')
-    expect(await sedE('s/a$b/X/', 'ab\n')).toBe('ab\n')
-    expect(await sed('s/a^b/X/', 'a^b\n')).toBe('X\n')
-  })
-
-  it('lets . and [^x] match a newline, except under M', async () => {
-    expect(await sed('N;s/a.b/X/', 'a\nb\n')).toBe('X\n')
-    expect(await sed('N;s/a[^x]b/X/', 'a\nb\n')).toBe('X\n')
-    expect(await sed('N;s/a.b/X/M', 'a\nb\n')).toBe('a\nb\n')
-    expect(await sed('N;s/a$/X/M', 'a\nb\n')).toBe('X\nb\n')
-    expect(await sed('N;s/a$/X/', 'a\nb\n')).toBe('a\nb\n')
-    expect(await sed('N;s/^/X/Mg', 'a\nb\n')).toBe('Xa\nXb\n')
-  })
-})
-
-async function collect(machine: SedMachine, inputs: SedInput[]): Promise<string> {
-  let out = ''
-  for await (const chunk of machine.process(inputs, false)) out += chunk
-  return out
-}

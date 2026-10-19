@@ -40,7 +40,7 @@ from mirage.errors.render import format_fs_error
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
-from mirage.shell.bytes import encode_text
+from mirage.shell.bytes import encode_text, utf8_locale
 from mirage.types import CheckFn, PathSpec
 from mirage.view.types import FollowOperands, SessionView
 from mirage.workspace.files import Files
@@ -140,6 +140,9 @@ async def handle_cross_mount(
                 cwd,
                 vfs,
                 input_source,
+                utf8_locale(
+                    None if session_view is None else session_view.snapshot()
+                ),
             )
         if cmd_name == Cmd.DU:
             return await run_du(

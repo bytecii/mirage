@@ -47,6 +47,8 @@ interface Exports {
 
 // Linear memory only grows, so an instance a large stream (a big sort) grew
 // is dropped once no stream is open and the next stream gets a fresh one.
+// Movable streams (the matchers a cache keeps) do not hold it: they close
+// with it, and their owners open them again on the next instance.
 const RECYCLE_BYTES = 32 * 1024 * 1024
 
 const encoder = new TextEncoder()
@@ -55,6 +57,16 @@ let compiled: Promise<WebAssembly.Module> | undefined
 let compiledSync: WebAssembly.Module | undefined
 let current: Promise<Exports> | undefined
 let synchronous: Exports | undefined
+const movables = new WeakMap<Exports, Set<OpenStream>>()
+
+// The next stream gets a fresh instance; the movable streams still on this one
+// close, and `live` says so to their owners.
+function retire(exports: Exports, trapped: boolean): void {
+  current = undefined
+  if (synchronous === exports) synchronous = undefined
+  for (const stream of movables.get(exports) ?? []) stream.drop(!trapped)
+  movables.delete(exports)
+}
 
 async function instance(): Promise<Exports> {
   if (synchronous !== undefined) return synchronous
@@ -77,10 +89,24 @@ export class OpenStream {
   private handle: number
   private readonly capacity: number
 
-  constructor(exports: Exports, handle: number) {
+  constructor(
+    exports: Exports,
+    handle: number,
+    readonly movable = false,
+  ) {
     this.exports = exports
     this.handle = handle
     this.capacity = exports.mirage_rs_input_capacity()
+    if (movable) {
+      const held = movables.get(exports) ?? new Set()
+      held.add(this)
+      movables.set(exports, held)
+    }
+  }
+
+  /** Whether the stream is still open; a movable one closes when its instance retires. */
+  get live(): boolean {
+    return this.handle !== 0
   }
 
   /** Push one chunk and return what it produced. */
@@ -157,15 +183,21 @@ export class OpenStream {
 
   close(): void {
     if (this.handle === 0) return
-    this.exports.mirage_rs_close(this.handle)
-    this.handle = 0
+    this.drop(true)
+    const held = movables.get(this.exports)
     if (
-      this.exports.mirage_rs_open_count() === 0 &&
+      this.exports.mirage_rs_open_count() === (held?.size ?? 0) &&
       this.exports.memory.buffer.byteLength > RECYCLE_BYTES
-    ) {
-      current = undefined
-      if (synchronous === this.exports) synchronous = undefined
-    }
+    )
+      retire(this.exports, false)
+  }
+
+  /** Close the handle, on the instance itself unless it trapped. */
+  drop(release: boolean): void {
+    if (this.handle === 0) return
+    if (release) this.exports.mirage_rs_close(this.handle)
+    this.handle = 0
+    movables.get(this.exports)?.delete(this)
   }
 
   // A trap (a Rust panic) stops the instance mid-call with its state still
@@ -176,9 +208,8 @@ export class OpenStream {
       return call()
     } catch (err) {
       if (err instanceof WebAssembly.RuntimeError) {
-        this.handle = 0
-        current = undefined
-        if (synchronous === this.exports) synchronous = undefined
+        this.drop(false)
+        retire(this.exports, true)
       }
       throw err
     }
@@ -222,21 +253,27 @@ export async function openStream(
   return open(exports, kind, config)
 }
 
-/** Open a stream for synchronous pure utilities, initializing Wasm on first use. */
+/**
+ * Open a stream for synchronous pure utilities, initializing Wasm on first use.
+ * A `movable` stream does not keep a grown instance alive: it closes when the
+ * instance retires, and its owner opens it again.
+ */
 export function openStreamSync(
   kind: string,
   config: Readonly<Record<string, util.JSONType>>,
+  movable = false,
 ): OpenStream {
   compiledSync ??= new WebAssembly.Module(decodeBase64(MIRAGE_RS_WASM) as BufferSource)
   compiled ??= Promise.resolve(compiledSync)
   synchronous ??= new WebAssembly.Instance(compiledSync, {}).exports as unknown as Exports
-  return open(synchronous, kind, config)
+  return open(synchronous, kind, config, movable)
 }
 
 function open(
   exports: Exports,
   kind: string,
   config: Readonly<Record<string, util.JSONType>>,
+  movable = false,
 ): OpenStream {
   const kindBytes = encoder.encode(kind)
   const configBytes = encoder.encode(JSON.stringify(config))
@@ -255,7 +292,7 @@ function open(
     )
     throw new StreamRefusal(message, new Uint8Array())
   }
-  return new OpenStream(exports, handle)
+  return new OpenStream(exports, handle, movable)
 }
 
 /**

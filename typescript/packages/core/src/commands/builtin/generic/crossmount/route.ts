@@ -30,7 +30,7 @@ import { runDu } from './du.ts'
 import type { FlagValue } from '../../../spec/types.ts'
 import { readFailExitCode } from '../../../spec/usage.ts'
 import { UsageError } from '../../../errors.ts'
-import { encodeText } from '../../../../shell/bytes.ts'
+import { encodeText, utf8Locale } from '../../../../shell/bytes.ts'
 import type { Files } from '../../../../workspace/files.ts'
 
 // Run a command whose path operands span mounts. Every command combines
@@ -95,6 +95,7 @@ export async function handleCrossMount(
         cwd,
         vfs,
         input,
+        utf8Locale(sessionView?.snapshot()),
       )
     }
     if (cmdName === 'du') {

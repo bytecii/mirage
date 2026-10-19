@@ -12,7 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,7 @@ from dulwich.objects import Commit
 from dulwich.repo import Repo
 
 from mirage.commands.cli.builtin.git.pickaxe import contains, greps, touches
+from mirage.rs.regex import PosixRegex
 from tests.commands.cli.builtin.git.conftest import (
     AUTHOR,
     commit_file,
@@ -122,8 +122,13 @@ def test_a_commit_touching_nothing_relevant_is_not_reported(repo_path):
     ],
 )
 def test_contains_counts_as_git_does(old, new, pattern, listed):
-    regex = re.compile(pattern)
+    regex = PosixRegex(pattern, True, utf8=True, multiline=True)
     assert (contains(old, regex) != contains(new, regex)) is listed
+
+
+def test_contains_steps_over_a_whole_character_past_an_empty_match():
+    regex = PosixRegex("x*", True, utf8=True, multiline=True)
+    assert contains("😀😀", regex) == 2
 
 
 def test_a_gitlink_is_read_as_its_subproject_line(repo_path):
@@ -135,5 +140,5 @@ def test_a_gitlink_is_read_as_its_subproject_line(repo_path):
     with Repo(str(repo_path)) as repo:
         head = commits_of(repo_path)[0]
         assert touches(repo, head, b"Subproject commit " + target)
-        assert greps(repo, head, re.compile("^Subproject commit"))
+        assert greps(repo, head, PosixRegex("^Subproject commit", True))
         assert not touches(repo, head, b"absent-string")

@@ -577,6 +577,43 @@
         "stdout": "",
         "stderr": "sed: couldn't open file /data/b.txt/../review-dot-out: Not a directory\n"
       }
+    },
+    {
+      "id": "sed_filenames_are_shell_text_in_the_c_locale",
+      "seq": 9970026,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'x\\n' > /data/漢.txt; LC_ALL=C sed -n F /data/漢.txt; printf 'y\\n' | LC_ALL=C sed 'w /data/é.out'; cat /data/é.out; printf 'r\\n' > /data/é.in; echo a | LC_ALL=C sed 'r /data/é.in'; rm /data/漢.txt /data/é.out /data/é.in",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/漢.txt\ny\ny\na\nr\n",
+        "stderr": ""
+      },
+      "flags": [
+        "n"
+      ]
     }
   ]
 }

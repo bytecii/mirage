@@ -3,13 +3,11 @@ import { concat } from '../../../../utils/bytes.ts'
 import { IOResult } from '../../../../io/types.ts'
 import { byteView, encodeText, fromByteView, utf8Locale } from '../../../../shell/bytes.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
-import { compilePosixRegex, posixLineMatcher } from '../../../../utils/posix.ts'
-import { compilePattern } from '../../../builtin/grep_pattern.ts'
 import { RegexSyntax } from '../../../builtin/types.ts'
-import { BreError, PosixSyntax, translateEre } from '../../../builtin/utils/bre.ts'
+import { RegexError } from '../../../../rs/errors.ts'
+import { posixEscape, posixRegex, type PosixRegex } from '../../../../rs/regex.ts'
 import type { PathSpec } from '../../../../types.ts'
 import type { CommandFnResult, Context } from '../../../config.ts'
-import { UsageError as PatternError } from '../../../errors.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import { requireWorkTree } from './discover.ts'
 import {
@@ -47,6 +45,14 @@ interface GrepFlags {
   readonly utf8: boolean
 }
 
+// A line test for one pattern; under -w only a match that consumes something
+// counts, so an empty match does not select the line. Mirrors Python's
+// _line_matcher.
+function lineMatcher(pattern: PosixRegex, nonempty: boolean): (line: string) => boolean {
+  if (!nonempty) return (line) => pattern.search(line) !== null
+  return (line) => pattern.all(line).some((span) => span[0] != null && span[0][0] !== span[0][1])
+}
+
 /** Compile patterns once, retaining Git's option precedence and errors. */
 function parseFlags(
   fl: FlagView,
@@ -65,23 +71,23 @@ function parseFlags(
   const compiled: ((line: string) => boolean)[] = []
   for (const value of patterns) {
     for (const part of value.split('\n')) {
+      const view = byteView(part, utf8)
+      let pattern: PosixRegex
       try {
-        let pattern =
-          syntax === RegexSyntax.EXTENDED && !fixed
-            ? compilePosixRegex(
-                translateEre(byteView(part, utf8), PosixSyntax.EXTENDED)[0],
-                ignoreCase ? 'i' : '',
-                utf8,
-              )
-            : compilePattern(byteView(part, utf8), ignoreCase, fixed, false, syntax, utf8)
-        if (wholeWord)
-          pattern = compilePosixRegex(`(?<!\\w)(?:${pattern.source})(?!\\w)`, pattern.flags, utf8)
-        compiled.push(posixLineMatcher(pattern, wholeWord))
+        pattern = posixRegex(
+          fixed ? posixEscape(view) : view,
+          fixed || syntax === RegexSyntax.EXTENDED,
+          'posix',
+          ignoreCase,
+          utf8,
+          false,
+          wholeWord,
+        )
       } catch (err) {
-        if (err instanceof PatternError || err instanceof BreError || err instanceof SyntaxError)
-          throw new PatternCompileError(origin, part, err.message.replace(/^grep: /, ''))
+        if (err instanceof RegexError) throw new PatternCompileError(origin, part, err.message)
         throw err
       }
+      compiled.push(lineMatcher(pattern, wholeWord))
     }
   }
   const listing = fl.asBool('files_without_match')

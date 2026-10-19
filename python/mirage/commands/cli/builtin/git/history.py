@@ -19,7 +19,7 @@ import math
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 import regex
 from dulwich.objects import Commit, ObjectID, Tag
@@ -31,12 +31,6 @@ from dulwich.refs import (
 )
 from dulwich.repo import BaseRepo
 
-from mirage.commands.builtin.utils.bre import (
-    BreError,
-    PosixSyntax,
-    search_bre,
-    translate_ere,
-)
 from mirage.commands.cli.builtin.git.constants import TEMPLATE_KINDS
 from mirage.commands.cli.builtin.git.dates import date_clock, parse_date_mode
 from mirage.commands.cli.builtin.git.errors import (
@@ -70,9 +64,14 @@ from mirage.commands.cli.builtin.git.types import (
 )
 from mirage.commands.cli.builtin.git.util import maybe_bool
 from mirage.commands.spec.flag_view import FlagView
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import PosixRegex, posix_regex
+from mirage.shell.bytes import byte_view, decode_text, utf8_locale
 from mirage.utils.dates import iso_timestamp
 from mirage.utils.posix import compile_posix_regex
 from mirage.workspace.files import Files
+
+LinePattern: TypeAlias = re.Pattern[str] | PosixRegex
 
 logger = logging.getLogger(__name__)
 
@@ -98,17 +97,17 @@ class LogFlags:
             to print; None when unlimited.
         oneline (bool): ``--oneline``, one abbreviated row per commit.
         reverse (bool): ``--reverse``, oldest first.
-        search (str | re.Pattern[str] | None): ``-S``, the pickaxe
+        search (str | PosixRegex | None): ``-S``, the pickaxe
             string, or its pattern under ``--pickaxe-regex``.
-        changed (re.Pattern[str] | None): ``-G``, the pattern an added or
+        changed (PosixRegex | None): ``-G``, the pattern an added or
             removed line must match.
         force_text (bool): search binary changed lines under ``--text``.
         since (float | None): ``--since`` as an epoch second.
         until (float | None): ``--until`` as an epoch second.
-        authors (tuple[re.Pattern[str], ...]): author patterns, ORed together.
-        greps (tuple[re.Pattern[str], ...]): ``--grep`` patterns, any of
+        authors (tuple[LinePattern, ...]): author patterns, ORed together.
+        greps (tuple[LinePattern, ...]): ``--grep`` patterns, any of
             which may match a line of the message.
-        committers (tuple[re.Pattern[str], ...]): ``--committer``
+        committers (tuple[LinePattern, ...]): ``--committer``
             patterns, ORed together.
         mailmap (tuple[MailmapEntry, ...]): the worktree ``.mailmap``,
             which ``%aN``-style placeholders always read.
@@ -134,12 +133,12 @@ class LogFlags:
     max_count: int | None
     oneline: bool
     reverse: bool
-    search: str | re.Pattern[str] | None
+    search: str | PosixRegex | None
     since: float | None
     until: float | None
-    authors: tuple[re.Pattern[str], ...] = ()
-    greps: tuple[re.Pattern[str], ...] = ()
-    committers: tuple[re.Pattern[str], ...] = ()
+    authors: tuple[LinePattern, ...] = ()
+    greps: tuple[LinePattern, ...] = ()
+    committers: tuple[LinePattern, ...] = ()
     mailmap: tuple[MailmapEntry, ...] = ()
     use_mailmap: bool = True
     ignore_case: bool = False
@@ -147,7 +146,7 @@ class LogFlags:
     decorate: Decoration = Decoration.NONE
     all_refs: bool = False
     pretty: LogFormat = MEDIUM
-    changed: re.Pattern[str] | None = None
+    changed: PosixRegex | None = None
     force_text: bool = False
     abbrev_commit: bool = False
 
@@ -259,8 +258,8 @@ def pretty_format(fl: FlagView) -> LogFormat:
 
 
 def _pattern(
-    value: str, syntax: str, ignore_case: bool, origin: str
-) -> re.Pattern[str]:
+    value: str, syntax: str, ignore_case: bool, origin: str, utf8: bool
+) -> LinePattern:
     """One ``--grep``, ``--author`` or ``--committer`` pattern, compiled.
 
     ``-P`` goes to the ``regex`` engine, whose syntax is PCRE's where
@@ -275,6 +274,8 @@ def _pattern(
         syntax (str): which of ``PATTERN_SYNTAXES`` reads it.
         ignore_case (bool): ``-i``/``--regexp-ignore-case``.
         origin (str): git's name for where the pattern came from.
+        utf8 (bool): a UTF-8 locale: characters, not bytes, and case
+            folded by Unicode.
     """
     try:
         if syntax == PERL_REGEXP:
@@ -282,19 +283,23 @@ def _pattern(
                 value, regex.ASCII | (regex.IGNORECASE if ignore_case else 0)
             )
             return perl
-        fold = re.IGNORECASE if ignore_case else 0
         if syntax == FIXED_STRINGS:
+            fold = re.IGNORECASE if ignore_case else 0
             return compile_posix_regex(re.escape(value), fold)
-        if syntax == EXTENDED_REGEXP:
-            return compile_posix_regex(
-                translate_ere(value, PosixSyntax.EXTENDED)[0], fold
-            )
-        return search_bre(value, ignore_case)
-    except (BreError, re.error, regex.error) as exc:
+        return posix_regex(
+            byte_view(value, utf8),
+            syntax == EXTENDED_REGEXP,
+            "posix",
+            ignore_case,
+            utf8,
+        )
+    except RegexError as exc:
+        raise PatternCompileError(origin, value, exc.message) from exc
+    except (re.error, regex.error) as exc:
         raise PatternCompileError(origin, value, str(exc)) from exc
 
 
-def _pickaxe_pattern(value: str, ignore_case: bool) -> re.Pattern[str]:
+def _pickaxe_pattern(value: str, ignore_case: bool, utf8: bool) -> PosixRegex:
     """A ``-G`` or ``--pickaxe-regex`` pattern, compiled as git's
     diffcore-pickaxe compiles it: POSIX extended whatever -E, -F or -P
     say, ``-i`` folding case, and matched one line at a time
@@ -303,17 +308,14 @@ def _pickaxe_pattern(value: str, ignore_case: bool) -> re.Pattern[str]:
     Args:
         value (str): the pattern as typed.
         ignore_case (bool): ``-i``/``--regexp-ignore-case``.
+        utf8 (bool): a UTF-8 locale.
     """
-    flags = re.IGNORECASE if ignore_case else 0
     try:
-        return compile_posix_regex(
-            translate_ere(value, PosixSyntax.EXTENDED, dot_matches_nul=False)[
-                0
-            ],
-            flags,
+        return posix_regex(
+            byte_view(value, utf8), True, "posix", ignore_case, utf8, True
         )
-    except (BreError, re.error) as exc:
-        raise GitError(f"invalid regex: {exc}") from exc
+    except RegexError as exc:
+        raise GitError(f"invalid regex: {exc.message}") from exc
 
 
 def parse_flags(
@@ -337,23 +339,24 @@ def parse_flags(
         if fl.as_bool(name):
             order = "topo" if name == "topo_order" else "date"
     ignore_case = fl.as_bool("regexp_ignore_case")
+    utf8 = utf8_locale(env)
     syntax = BASIC_REGEXP
     for key, _ in fl.occurrences(*PATTERN_SYNTAXES):
         syntax = key
     committers = tuple(
-        _pattern(value, syntax, ignore_case, HEADER_ORIGIN)
+        _pattern(value, syntax, ignore_case, HEADER_ORIGIN, utf8)
         for value in fl.as_list("committer")
     )
     authors = tuple(
-        _pattern(value, syntax, ignore_case, HEADER_ORIGIN)
+        _pattern(value, syntax, ignore_case, HEADER_ORIGIN, utf8)
         for value in fl.as_list("author")
     )
     greps = tuple(
-        _pattern(value, syntax, ignore_case, COMMAND_LINE_ORIGIN)
+        _pattern(value, syntax, ignore_case, COMMAND_LINE_ORIGIN, utf8)
         for values in fl.as_list("grep")
         for value in values.split("\n")
     )
-    search: str | re.Pattern[str] | None = fl.as_str("S")
+    search: str | PosixRegex | None = fl.as_str("S")
     changed = fl.as_str("G")
     for option, value in (("-S", search), ("-G", changed)):
         if value == "":
@@ -363,7 +366,7 @@ def parse_flags(
     if search is not None and changed is not None:
         raise IncompatibleLogOptionsError("-G", "-S", "--find-object")
     if isinstance(search, str) and fl.as_bool("pickaxe_regex"):
-        search = _pickaxe_pattern(search, ignore_case)
+        search = _pickaxe_pattern(search, ignore_case, utf8)
     max_count = fl.as_int("max_count")
     clock = date_clock(env)
     return LogFlags(
@@ -385,7 +388,7 @@ def parse_flags(
         search=search,
         changed=None
         if changed is None
-        else _pickaxe_pattern(changed, ignore_case),
+        else _pickaxe_pattern(changed, ignore_case, utf8),
         since=_window_end(fl, ("after", "since"), "--since", clock.now),
         until=_window_end(fl, ("before", "until"), "--until", clock.now),
         all_refs=fl.as_bool("all"),
@@ -797,9 +800,20 @@ def _in_window(commit: Commit, flags: LogFlags) -> bool:
     return flags.until is None or commit.commit_time <= flags.until
 
 
-def _message_matches(
-    message: bytes, greps: tuple[re.Pattern[str], ...]
-) -> bool:
+def _hits(pattern: LinePattern, text: str) -> bool:
+    """Whether a ``--grep``, ``--author`` or ``--committer`` pattern
+    matches ``text``.
+
+    Args:
+        pattern (LinePattern): the compiled pattern.
+        text (str): the line or identity.
+    """
+    if isinstance(pattern, PosixRegex):
+        return pattern.search(byte_view(text, pattern.utf8)) is not None
+    return pattern.search(text) is not None
+
+
+def _message_matches(message: bytes, greps: tuple[LinePattern, ...]) -> bool:
     """Whether a ``--grep`` pattern matches the message.
 
     git searches the message a line at a time, so ``^`` and ``$`` anchor
@@ -807,27 +821,32 @@ def _message_matches(
 
     Args:
         message (bytes): the commit message.
-        greps (tuple[re.Pattern[str], ...]): the ``--grep`` patterns.
+        greps (tuple[LinePattern, ...]): the ``--grep`` patterns.
     """
-    lines = message.decode("utf-8", "replace").split("\n")
-    return any(pattern.search(line) for pattern in greps for line in lines)
+    # A byte that is no part of a character stays itself, as git matches it.
+    lines = decode_text(message).split("\n")
+    return any(_hits(pattern, line) for pattern in greps for line in lines)
 
 
 def _ident_matches(
     ident: bytes,
-    patterns: tuple[re.Pattern[str], ...],
+    patterns: tuple[LinePattern, ...],
     mailmap: tuple[MailmapEntry, ...],
 ) -> bool:
     """Whether an ``--author`` or ``--committer`` pattern matches.
 
     Args:
         ident (bytes): the recorded ``Name <email>``.
-        patterns (tuple[re.Pattern[str], ...]): the alternatives.
+        patterns (tuple[LinePattern, ...]): the alternatives.
         mailmap (tuple[MailmapEntry, ...]): the entries that map the
             identity first, empty under ``--no-mailmap``.
     """
-    mapped = mapped_identity(ident.decode("utf-8", "replace"), mailmap)
-    return any(pattern.search(mapped) for pattern in patterns)
+    # The map is read as text, so the identity is looked up the same way;
+    # one it leaves alone is matched as its own bytes.
+    text = ident.decode("utf-8", "replace")
+    mapped = mapped_identity(text, mailmap)
+    subject = decode_text(ident) if mapped == text else mapped
+    return any(_hits(pattern, subject) for pattern in patterns)
 
 
 def _filters_pass(commit: Commit, flags: LogFlags) -> bool:

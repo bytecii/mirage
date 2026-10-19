@@ -13,11 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { foldAscii } from '../../../../utils/posix.ts'
-import { decodeText } from '../../../../shell/bytes.ts'
+import { byteView, decodeText } from '../../../../shell/bytes.ts'
 import git from 'isomorphic-git'
 
 import { getOpcodes } from '../../../builtin/diff_format.ts'
 import { DiffOpTag } from '../../../builtin/diff_types.ts'
+import { PosixRegex } from '../../../../rs/regex.ts'
 import { blobData, byteLines } from './patch.ts'
 import { repoArgs, type Repo } from './repo.ts'
 import { BINARY_SNIFF } from './summary.ts'
@@ -27,30 +28,11 @@ import { treeEntries, type TreeEntry } from './tree.ts'
  * How many times a pattern matches a blob, git's `contains` under
  * `--pickaxe-regex` and glibc's REG_NEWLINE: a match stays in its line, each
  * search resumes where the last match ended (a step further after an empty
- * one), and `^` never holds where it resumes. Each line is sliced once, however
- * many matches it holds.
+ * one), and `^` never holds where it resumes. mirage-rs counts the whole blob
+ * in one request.
  */
-export function contains(text: string, needle: RegExp): number {
-  const pattern = new RegExp(needle.source, needle.flags.replace('g', '') + 'g')
-  let count = 0
-  let start = 0
-  let begin = 0
-  while (start < text.length && begin <= text.length) {
-    const newline = text.indexOf('\n', begin)
-    const end = newline < 0 ? text.length : newline
-    const line = text.slice(begin, end)
-    while (start <= end && start < text.length) {
-      const resumed = count > 0 && start === begin
-      pattern.lastIndex = resumed ? 1 : Math.max(start - begin, 0)
-      const found = pattern.exec(resumed ? `\0${line}` : line)
-      if (found === null) break
-      count += 1
-      const stop = found.index + found[0].length + (resumed ? begin - 1 : begin)
-      start = stop + (found[0].length === 0 && stop < text.length ? 1 : 0)
-    }
-    begin = end + 1
-  }
-  return count
+export function contains(text: string, pattern: PosixRegex): number {
+  return pattern.contains(text)
 }
 
 /**
@@ -60,11 +42,11 @@ export function contains(text: string, needle: RegExp): number {
 async function occurrences(
   repo: Repo,
   entry: TreeEntry | null,
-  needle: string | RegExp,
+  needle: string | PosixRegex,
   ignoreCase: boolean,
 ): Promise<number> {
   const data = await blobData(repo, entry)
-  if (needle instanceof RegExp) return contains(decodeText(data), needle)
+  if (needle instanceof PosixRegex) return contains(byteView(data, needle.utf8), needle)
   const text = ignoreCase ? foldAscii(decodeText(data)) : decodeText(data)
   if (needle === '') return 0
   let count = 0
@@ -116,7 +98,7 @@ export async function greps(
   repo: Repo,
   oid: string,
   parents: readonly string[],
-  pattern: RegExp,
+  pattern: PosixRegex,
   forceText = false,
 ): Promise<boolean> {
   for (const [oldEntry, newEntry] of await changes(repo, oid, parents)) {
@@ -129,7 +111,8 @@ export async function greps(
     for (const [tag, i1, i2, j1, j2] of getOpcodes(before, after)) {
       if (tag === DiffOpTag.EQUAL) continue
       for (const line of [...before.slice(i1, i2), ...after.slice(j1, j2)]) {
-        if (pattern.test(line.endsWith('\n') ? line.slice(0, -1) : line)) return true
+        const text = byteView(line.endsWith('\n') ? line.slice(0, -1) : line, pattern.utf8)
+        if (pattern.search(text) !== null) return true
       }
     }
   }
@@ -154,7 +137,7 @@ export async function touches(
   repo: Repo,
   oid: string,
   parents: readonly string[],
-  needle: string | RegExp,
+  needle: string | PosixRegex,
   ignoreCase = false,
 ): Promise<boolean> {
   const wanted = ignoreCase && typeof needle === 'string' ? foldAscii(needle) : needle

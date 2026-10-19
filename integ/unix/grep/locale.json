@@ -93,6 +93,36 @@
         "stdout": " c3 a9 0a\n0\n c3 a9 0a\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "grep_locale_utf8_folds_and_classes_by_unicode",
+      "seq": 9970014,
+      "command": "( export LC_ALL=C.UTF-8; printf '\\303\\251\\n' | grep -ic \"$(printf '\\303\\211')\"; printf '\\303\\251\\n' | grep -c '[[:alpha:]]'; printf '\\303\\211\\n' | grep -c '[[:upper:]]'; printf '\\316\\243\\n' | grep -ic \"$(printf '\\317\\203')\" ); printf '\\303\\251\\n' | grep -c '[[:alpha:]]'",
+      "expect": {
+        "exit": 1,
+        "stdout": "1\n1\n1\n1\n0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_locale_utf8_classes_follow_the_locale",
+      "seq": 9970036,
+      "command": "( export LC_ALL=C.UTF-8; printf 'a\\302\\240b\\n' | grep -c 'a[[:space:]]b'; printf 'a\\302\\240b\\n' | grep -c 'a[[:graph:]]b'; printf 'a\\342\\200\\215b\\n' | grep -c 'a[[:print:]]b'; printf '\\331\\240\\n' | grep -c '^[[:alpha:]]$'; printf '\\342\\200\\250\\n' | grep -c '^[[:cntrl:]]$'; printf '\\307\\205\\n' | grep -c '^[[:lower:]]$'; printf '\\307\\205\\n' | grep -c '^[[:upper:]]$'; printf '\\356\\200\\200\\n' | grep -c '^[[:punct:]]$' )",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n1\n1\n1\n1\n1\n1\n1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_locale_utf8_words_take_unicode_letters",
+      "seq": 9970042,
+      "command": "( export LC_ALL=C.UTF-8; printf '\\303\\251\\303\\251\\n' | grep -cw '[[:alpha:]]'; printf '\\303\\251 x\\n' | grep -ow '[[:alpha:]]'; printf 'a\\303\\251\\n' | grep -cw a; printf 'a\\303\\251\\n' | grep -c 'a\\>' ); printf 'a\\303\\251\\n' | grep -cw a",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\né\nx\n0\n0\n1\n",
+        "stderr": ""
+      }
     }
   ]
 }

@@ -10,7 +10,6 @@ from mirage.commands.builtin.constants import (
     INTMAX,
     INTMAX_MIN,
 )
-from mirage.commands.builtin.utils.bre import BreError, search_bre
 from mirage.commands.builtin.utils.operands import (
     merge_split_errors,
     normalized_read,
@@ -26,6 +25,14 @@ from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import usage_hint
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.types import ByteSource, IOResult
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import PosixRegex, posix_regex
+from mirage.shell.bytes import (
+    byte_view,
+    decode_text,
+    encode_text,
+    utf8_locale,
+)
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 
 # One numeric option value as `strtol` reads it: a run of C whitespace,
@@ -224,7 +231,7 @@ def _style_error(dest: str, raw: str) -> str | None:
     return f"nl: {_FORMAT_OPTION[1]}: '{quote_text(raw)}'"
 
 
-def _pattern_error(dest: str, raw: str) -> str | None:
+def _pattern_error(dest: str, raw: str, utf8: bool = False) -> str | None:
     """glibc's refusal for a ``p`` style whose BRE will not compile.
 
     The style itself is already known good here, so a pattern failure
@@ -238,6 +245,7 @@ def _pattern_error(dest: str, raw: str) -> str | None:
         dest (str): the option's dest; only the three style options
             carry a pattern, ``-n`` never does.
         raw (str): the raw option value, ``p`` and the BRE after it.
+        utf8 (bool): nl runs under a UTF-8 locale.
 
     Returns:
         str | None: the stderr line, or None when the BRE compiles.
@@ -245,13 +253,13 @@ def _pattern_error(dest: str, raw: str) -> str | None:
     if dest not in _STYLE_OPTIONS or not raw.startswith("p"):
         return None
     try:
-        search_bre(raw[1:])
-    except BreError as exc:
-        return f"nl: {exc}"
+        posix_regex(byte_view(raw[1:], utf8), utf8=utf8)
+    except RegexError as exc:
+        return f"nl: {exc.message}"
     return None
 
 
-def _option_errors(fl: FlagView) -> str | None:
+def _option_errors(fl: FlagView, utf8: bool = False) -> str | None:
     """Everything GNU ``nl`` prints for the options one line carried.
 
     GNU validates each value the moment getopt hands it over, which
@@ -292,6 +300,7 @@ def _option_errors(fl: FlagView) -> str | None:
 
     Args:
         fl (FlagView): spec-bound view over nl's flag bag.
+        utf8 (bool): nl runs under a UTF-8 locale.
 
     Returns:
         str | None: the stderr text, newline-separated and with no
@@ -317,7 +326,7 @@ def _option_errors(fl: FlagView) -> str | None:
             # The style was accepted, so a `p` style now compiles its
             # BRE, and a failure is fatal where it stands -- with every
             # style line deferred before it flushed first.
-            fatal = _pattern_error(dest, raw)
+            fatal = _pattern_error(dest, raw, utf8)
             if fatal is not None:
                 return "\n".join([*deferred, fatal])
     if deferred:
@@ -336,9 +345,9 @@ def _last(fl: FlagView, name: str) -> str | None:
     return values[-1] if values else None
 
 
-def parse_flags(flags: Mapping[str, FlagValue]) -> NlFlags:
+def parse_flags(flags: Mapping[str, FlagValue], utf8: bool = False) -> NlFlags:
     fl = FlagView(flags, spec=SPECS["nl"])
-    error = _option_errors(fl)
+    error = _option_errors(fl, utf8)
     if error is not None:
         raise ValueError(error)
     raw_delimiter = fl.as_str("section_delimiter")
@@ -363,14 +372,14 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> NlFlags:
 
 
 def _should_number(
-    line: str, numbering: str, pattern: re.Pattern[str] | None
+    line: str, numbering: str, pattern: PosixRegex | None, utf8: bool
 ) -> bool:
     if numbering == "n":
         return False
     if numbering == "a":
         return True
     if numbering == "p" and pattern is not None:
-        return pattern.search(line) is not None
+        return pattern.search(byte_view(line, utf8)) is not None
     return bool(line.strip())
 
 
@@ -401,7 +410,7 @@ def _section_delimiters(delimiter: str) -> dict[str, str]:
 @dataclass(frozen=True, slots=True)
 class NlConfig:
     numbering: dict[str, str]
-    patterns: dict[str, re.Pattern[str] | None]
+    patterns: dict[str, PosixRegex | None]
     start: int
     increment: int
     width: int
@@ -410,6 +419,7 @@ class NlConfig:
     delimiters: dict[str, str]
     join_blank_lines: int
     no_renumber: bool
+    utf8: bool = False
 
 
 @dataclass(slots=True)
@@ -489,7 +499,7 @@ def _render_line(line: str, config: NlConfig, state: NlState) -> bytes | None:
         return b"\n"
     numbering = config.numbering[state.section]
     pattern = config.patterns[state.section]
-    should_number = _should_number(line, numbering, pattern)
+    should_number = _should_number(line, numbering, pattern, config.utf8)
     if numbering == "a" and not line:
         state.blank_run += 1
         should_number = state.blank_run >= config.join_blank_lines
@@ -508,8 +518,8 @@ def _render_line(line: str, config: NlConfig, state: NlState) -> bytes | None:
             state.overflowed = True
         else:
             state.number = advanced
-        return f"{prefix}{config.separator}{line}\n".encode()
-    return _blank_prefix(config).encode() + f"{line}\n".encode()
+        return encode_text(f"{prefix}{config.separator}{line}\n")
+    return encode_text(f"{_blank_prefix(config)}{line}\n")
 
 
 async def _nl_stream(
@@ -550,7 +560,9 @@ async def _nl_stream(
     reader = AsyncLineIterator(source)
     try:
         async for raw_line in reader:
-            line = raw_line.decode(errors="replace")
+            # A byte that is no part of a character stays itself, for the
+            # match and the output alike.
+            line = decode_text(raw_line)
             rendered = _render_line(line, config, state)
             if rendered is None:
                 if io is not None:
@@ -563,7 +575,9 @@ async def _nl_stream(
         await reader.discard()
 
 
-def _parse_numbering(raw: str) -> tuple[str, re.Pattern[str] | None]:
+def _parse_numbering(
+    raw: str, utf8: bool = False
+) -> tuple[str, PosixRegex | None]:
     """The style a ``-b``/``-f``/``-h`` argument selects, as GNU reads it.
 
     GNU switches on the argument's FIRST character and keeps the rest
@@ -573,21 +587,23 @@ def _parse_numbering(raw: str) -> tuple[str, re.Pattern[str] | None]:
     by ``_option_errors``, and so was a ``p`` style whose BRE does not
     compile, so this cannot raise.
 
-    The pattern is a POSIX BRE, not this host's dialect: GNU compiles it
-    with ``RE_SYNTAX_POSIX_BASIC``, where ``\\(`` groups and a bare
-    ``(`` is a literal -- the inverse of both python ``re`` and
-    JavaScript ``RegExp``. It goes through the shared translator so the
-    two hosts cannot answer differently, which is what they did when
-    each handed the text to its own engine (``nl -b 'p['`` said
+    The pattern is a POSIX BRE, not this host's dialect: ``\\(``
+    groups and a bare ``(`` is a literal -- the inverse of both python
+    ``re`` and JavaScript ``RegExp``. Both hosts match it in mirage-rs,
+    so they cannot answer differently, which is what they did when each
+    handed the text to its own engine (``nl -b 'p['`` said
     ``unterminated character set at position 0`` here and
     ``Invalid regular expression: /[/: Unterminated character class``
-    there, and neither was GNU's ``Invalid regular expression``).
+    there, and neither was GNU's ``Invalid regular expression``). Lines
+    are matched by characters under a UTF-8 locale and by bytes in the C
+    locale, as GNU matches them.
 
     Args:
         raw (str): the raw option value.
+        utf8 (bool): nl runs under a UTF-8 locale.
     """
     if raw.startswith("p"):
-        return "p", search_bre(raw[1:])
+        return "p", posix_regex(byte_view(raw[1:], utf8), utf8=utf8)
     return raw[:1], None
 
 
@@ -607,13 +623,16 @@ async def nl(
     number_format: str = "rn",
     delimiter: str = "\\:",
     no_renumber: bool = False,
+    utf8: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
-    body_numbering, body_pattern = _parse_numbering(body_numbering_raw or "t")
+    body_numbering, body_pattern = _parse_numbering(
+        body_numbering_raw or "t", utf8
+    )
     footer_numbering, footer_pattern = _parse_numbering(
-        footer_numbering_raw or "n"
+        footer_numbering_raw or "n", utf8
     )
     header_numbering, header_pattern = _parse_numbering(
-        header_numbering_raw or "n"
+        header_numbering_raw or "n", utf8
     )
     start = int(start_raw) if start_raw is not None else 1
     increment = int(increment_raw) if increment_raw is not None else 1
@@ -637,6 +656,7 @@ async def nl(
         delimiters=_section_delimiters(delimiter),
         join_blank_lines=int(join_blank_lines_raw or "1"),
         no_renumber=no_renumber,
+        utf8=utf8,
     )
 
     # The IOResult is handed back before the stream is drained, so the
@@ -666,8 +686,9 @@ async def nl_generic(
     """
     stat = stdin_stat(stat)
     stream = stdin_stream(stream, ctx.stdin)
+    utf8 = utf8_locale(ctx.env)
     try:
-        parsed = parse_flags(ctx.flags)
+        parsed = parse_flags(ctx.flags, utf8)
     except ValueError as exc:
         return None, IOResult(exit_code=1, stderr=f"{exc}\n".encode())
     readable, err = await split_readable(paths, stat, "nl")
@@ -689,6 +710,7 @@ async def nl_generic(
             number_format=parsed.number_format,
             delimiter=parsed.delimiter,
             no_renumber=parsed.no_renumber,
+            utf8=utf8,
         ),
         err,
     )

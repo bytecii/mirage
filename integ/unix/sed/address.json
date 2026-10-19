@@ -509,6 +509,74 @@
         "stdout": "x\na+b\ny\nx\ny\nrc=1\n",
         "stderr": "sed: -e expression #1, char 5: unterminated address regex\n"
       }
+    },
+    {
+      "id": "sed_address_step_ends_a_range_on_its_own_line",
+      "seq": 9970044,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "seq 6 | sed -n '1,2~2p' | tr '\\n' ,; echo; seq 9 | sed -n '5,1~2p' | tr '\\n' ,; echo; seq 12 | sed -n '1~3,2~2p' | tr '\\n' ,; echo; seq 12 | sed -n '6,10~2p' | tr '\\n' ,; echo; seq 9 | sed -n '2,3~0p' | tr '\\n' ,; echo; seq 12 | sed -n '1{N;N;N};2,3~5p' | tr '\\n' ,; echo; seq 6 | sed '2,4~2!d' | tr '\\n' ,; echo; seq 6 | sed -n '2,~2p' | tr '\\n' ,; echo; seq 6 | sed -n '0,2~2p'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1,2,\n5,\n1,2,4,7,8,10,\n6,7,8,9,10,\n2,3,\n1,2,3,4,5,6,7,8,\n2,3,4,\n2,3,4,\nrc=1\n",
+        "stderr": "sed: -e expression #1, char 6: invalid usage of line address 0\n"
+      }
+    },
+    {
+      "id": "sed_numbers_wrap_at_64_bits",
+      "seq": 9970045,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "z=0000000000; z=$z$z$z$z$z$z$z$z$z$z; z=$z$z$z$z$z$z$z$z$z$z; z=$z$z$z$z$z; printf 'a\\nb\\nc\\n' | sed -n \"${z}2p\"; printf 'a\\nb\\nc\\n' | sed -n '18446744073709551617p'; printf 'a\\nb\\nc\\n' | sed -n '2,18446744073709551615p' | tr '\\n' ,; echo; printf 'a\\nb\\nc\\nd\\ne\\n' | sed -n '2,+18446744073709551615p' | tr '\\n' ,; echo; seq 9 | sed -n '18446744073709551617~2p' | tr '\\n' ,; echo; echo aaaa | sed \"s/a/X/${z}3\"; echo aaaa | sed 's/a/X/18446744073709551618'; echo aaaa | sed 's/a/X/9223372036854775808g'; echo aaaa | sed 's/a/X/18446744073709551616'; echo rc=$?; seq 3 | sed -n '18446744073709551616p'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "b\na\nb,c,\nb,c,\n1,3,5,7,9,\naaXa\naXaa\naaaa\nrc=1\nrc=1\n",
+        "stderr": "sed: -e expression #1, char 26: number option to `s' command may not be zero\nsed: -e expression #1, char 21: invalid usage of line address 0\n"
+      }
     }
   ]
 }

@@ -12,185 +12,56 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import re
-from collections.abc import Sequence
+from bisect import bisect_right
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal, TypeAlias
 
-from mirage.commands.builtin.utils.bre import (
-    BreError,
-    PosixSyntax,
-    translate_bre,
-    translate_ere,
-)
-from mirage.shell.bytes import byte_char, byte_view, encode_text, text_view
-from mirage.utils.posix import compile_posix_regex
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import PosixRegex
+from mirage.shell.bytes import byte_view, decode_text, from_byte_view
 from mirage.utils.strverscmp import strverscmp
-
-SED_VERSION = "4.9"
 
 SED_STDOUT = "/dev/stdout"
 SED_STDERR = "/dev/stderr"
+# The release whose behaviour this follows; `v` refuses a newer one.
+SED_VERSION = "4.9"
+
+_BLANKS = " \t"
+_SPACES = " \t\n\v\f\r"
+# Under UTF-8 these bytes open a multibyte character, which no
+# delimiter may be.
+_LEAD_BYTES = ("\xc2", "\xfd")
+# What a one-letter escape stands for, in a script's regex, replacement,
+# `y` strings and `a`/`i`/`c` text alike.
+_CONTROL = {"a": "\a", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+_CASE = frozenset("LUluE")
 
 
-@dataclass(frozen=True, eq=False)
-class SedRegex:
-    """One regex of a script; ``None`` in its place means the last one run.
-
-    ``pattern`` is the text between the delimiters; ``source`` is the host
-    regex it compiles to, through GNU's escape pre-pass and the glibc
-    translator. Compared by identity, as each is one regex of the script.
-    """
-
-    pattern: str
-    source: str = ""
-    groups: int = 0
-    icase: bool = False
-    multiline: bool = False
-
-
-def sed_regex_flags(regex: SedRegex) -> int:
-    """The host flags a sed regex compiles with.
-
-    GNU sed's regex syntax has RE_DOT_NEWLINE, so ``.`` matches the
-    newline ``N`` puts in the pattern space; ``M`` (REG_NEWLINE) takes
-    that away and makes ``^`` and ``$`` line anchors. Divergence: the host
-    has no buffer-only anchor in multiline mode, so under ``M`` GNU's
-    buffer anchors (backslash-backquote, backslash-quote) anchor at lines
-    too, and ``[^a]`` still matches a newline.
-
-    Args:
-        regex (SedRegex): the compiled regex.
-    """
-    flags = re.IGNORECASE if regex.icase else 0
-    return flags | (re.MULTILINE if regex.multiline else re.DOTALL)
-
-
-def _line_anchors(source: str) -> str:
-    """Spell the translator's buffer anchors as ``re.MULTILINE`` lines.
-
-    Args:
-        source (str): translated host source.
-    """
-    out: list[str] = []
-    i = 0
-    while i < len(source):
-        pair = source[i : i + 2]
-        if pair == "\\Z":
-            out.append("$")
-        elif pair == "\\A":
-            out.append("^")
-        elif source[i] == "\\":
-            out.append(pair)
-        else:
-            out.append(source[i])
-            i += 1
-            continue
-        i += 2
-    return "".join(out)
-
-
-@dataclass(frozen=True)
-class SedAddr:
-    """One address: ``num`` (n), ``mod`` (n~step), ``step`` (+n),
-    ``stepmod`` (~n), ``last`` ($), ``null`` (+0 / ~0) or ``regex``."""
-
-    kind: str
-    n: int = 0
-    step: int = 0
-    re: SedRegex | None = None
-
-
-@dataclass
-class SedSubst:
-    re: SedRegex | None
-    replacement: str
-    global_: bool = False
-    print_: bool = False
-    numb: int = 0
-    outf: str | None = None
-
-
-@dataclass
-class SedCommand:
-    """One compiled command.
-
-    ``text`` is a/i/c text with its closing newline, ``None`` for none.
-    ``jump`` is the resolved target of ``{``, ``b``, ``t`` and ``T``: the
-    index of the matching ``}`` or label, or the script's length.
-    ``int_arg`` is the number after ``l``, ``q`` or ``Q``, -1 for none.
-    ``prepend`` marks ``0r FILE``, written before the first line.
-    """
-
-    cmd: str
-    a1: SedAddr | None = None
-    a2: SedAddr | None = None
-    bang: bool = False
-    text: str | None = None
-    label: str = ""
-    jump: int = -1
-    int_arg: int = -1
-    fname: str = ""
-    prepend: bool = False
-    subst: SedSubst | None = None
-    y_src: list[str] = field(default_factory=list)
-    y_dst: list[str] = field(default_factory=list)
-
-
-@dataclass
-class SedProgram:
-    """A compiled script.
-
-    ``no_default_output`` is ``#n`` on the first line. ``wfiles`` are the
-    files ``w``, ``W`` and ``s///w`` write, in the order GNU opens
-    (truncates) them; ``rfiles`` the files ``r`` reads (again at every
-    append) and ``reader_files`` those ``R`` reads (opened once, as GNU
-    opens them when it compiles the command).
-    ``end_where`` is where GNU places an error found once the script has
-    run out, as a missing previous regex at run time.
-    """
-
-    commands: list[SedCommand]
-    no_default_output: bool
-    wfiles: list[str]
-    rfiles: list[str]
-    reader_files: list[str]
-    end_where: str
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SedScriptPiece:
-    """One -e expression or -f script file, in command-line order.
+    """One -e expression or -f file of a sed command line.
 
-    ``name`` is the script file's name as given, for ``file NAME line N:``.
+    Args:
+        kind (Literal["expr", "file"]): where the text came from.
+        text (str): the script text, as shell text.
+        name (str | None): a file's name, for its diagnostics.
     """
 
-    kind: str
+    kind: Literal["expr", "file"]
     text: str
-    name: str = "-"
+    name: str | None = None
 
 
-class SedText(Enum):
-    """What a piece of script text is, as GNU's ``text_types``.
+class SedError(Exception):
+    """A script sed refuses, worded and coded as GNU sed 4.9 refuses it.
 
-    It decides what an escape spells: a regex and a replacement keep an
-    unknown escape's backslash for their own reader, and a replacement
-    quotes the ``\\`` or ``&`` a numeric escape spells, so it stays a
-    literal byte rather than a backreference.
-    """
-
-    BUFFER = "buffer"
-    REPLACEMENT = "replacement"
-    REGEX = "regex"
-
-
-class SedError(ValueError):
-    """A script GNU refuses.
-
-    ``wfiles`` are the files the script had opened (and so truncated)
-    before the error, since GNU opens a ``w`` file the moment it compiles
-    the command. ``exit_code`` is 1 for a syntax error and 4 for GNU's
-    panics (an undefined label).
+    Args:
+        message (str): the whole diagnostic, without its newline.
+        exit_code (int): sed's exit status for it.
+        wfiles (Sequence[str]): the ``w`` files opened before it, which
+            GNU has already truncated.
     """
 
     def __init__(
@@ -198,906 +69,1052 @@ class SedError(ValueError):
     ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
-        self.wfiles = tuple(wfiles)
+        self.wfiles = list(wfiles)
 
 
-BAD_BANG = "multiple `!'s"
-BAD_COMMA = "unexpected `,'"
-BAD_STEP = "invalid usage of +N or ~N as first address"
-EXCESS_OPEN_BRACE = "unmatched `{'"
-EXCESS_CLOSE_BRACE = "unexpected `}'"
-EXCESS_JUNK = "extra characters after command"
-EXPECTED_SLASH = "expected \\ after `a', `c' or `i'"
-NO_CLOSE_BRACE_ADDR = "`}' doesn't want any addresses"
-NO_COLON_ADDR = ": doesn't want any addresses"
-NO_SHARP_ADDR = "comments don't accept any addresses"
-NO_COMMAND = "missing command"
-ONE_ADDR = "command only uses one address"
-UNTERM_ADDR_RE = "unterminated address regex"
-UNTERM_S_CMD = "unterminated `s' command"
-UNTERM_Y_CMD = "unterminated `y' command"
-UNKNOWN_S_OPT = "unknown option to `s'"
-EXCESS_P_OPT = "multiple `p' options to `s' command"
-EXCESS_G_OPT = "multiple `g' options to `s' command"
-EXCESS_N_OPT = "multiple number options to `s' command"
-ZERO_N_OPT = "number option to `s' command may not be zero"
-Y_CMD_LEN = "strings for `y' command are different lengths"
-BAD_DELIM = "delimiter character is not a single-byte character"
-ANCIENT_VERSION = "expected newer version of sed"
-INVALID_LINE_0 = "invalid usage of line address 0"
-COLON_LACKS_LABEL = '":" lacks a label'
-RECURSIVE_ESCAPE_C = "recursive escaping after \\c not allowed"
-MISSING_FILENAME = "missing filename in r/R/w/W commands"
-BAD_MODIF = "cannot specify modifiers on empty regexp"
-INVALID_PATTERN = "Invalid regular expression"
-UNMATCHED_CLOSE = "Unmatched ) or \\)"
-# dfa.c's refusal of a bracket that looks like a class written without
-# its outer brackets, which sed's dfawarn turns into a panic (exit 4).
-CONFUSING_BRACKET = "character class syntax is [[:space:]], not [:space:]"
-# GNU runs `e` and `s///e` through popen; mirage has no entry point to run a
-# shell command from inside sed, so it refuses both where GNU compiles
-# them, in the words GNU's own no-popen build uses at run time.
-NO_EVAL = "`e' command not supported"
-
-_TEXT_ESCAPES = {
-    "a": "\x07",
-    "f": "\f",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "v": "\v",
-    "\n": "\n",
-}
-
-_TEXT_ESCAPE_BASES = {"d": 10, "o": 8, "x": 16}
-
-_SIMPLE = frozenset("=dDFgGhHnNpPzx")
+class AddressKind(Enum):
+    LINE = "line"
+    LAST = "last"
+    REGEX = "regex"
+    STEP = "step"
+    PLUS = "plus"
+    MULTIPLE = "multiple"
 
 
-def _is_blank(ch: str | None) -> bool:
-    return ch in (" ", "\t")
+@dataclass(slots=True)
+class SedRegex:
+    """A compiled address or ``s`` expression; ``regex`` None for the
+    empty one, which matches as the last expression used."""
+
+    regex: PosixRegex | None
 
 
-def _is_space(ch: str | None) -> bool:
-    return ch is not None and ch in " \t\n\v\f\r"
+@dataclass(slots=True)
+class SedAddress:
+    kind: AddressKind
+    number: int = 0
+    step: int = 0
+    regex: SedRegex | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementPart:
+    """A piece of an ``s`` replacement: ``text`` itself, a ``group``
+    (0 for the whole match), or a ``case`` conversion (``L U l u E``)."""
+
+    text: str = ""
+    group: int | None = None
+    case: str | None = None
+
+
+@dataclass(slots=True)
+class SedSubstitution:
+    regex: SedRegex
+    parts: list[ReplacementPart]
+    global_: bool = False
+    occurrence: int = 1
+    print_: bool = False
+    wfile: str | None = None
+
+
+@dataclass(slots=True)
+class SedCommand:
+    """One command: its addresses, its letter and what it carries."""
+
+    name: str
+    addr1: SedAddress | None = None
+    addr2: SedAddress | None = None
+    negate: bool = False
+    text: str | None = None
+    label: str | None = None
+    target: int | None = None
+    filename: str | None = None
+    number: int | None = None
+    subst: SedSubstitution | None = None
+    translit: dict[str, str] | None = None
+    block_end: int = 0
+
+
+@dataclass(slots=True)
+class SedProgram:
+    """A compiled script: its commands in order, the files its ``w``,
+    ``r`` and ``R`` commands name in the order they first appear, and
+    whether ``#n`` made it quiet."""
+
+    commands: list[SedCommand] = field(default_factory=list)
+    wfiles: list[str] = field(default_factory=list)
+    rfiles: list[str] = field(default_factory=list)
+    reader_files: list[str] = field(default_factory=list)
+    quiet: bool = False
+
+
+def _address(
+    kind: AddressKind,
+    number: int = 0,
+    step: int = 0,
+    regex: SedRegex | None = None,
+) -> SedAddress:
+    return SedAddress(kind, number, step, regex)
 
 
 def _is_digit(ch: str | None) -> bool:
     return ch is not None and "0" <= ch <= "9"
 
 
-def _first_byte(ch: str) -> str:
-    """The first byte of one character, as GNU's bad_command prints it.
-
-    Args:
-        ch (str): the command character.
-    """
-    data = encode_text(ch)
-    return ch if len(data) <= 1 else byte_char(data[0])
-
-
-class _Compiler:
-    """GNU sed 4.9's compile.c over one script given as -e and -f pieces.
-
-    Pieces compile in order into one program, as GNU compiles each -e or
-    -f in turn: an a/i/c text a piece leaves open on a backslash goes on
-    in the next, a ``{`` in one closes in another, and labels are resolved
-    once the last piece is read. Every blank and error position follows
-    GNU: blanks and ``;`` before an address, blanks after one, around the
-    range comma and after ``!``, then the command's own rules.
-    """
-
-    def __init__(self, extended: bool, utf8: bool = False) -> None:
-        self.extended = extended
-        self.utf8 = utf8
-        self.chars: list[str] = []
-        self.pos = 0
-        self.line = 0
-        self.name: str | None = None
-        self.expr_count = 0
-        self.first_script = True
-        self.commands: list[SedCommand] = []
-        self.blocks: list[tuple[int, str]] = []
-        self.labels: dict[str, int] = {}
-        self.jumps: list[tuple[int, str]] = []
-        self.pending_text: str | None = None
-        self.old_text_cmd: SedCommand | None = None
-        self.no_default_output = False
-        self.wfiles: list[str] = []
-        self.rfiles: list[str] = []
-        self.reader_files: list[str] = []
-
-    def compile(self, pieces: Sequence[SedScriptPiece]) -> SedProgram:
-        for piece in pieces:
-            self.chars = list(piece.text)
-            self.pos = 0
-            if piece.kind == "file":
-                self.line = 1
-                self.name = piece.name
-            else:
-                self.line = 0
-                self.name = None
-                self.expr_count += 1
-            self._compile_program()
-            self.first_script = False
-        self._check_final()
-        return SedProgram(
-            commands=self.commands,
-            no_default_output=self.no_default_output,
-            wfiles=self.wfiles,
-            rfiles=self.rfiles,
-            reader_files=self.reader_files,
-            end_where=self._block_where(),
-        )
-
-    def _where(self, unread: int = 0) -> str:
-        """Where GNU reports an error.
-
-        Args:
-            unread (int): bytes of the last character GNU, reading byte by
-                byte, has not reached: an unknown command stops after the
-                first byte of a multibyte character.
-        """
-        if self.name is not None:
-            return f"file {self.name} line {self.line}"
-        consumed = len(encode_text("".join(self.chars[: self.pos]))) - unread
-        return f"-e expression #{self.expr_count}, char {consumed}"
-
-    def _bad(self, why: str, unread: int = 0) -> SedError:
-        return SedError(f"sed: {self._where(unread)}: {why}", 1, self.wfiles)
-
-    def _block_where(self) -> str:
-        """Where an unmatched ``{`` is reported.
-
-        GNU keeps the block's line but no longer has a position within
-        the expression, so it says char 0.
-        """
-        if self.name is not None:
-            return f"file {self.name} line {self.line}"
-        return f"-e expression #{self.expr_count}, char 0"
-
-    def _inchar(self) -> str | None:
-        if self.pos >= len(self.chars):
-            return None
-        ch = self.chars[self.pos]
-        self.pos += 1
-        if ch == "\n":
-            self.line += 1
-        return ch
-
-    def _savchar(self, ch: str | None) -> None:
-        if ch is None:
-            return
-        if ch == "\n" and self.line > 0:
-            self.line -= 1
-        self.pos -= 1
-
-    def _in_nonblank(self) -> str | None:
-        ch = self._inchar()
-        while _is_blank(ch):
-            ch = self._inchar()
-        return ch
-
-    def _read_end_of_cmd(self) -> None:
-        ch = self._in_nonblank()
-        if ch in ("}", "#"):
-            self._savchar(ch)
-        elif ch is not None and ch not in ("\n", ";"):
-            raise self._bad(EXCESS_JUNK)
-
-    def _in_integer(self, first: str | None) -> int:
-        num = 0
-        ch = first
-        while ch is not None and _is_digit(ch):
-            num = num * 10 + int(ch)
-            ch = self._inchar()
-        self._savchar(ch)
-        return num
-
-    def _read_filename(self) -> str:
-        out: list[str] = []
-        ch = self._in_nonblank()
-        while ch is not None and ch != "\n":
-            out.append(ch)
-            ch = self._inchar()
-        return "".join(out)
-
-    def _open_file(self, write: bool) -> str:
-        name = self._read_filename()
-        if not name:
-            raise self._bad(MISSING_FILENAME)
-        names = self.wfiles if write else self.reader_files
-        if name not in names:
-            names.append(name)
-        return name
-
-    def _read_label(self) -> str:
-        """A label for ``:``, ``b``, ``t``, ``T`` or ``v``.
-
-        It ends at a blank, ``;``, ``}``, ``#`` or the end of the line.
-        """
-        out: list[str] = []
-        ch = self._in_nonblank()
-        while (
-            ch is not None
-            and ch != "\n"
-            and not _is_blank(ch)
-            and ch not in (";", "}", "#")
-        ):
-            out.append(ch)
-            ch = self._inchar()
-        self._savchar(ch)
-        return "".join(out)
-
-    def _snarf_char_class(self, buf: list[str]) -> str | None:
-        state = 0
-        delim = ""
-        ch = self._inchar()
-        if ch == "^":
-            buf.append(ch)
-            ch = self._inchar()
-        if ch == "]":
-            buf.append(ch)
-            ch = self._inchar()
-        while True:
-            if ch is None or ch == "\n":
-                return ch
-            advance = True
-            if ch in (".", ":", "="):
-                if state == 1:
-                    delim = ch
-                    state = 2
-                    advance = False
-                elif state == 2 and ch == delim:
-                    state = 3
-                    advance = False
-            elif ch == "[":
-                if state == 0:
-                    state = 1
-                advance = False
-            elif ch == "]":
-                if state in (0, 1):
-                    return ch
-                if state == 3:
-                    state = 0
-            if advance:
-                state &= ~1
-            buf.append(ch)
-            ch = self._inchar()
-
-    def _match_slash(self, slash: str | None, regex: bool) -> str | None:
-        """GNU's match_slash: read up to the closing delimiter.
-
-        A backslash before the delimiter is dropped (so ``s|a\\|b||``
-        matches a literal ``a|b``), before a newline it leaves the
-        newline, and before anything else it stays. In a regex a bracket
-        expression is read whole, so a delimiter inside ``[...]`` does not
-        end it.
-
-        Args:
-            slash (str | None): the delimiter.
-            regex (bool): whether the field is a regex.
-        """
-        if slash is not None and ord(slash) > 0x7F:
-            raise self._bad(BAD_DELIM)
-        buf: list[str] = []
-        ch = self._inchar()
-        while ch is not None and ch != "\n":
-            if ch == slash:
-                return "".join(buf)
-            if ch == "\\":
-                ch = self._inchar()
-                if ch is None:
-                    break
-                if ch != "\n" and (ch != slash or (not regex and ch == "&")):
-                    buf.append("\\")
-            elif ch == "[" and regex:
-                buf.append(ch)
-                ch = self._snarf_char_class(buf)
-                if ch != "]":
-                    break
-            buf.append(ch)
-            ch = self._inchar()
-        if ch == "\n":
-            self._savchar(ch)
-        return None
-
-    def _regex(
-        self, pattern: str, icase: bool, multiline: bool, reference: int = 0
-    ) -> SedRegex | None:
-        """GNU's compile_regex.
-
-        normalize_text's escapes, then regcomp in the basic or extended
-        syntax (here the glibc translator), whose refusal is reported
-        where the command was read, then dfa's bracket check. An ``s``
-        whose replacement names a group the regex lacks is refused too.
-
-        Args:
-            pattern (str): the text between the delimiters.
-            icase (bool): ``I``.
-            multiline (bool): ``M``.
-            reference (int): the highest group the replacement names.
-        """
-        if not pattern:
-            if icase or multiline:
-                raise self._bad(BAD_MODIF)
-            return None
-        normalized = self._normalize_text(pattern, SedText.REGEX)
-        try:
-            if self.extended:
-                # GNU sed clears RE_UNMATCHED_RIGHT_PAREN_ORD, which the
-                # POSIX extended syntax sets: an unmatched `)` is refused,
-                # unless the pattern before it is already refused.
-                close = _unmatched_close_paren(normalized)
-                if close >= 0:
-                    translate_ere(normalized[:close], PosixSyntax.EXTENDED)
-                    raise BreError(UNMATCHED_CLOSE)
-                source, groups, _ = translate_ere(
-                    normalized, PosixSyntax.EXTENDED
-                )
-            else:
-                source, groups = translate_bre(normalized, True)
-        except BreError as exc:
-            raise self._bad(str(exc)) from exc
-        if multiline:
-            source = _line_anchors(source)
-        regex = SedRegex(pattern, source, groups, icase, multiline)
-        try:
-            compile_posix_regex(source, sed_regex_flags(regex), self.utf8)
-        except re.error as exc:
-            raise self._bad(INVALID_PATTERN) from exc
-        if reference > groups:
-            raise self._bad(
-                f"invalid reference \\{reference} on `s' command's RHS"
-            )
-        if _confusing_bracket(normalized):
-            raise SedError(f"sed: {CONFUSING_BRACKET}", 4, self.wfiles)
-        return regex
-
-    def _normalize_text(
-        self, text: str, kind: SedText = SedText.BUFFER
-    ) -> str:
-        """GNU's normalize_text, over the text's byte view.
-
-        C escapes, ``\\dNNN``, ``\\oNNN`` and ``\\xHH`` bytes and
-        ``\\cX`` control characters. In a text buffer (a/i/c and y) a
-        backslash before any other character is dropped; in a regex it
-        stays for regcomp, and what an escape produced is read as regex
-        syntax, so ``\\x2e`` is any character and ``\\x5c`` a trailing
-        backslash. Under a UTF-8 locale the result is read back as text,
-        so ``\\xc3\\xa9`` is the one character it spells.
-
-        Args:
-            text (str): the text as read.
-            kind (SedText): which part of the script it is.
-        """
-        buf = byte_view(text)
-        out: list[str] = []
-        i = 0
-        while i < len(buf):
-            ch = buf[i]
-            if ch != "\\" or i + 1 >= len(buf):
-                out.append(ch)
-                i += 1
-                continue
-            nx = buf[i + 1]
-            i += 2
-            simple = _TEXT_ESCAPES.get(nx)
-            if simple is not None:
-                out.append(simple)
-                continue
-            base = _TEXT_ESCAPE_BASES.get(nx)
-            if base is not None:
-                value = 0
-                digits = 0
-                limit = 1
-                while i < len(buf) and limit <= 255:
-                    d = (
-                        int(buf[i], 16)
-                        if buf[i] in "0123456789abcdefABCDEF"
-                        else base
-                    )
-                    if d >= base:
-                        break
-                    value = value * base + d
-                    digits += 1
-                    i += 1
-                    limit *= base
-                char = chr(value & 0xFF) if digits else nx
-                if kind is SedText.REPLACEMENT and digits and char in "\\&":
-                    out.append("\\")
-                out.append(char)
-                continue
-            if nx == "c":
-                if i >= len(buf):
-                    if kind is SedText.REGEX:
-                        out.append("\\")
-                    continue
-                x = buf[i]
-                upper = x.upper() if "a" <= x <= "z" else x
-                char = chr(ord(upper) ^ 0x40)
-                if kind is SedText.REPLACEMENT and char in "\\&":
-                    out.append("\\")
-                out.append(char)
-                i += 1
-                if x == "\\":
-                    if buf[i : i + 1] != "\\":
-                        raise self._bad(RECURSIVE_ESCAPE_C)
-                    i += 1
-                continue
-            out.append(nx if kind is SedText.BUFFER else "\\" + nx)
-        view = "".join(out)
-        return text_view(view) if self.utf8 else view
-
-    def _read_text(self, cmd: SedCommand | None, leadin: str | None) -> None:
-        """GNU's read_text.
-
-        The text runs to the first newline no backslash escapes and keeps
-        that newline; a piece that ends on a backslash leaves the text
-        pending for the next piece.
-
-        Args:
-            cmd (SedCommand | None): the a/i/c command, or None to go on
-                with the pending text.
-            leadin (str | None): the text's first character, or a newline
-                for none.
-        """
-        if cmd is not None:
-            self.pending_text = ""
-            cmd.text = None
-            self.old_text_cmd = cmd
-        if leadin is None:
-            return
-        pending = [self.pending_text or ""]
-        if leadin != "\n":
-            pending.append(leadin)
-        ch = self._inchar()
-        while ch is not None and ch != "\n":
-            if ch == "\\":
-                ch = self._inchar()
-                if ch is not None:
-                    pending.append("\\")
-            if ch is None:
-                pending.append("\n")
-                self.pending_text = "".join(pending)
-                return
-            pending.append(ch)
-            ch = self._inchar()
-        pending.append("\n")
-        target = cmd if cmd is not None else self.old_text_cmd
-        if target is not None:
-            target.text = self._normalize_text("".join(pending))
-        self.pending_text = None
-
-    def _compile_address(self, first: str | None) -> SedAddr | None:
-        ch = first
-        if ch in ("/", "\\"):
-            if ch == "\\":
-                ch = self._inchar()
-            pattern = self._match_slash(ch, True)
-            if pattern is None:
-                raise self._bad(UNTERM_ADDR_RE)
-            icase = False
-            multiline = False
-            while True:
-                ch = self._in_nonblank()
-                if ch == "I":
-                    icase = True
-                elif ch == "M":
-                    multiline = True
-                else:
-                    self._savchar(ch)
-                    return SedAddr(
-                        "regex", re=self._regex(pattern, icase, multiline)
-                    )
-        if _is_digit(ch):
-            n = self._in_integer(ch)
-            ch = self._in_nonblank()
-            if ch != "~":
-                self._savchar(ch)
-                return SedAddr("num", n=n)
-            step = self._in_integer(self._in_nonblank())
-            return (
-                SedAddr("mod", n=n, step=step)
-                if step > 0
-                else SedAddr("num", n=n)
-            )
-        if ch in ("+", "~"):
-            step = self._in_integer(self._in_nonblank())
-            if step == 0:
-                return SedAddr("null")
-            return SedAddr("step" if ch == "+" else "stepmod", n=step)
-        if ch == "$":
-            return SedAddr("last")
-        return None
-
-    def _mark_subst_opts(self, sub: SedSubst) -> tuple[bool, bool]:
-        icase = False
-        multiline = False
-        while True:
-            ch = self._in_nonblank()
-            if ch in ("i", "I"):
-                icase = True
-            elif ch in ("m", "M"):
-                multiline = True
-            elif ch == "e":
-                raise self._bad(NO_EVAL)
-            elif ch == "p":
-                if sub.print_:
-                    raise self._bad(EXCESS_P_OPT)
-                sub.print_ = True
-            elif ch == "g":
-                if sub.global_:
-                    raise self._bad(EXCESS_G_OPT)
-                sub.global_ = True
-            elif ch == "w":
-                sub.outf = self._open_file(True)
-                return icase, multiline
-            elif ch in ("}", "#"):
-                self._savchar(ch)
-                return icase, multiline
-            elif ch is None or ch in ("\n", ";"):
-                return icase, multiline
-            elif ch == "\r":
-                if self._inchar() == "\n":
-                    return icase, multiline
-                raise self._bad(UNKNOWN_S_OPT)
-            elif _is_digit(ch):
-                if sub.numb:
-                    raise self._bad(EXCESS_N_OPT)
-                sub.numb = self._in_integer(ch)
-                if not sub.numb:
-                    raise self._bad(ZERO_N_OPT)
-            else:
-                raise self._bad(UNKNOWN_S_OPT)
-
-    def _compile_program(self) -> None:
-        if self.pending_text is not None:
-            self._read_text(None, "\n")
-        while True:
-            ch = self._inchar()
-            while ch == ";" or _is_space(ch):
-                ch = self._inchar()
-            if ch is None:
-                break
-            cmd = SedCommand(cmd="")
-            a1 = self._compile_address(ch)
-            if a1 is not None:
-                if a1.kind in ("step", "stepmod"):
-                    raise self._bad(BAD_STEP)
-                cmd.a1 = a1
-                ch = self._in_nonblank()
-                if ch == ",":
-                    a2 = self._compile_address(self._in_nonblank())
-                    if a2 is None:
-                        raise self._bad(BAD_COMMA)
-                    cmd.a2 = a2
-                    ch = self._in_nonblank()
-                if (
-                    a1.kind == "num"
-                    and a1.n == 0
-                    and (
-                        (cmd.a2 is None and ch != "r")
-                        or (cmd.a2 is not None and cmd.a2.kind != "regex")
-                    )
-                ):
-                    raise self._bad(INVALID_LINE_0)
-            if ch == "!":
-                cmd.bang = True
-                ch = self._in_nonblank()
-                if ch == "!":
-                    raise self._bad(BAD_BANG)
-            if ch is None:
-                raise self._bad(NO_COMMAND)
-            cmd.cmd = ch
-            if self._compile_command(cmd, ch):
-                self.commands.append(cmd)
-
-    def _compile_command(self, cmd: SedCommand, ch: str) -> bool:
-        """Compile the command letter ``ch``.
-
-        Returns False for ``#`` and ``v``, which leave nothing in the
-        program.
-
-        Args:
-            cmd (SedCommand): the command with its addresses.
-            ch (str): the command letter.
-        """
-        if ch == "#":
-            if cmd.a1 is not None:
-                raise self._bad(NO_SHARP_ADDR)
-            c = self._inchar()
-            if (
-                c == "n"
-                and self.first_script
-                and self.line < 2
-                and self.pos == 2
-            ):
-                self.no_default_output = True
-            while c is not None and c != "\n":
-                c = self._inchar()
-            return False
-        if ch == "v":
-            version = self._read_label()
-            if strverscmp(version or "4.0", SED_VERSION) > 0:
-                raise self._bad(ANCIENT_VERSION)
-            return False
-        if ch == "{":
-            self.blocks.append((len(self.commands), self._block_where()))
-            cmd.bang = not cmd.bang
-            return True
-        if ch == "}":
-            if not self.blocks:
-                raise self._bad(EXCESS_CLOSE_BRACE)
-            if cmd.a1 is not None:
-                raise self._bad(NO_CLOSE_BRACE_ADDR)
-            self._read_end_of_cmd()
-            index, _ = self.blocks.pop()
-            self.commands[index].jump = len(self.commands)
-            return True
-        if ch == "e":
-            raise self._bad(NO_EVAL)
-        if ch in ("a", "i", "c"):
-            c = self._in_nonblank()
-            if c is None:
-                raise self._bad(EXPECTED_SLASH)
-            if c == "\\":
-                c = self._inchar()
-            else:
-                self._savchar(c)
-                c = "\n"
-            self._read_text(cmd, c)
-            return True
-        if ch == ":":
-            if cmd.a1 is not None:
-                raise self._bad(NO_COLON_ADDR)
-            label = self._read_label()
-            if not label:
-                raise self._bad(COLON_LACKS_LABEL)
-            cmd.label = label
-            self.labels[label] = len(self.commands)
-            return True
-        if ch in ("T", "b", "t"):
-            cmd.label = self._read_label()
-            self.jumps.append((len(self.commands), cmd.label))
-            return True
-        if ch in ("q", "Q", "l", "L"):
-            if ch in ("q", "Q") and cmd.a2 is not None:
-                raise self._bad(ONE_ADDR)
-            c = self._in_nonblank()
-            if _is_digit(c):
-                cmd.int_arg = self._in_integer(c)
-            else:
-                cmd.int_arg = -1
-                self._savchar(c)
-            self._read_end_of_cmd()
-            return True
-        if ch in _SIMPLE:
-            self._read_end_of_cmd()
-            return True
-        if ch == "r":
-            name = self._read_filename()
-            if not name:
-                raise self._bad(MISSING_FILENAME)
-            cmd.fname = name
-            if name not in self.rfiles:
-                self.rfiles.append(name)
-            if (
-                cmd.a1 is not None
-                and cmd.a1.kind == "num"
-                and cmd.a1.n == 0
-                and cmd.a2 is None
-            ):
-                cmd.a1 = SedAddr("num", n=1)
-                cmd.prepend = True
-            return True
-        if ch == "R":
-            cmd.fname = self._open_file(False)
-            return True
-        if ch in ("w", "W"):
-            cmd.fname = self._open_file(True)
-            return True
-        if ch == "s":
-            slash = self._inchar()
-            pattern = self._match_slash(slash, True)
-            if pattern is None:
-                raise self._bad(UNTERM_S_CMD)
-            replacement = self._match_slash(slash, False)
-            if replacement is None:
-                raise self._bad(UNTERM_S_CMD)
-            sub = SedSubst(
-                re=None,
-                replacement=self._normalize_text(
-                    replacement, SedText.REPLACEMENT
-                ),
-            )
-            icase, multiline = self._mark_subst_opts(sub)
-            sub.re = self._regex(
-                pattern, icase, multiline, _max_reference(replacement)
-            )
-            cmd.subst = sub
-            return True
-        if ch == "y":
-            slash = self._inchar()
-            src = self._match_slash(slash, False)
-            if src is None:
-                raise self._bad(UNTERM_Y_CMD)
-            dst = self._match_slash(slash, False)
-            if dst is None:
-                raise self._bad(UNTERM_Y_CMD)
-            cmd.y_src = list(self._normalize_text(src))
-            cmd.y_dst = list(self._normalize_text(dst))
-            if len(cmd.y_src) != len(cmd.y_dst):
-                raise self._bad(Y_CMD_LEN)
-            self._read_end_of_cmd()
-            return True
-        raise self._bad(
-            f"unknown command: `{_first_byte(ch)}'", len(encode_text(ch)) - 1
-        )
-
-    def _check_final(self) -> None:
-        if self.blocks:
-            _, where = self.blocks[-1]
-            raise SedError(
-                f"sed: {where}: {EXCESS_OPEN_BRACE}", 1, self.wfiles
-            )
-        if self.pending_text is not None and self.old_text_cmd is not None:
-            self.old_text_cmd.text = (
-                byte_view(self.pending_text, self.utf8) or None
-            )
-            self.pending_text = None
-        for index, label in self.jumps:
-            target = self.labels.get(label)
-            if target is not None:
-                self.commands[index].jump = target
-            elif label:
-                raise SedError(
-                    f"sed: can't find label for jump to `{label}'",
-                    4,
-                    self.wfiles,
-                )
-            else:
-                self.commands[index].jump = len(self.commands)
-
-
-def compile_script(
-    pieces: Sequence[SedScriptPiece],
-    extended: bool = False,
-    utf8: bool = False,
-) -> SedProgram:
-    """Compile a sed script given as its -e and -f pieces, as GNU 4.9 does.
-
-    Raises SedError with GNU's wording, ``sed: -e expression #N, char M:``
-    or ``sed: file F line L:`` before the reason.
+class _Script:
+    """The script's pieces as one text of byte views, joined by newlines,
+    read one character at a time, with the place GNU names in a
+    diagnostic for the last one read.
 
     Args:
         pieces (Sequence[SedScriptPiece]): the -e and -f pieces in order.
-        extended (bool): -E, the POSIX extended syntax.
-        utf8 (bool): a UTF-8 locale, so the script's texts and regexes
-            are characters rather than bytes.
     """
-    return _Compiler(extended, utf8).compile(pieces)
+
+    def __init__(self, pieces: Sequence[SedScriptPiece]) -> None:
+        self.pieces = list(pieces)
+        views = [byte_view(piece.text) for piece in self.pieces]
+        self.starts: list[int] = []
+        at = 0
+        for view in views:
+            self.starts.append(at)
+            at += len(view) + 1
+        self.lengths = [len(view) for view in views]
+        # The newlines that join one piece to the next, which only text
+        # continues across.
+        self.joins = {start - 1 for start in self.starts[1:]}
+        self.text = "\n".join(views)
+        self.pos = 0
+        expressions = 0
+        self.numbers: list[int] = []
+        for piece in self.pieces:
+            if piece.kind == "expr":
+                expressions += 1
+            self.numbers.append(expressions)
+
+    def peek(self) -> str | None:
+        return self.text[self.pos] if self.pos < len(self.text) else None
+
+    def get(self) -> str | None:
+        ch = self.peek()
+        if ch is not None:
+            self.pos += 1
+        return ch
+
+    def unget(self) -> None:
+        self.pos -= 1
+
+    def skip(self, chars: str) -> str | None:
+        """Pass over any of ``chars``; the next character after them.
+
+        Args:
+            chars (str): the characters to pass over.
+        """
+        while (ch := self.peek()) is not None and ch in chars:
+            self.pos += 1
+        return self.peek()
+
+    def where(self, at: int | None = None, char: int | None = None) -> str:
+        """GNU's name for a place in the script.
+
+        Args:
+            at (int | None): the last character read, by default the
+                current one.
+            char (int | None): a fixed character count, for the
+                diagnostics GNU gives at char 0.
+        """
+        last = (self.pos if at is None else at) - 1
+        index = max(bisect_right(self.starts, max(last, 0)) - 1, 0)
+        piece = self.pieces[index]
+        offset = last - self.starts[index]
+        if piece.kind == "file":
+            body = self.text[self.starts[index] : self.starts[index] + offset]
+            return f"file {piece.name} line {body.count(chr(10)) + 1}"
+        count = (
+            char
+            if char is not None
+            else min(max(offset + 1, 0), self.lengths[index])
+        )
+        return f"-e expression #{self.numbers[index]}, char {count}"
+
+    def last_where(self) -> str:
+        """The end of the last piece, where GNU reports an unclosed
+        block."""
+        index = len(self.pieces) - 1
+        piece = self.pieces[index]
+        if piece.kind == "file":
+            text = self.text[self.starts[index] :]
+            return f"file {piece.name} line {text.count(chr(10)) + 1}"
+        return f"-e expression #{self.numbers[index]}, char 0"
 
 
-def _max_reference(replacement: str) -> int:
-    """The highest group an ``s`` replacement names, 0 for none.
+_RECURSIVE = "recursive escaping after \\c not allowed"
+
+
+class _RecursiveEscape(Exception):
+    """A ``\\c`` before a backslash that does not stand for itself."""
+
+
+def _numeric_escape(text: str, at: int, kind: str) -> tuple[str, int] | None:
+    """The character a ``\\d``, ``\\o``, ``\\x`` or ``\\c`` escape names.
 
     Args:
-        replacement (str): the replacement as read.
+        text (str): the byte view the escape is in.
+        at (int): the index of the escape's letter.
+        kind (str): the letter.
+
+    Returns:
+        tuple[str, int] | None: the character and the index after the
+            escape, or None when no digits follow (the escape is then its
+            letter).
+
+    Raises:
+        _RecursiveEscape: ``\\c\\`` followed by anything but a second
+            backslash, which GNU refuses.
     """
-    top = 0
+    if kind == "c":
+        # `\c` at the end stands for a backslash, and `\c\\` is the
+        # control character of a backslash.
+        if at + 1 >= len(text):
+            return "\\", at + 1
+        nxt = text[at + 1]
+        if nxt == "\\":
+            if at + 2 < len(text) and text[at + 2] == "\\":
+                return chr(0x1C), at + 3
+            raise _RecursiveEscape
+        # Only an ASCII letter takes its capital: the text is bytes.
+        code = ord(nxt)
+        if 0x61 <= code <= 0x7A:
+            code -= 0x20
+        return chr(code ^ 0x40), at + 2
+    base, width, digits = {
+        "d": (10, 3, "0123456789"),
+        "o": (8, 3, "01234567"),
+        "x": (16, 2, "0123456789abcdefABCDEF"),
+    }[kind]
+    end = at + 1
+    while end < len(text) and end - at - 1 < width and text[end] in digits:
+        end += 1
+    if end == at + 1:
+        return None
+    return chr(int(text[at + 1 : end], base) & 0xFF), end
+
+
+def _escape(text: str, at: int) -> tuple[str, int] | None:
+    """A sed escape at ``text[at]``, the letter after a backslash.
+
+    Args:
+        text (str): the byte view.
+        at (int): the index of the letter.
+
+    Returns:
+        tuple[str, int] | None: the character and the index after it, or
+            None when the letter is no sed escape.
+    """
+    ch = text[at]
+    if ch in _CONTROL:
+        return _CONTROL[ch], at + 1
+    if ch in "doxc":
+        return _numeric_escape(text, at, ch)
+    return None
+
+
+def _regex_text(raw: str) -> str:
+    """An expression's text as regcomp gets it from sed: the escapes sed
+    reads itself turned into the characters they stand for, which keep
+    whatever meaning they have there (``\\x2e`` is any character).
+
+    Args:
+        raw (str): the expression between its delimiters, delimiter
+            escapes already resolved.
+    """
+    out: list[str] = []
     i = 0
-    while i < len(replacement):
-        if replacement[i] == "\\":
-            nxt = replacement[i + 1 : i + 2]
-            if nxt.isdigit() and nxt.isascii():
-                top = max(top, int(nxt))
-            i += 2
-            continue
-        i += 1
-    return top
-
-
-def _bracket_end(pattern: str, start: int) -> int:
-    """The index just past the bracket expression opening at ``start``.
-
-    Args:
-        pattern (str): the regex.
-        start (int): the index of the ``[``.
-    """
-    j = start + 1
-    if pattern[j : j + 1] == "^":
-        j += 1
-    if pattern[j : j + 1] == "]":
-        j += 1
-    while j < len(pattern) and pattern[j] != "]":
-        opener = pattern[j + 1 : j + 2]
-        if pattern[j] == "[" and opener in (":", ".", "="):
-            close = pattern.find(opener + "]", j + 2)
-            j = len(pattern) if close < 0 else close + 2
-        else:
-            j += 1
-    return j + 1
-
-
-def _unmatched_close_paren(pattern: str) -> int:
-    """Where an ERE's first ``)`` with no open group sits, or -1.
-
-    Args:
-        pattern (str): the regex.
-    """
-    depth = 0
-    i = 0
-    while i < len(pattern):
-        ch = pattern[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch == "[":
-            i = _bracket_end(pattern, i)
-            continue
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            if depth == 0:
-                return i
-            depth -= 1
-        i += 1
-    return -1
-
-
-def _confusing_bracket(pattern: str) -> bool:
-    """dfa.c's check for ``[:space:]`` written without its outer brackets.
-
-    A bracket expression that starts and ends with ``:``, holds some
-    other character, and has no range or class inside. glibc accepts it
-    (as the set of those characters); GNU sed then refuses it.
-
-    Args:
-        pattern (str): the regex after the escape pre-pass.
-    """
-    i = 0
-    n = len(pattern)
-    while i < n:
-        ch = pattern[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch != "[":
+    while i < len(raw):
+        ch = raw[i]
+        if ch != "\\" or i + 1 >= len(raw):
+            out.append(ch)
             i += 1
             continue
-        j = i + 1
-        if pattern[j : j + 1] == "^":
-            j += 1
-        state = 1 if pattern[j : j + 1] == ":" else 0
-        first = True
+        found = _escape(raw, i + 1)
+        if found is None:
+            out.append(raw[i : i + 2])
+            i += 2
+            continue
+        out.append(found[0])
+        i = found[1]
+    return "".join(out)
+
+
+def _y_text(raw: str) -> str:
+    """A ``y`` string's characters: ``\\\\`` a backslash, sed's escapes
+    the characters they name, and any other escaped character itself.
+
+    Args:
+        raw (str): the string between its delimiters, an escaped
+            delimiter already the plain one.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch != "\\" or i + 1 >= len(raw):
+            out.append(ch)
+            i += 1
+            continue
+        nxt = raw[i + 1]
+        found = None if nxt == "\\" else _escape(raw, i + 1)
+        if found is None:
+            out.append(nxt)
+            i += 2
+            continue
+        out.append(found[0])
+        i = found[1]
+    return "".join(out)
+
+
+class _Compiler:
+    """Reads a script into a ``SedProgram`` the way GNU sed 4.9 does.
+
+    Args:
+        pieces (Sequence[SedScriptPiece]): the -e and -f pieces.
+        extended (bool): -E.
+        utf8 (bool): a UTF-8 locale.
+    """
+
+    def __init__(
+        self, pieces: Sequence[SedScriptPiece], extended: bool, utf8: bool
+    ) -> None:
+        self.src = _Script(pieces)
+        self.extended = extended
+        self.utf8 = utf8
+        self.program = SedProgram()
+        self.blocks: list[int] = []
+
+    def fail(self, message: str, at: int | None = None) -> SedError:
+        return SedError(
+            f"sed: {self.src.where(at)}: {message}",
+            wfiles=self.program.wfiles,
+        )
+
+    def fail_at(self, at: int | None, message: str) -> SedError:
+        return SedError(
+            f"sed: {self.src.where(at)}: {message}",
+            wfiles=self.program.wfiles,
+        )
+
+    def view(self, raw: str) -> str:
+        """A byte view of the script as the machine's view of text.
+
+        Args:
+            raw (str): one character per byte.
+        """
+        return decode_text(from_byte_view(raw)) if self.utf8 else raw
+
+    def compile(self) -> SedProgram:
+        src = self.src
+        if src.text.startswith("#n"):
+            self.program.quiet = True
         while True:
-            if j >= n:
-                return False
-            c = pattern[j]
-            if c == "]" and not first:
-                j += 1
+            ch = src.skip(_SPACES + ";")
+            if ch is None:
                 break
-            first = False
-            state &= ~2
-            opener = pattern[j + 1 : j + 2]
-            if c == "[" and opener in (":", ".", "="):
-                k = j + 2
-                while k < n and not (
-                    pattern[k] == opener and pattern[k + 1 : k + 2] == "]"
-                ):
-                    k += 1
-                j = k + 2
-                state |= 8
+            if ch == "#":
+                self.comment()
                 continue
-            end = pattern[j + 2 : j + 3]
-            if pattern[j + 1 : j + 2] == "-" and end and end != "]":
-                state |= 8
-                j += 3
+            self.command()
+        if self.blocks:
+            raise SedError(
+                f"sed: {src.last_where()}: unmatched `{{'",
+                wfiles=self.program.wfiles,
+            )
+        self.resolve()
+        return self.program
+
+    def comment(self) -> None:
+        src = self.src
+        while (ch := src.get()) is not None and ch != "\n":
+            pass
+
+    def resolve(self) -> None:
+        labels: dict[str, int] = {}
+        for index, cmd in enumerate(self.program.commands):
+            if cmd.name == ":" and cmd.label is not None:
+                labels.setdefault(cmd.label, index)
+        for cmd in self.program.commands:
+            if cmd.name not in "btT":
                 continue
-            state |= 2 if c == ":" else 4
-            j += 1
-        if state == 7:
-            return True
-        i = j
-    return False
+            if not cmd.label:
+                cmd.target = len(self.program.commands)
+                continue
+            if cmd.label not in labels:
+                raise SedError(
+                    "sed: can't find label for jump to "
+                    f"`{decode_text(from_byte_view(cmd.label))}'",
+                    exit_code=4,
+                    wfiles=self.program.wfiles,
+                )
+            cmd.target = labels[cmd.label]
+
+    def number(self) -> int:
+        """The digits here, read one at a time and kept to 64 bits as sed
+        counts them, so no length of them is refused."""
+        src = self.src
+        value = 0
+        while (ch := src.peek()) is not None and _is_digit(ch):
+            value = (value * 10 + ord(ch) - ord("0")) % (1 << 64)
+            src.pos += 1
+        return value
+
+    def delimiter(self, delim: str) -> None:
+        """Refuse a delimiter that opens a multibyte character.
+
+        Args:
+            delim (str): the byte just read as the delimiter.
+        """
+        low, high = _LEAD_BYTES
+        if self.utf8 and low <= delim <= high:
+            raise self.fail(
+                "delimiter character is not a single-byte character"
+            )
+
+    def address(self) -> SedAddress | None:
+        src = self.src
+        ch = src.peek()
+        if ch is None:
+            return None
+        if _is_digit(ch):
+            first = self.number()
+            if src.skip(_BLANKS) == "~":
+                src.get()
+                src.skip(_BLANKS)
+                step = self.number() if _is_digit(src.peek()) else 0
+                # `first~0` is the line `first` itself.
+                if step == 0:
+                    return _address(AddressKind.LINE, first)
+                return _address(AddressKind.STEP, first, step)
+            return _address(AddressKind.LINE, first)
+        if ch == "$":
+            src.get()
+            return _address(AddressKind.LAST)
+        if ch == "/" or ch == "\\":
+            src.get()
+            if ch == "\\":
+                delim = src.get()
+                if delim is None or delim == "\n":
+                    raise self.fail("unterminated address regex")
+                self.delimiter(delim)
+            else:
+                delim = "/"
+            raw = self.delimited(delim, "unterminated address regex")
+            icase = multiline = False
+            while (flag := src.skip(_BLANKS)) in ("I", "M"):
+                src.get()
+                if flag == "I":
+                    icase = True
+                else:
+                    multiline = True
+            return _address(
+                AddressKind.REGEX, regex=self.regex(raw, icase, multiline)
+            )
+        return None
+
+    def second_address(self) -> SedAddress:
+        src = self.src
+        ch = src.skip(_BLANKS)
+        if ch in ("+", "~"):
+            src.get()
+            src.skip(_BLANKS)
+            if not _is_digit(src.peek()):
+                src.get()
+                raise self.fail("unexpected `,'")
+            kind = AddressKind.PLUS if ch == "+" else AddressKind.MULTIPLE
+            return _address(kind, self.number())
+        found = self.address()
+        if found is None:
+            src.get()
+            raise self.fail("unexpected `,'")
+        return found
+
+    def delimited(self, delim: str, unterminated: str) -> str:
+        """The text up to an unescaped ``delim``, bracket expressions
+        read whole, a ``\\delim`` made the plain delimiter and ``\\n``
+        a newline.
+
+        Args:
+            delim (str): the delimiter.
+            unterminated (str): the refusal when the text never ends.
+        """
+        src = self.src
+        out: list[str] = []
+        while True:
+            ch = src.get()
+            if ch is None or ch == "\n":
+                raise self.fail(unterminated)
+            if ch == delim:
+                return "".join(out)
+            if ch == "\\":
+                nxt = src.get()
+                if nxt is None or (nxt == "\n" and src.pos - 1 in src.joins):
+                    raise self.fail(unterminated)
+                if nxt == delim:
+                    out.append(delim)
+                elif nxt == "\n":
+                    out.append("\n")
+                else:
+                    out.append("\\" + nxt)
+                continue
+            if ch == "[":
+                out.append(self.bracket(delim, unterminated))
+                continue
+            out.append(ch)
+
+    def bracket(self, delim: str, unterminated: str) -> str:
+        """A bracket expression, from after its ``[``: the delimiter is
+        an ordinary character inside it.
+
+        Args:
+            delim (str): the delimiter.
+            unterminated (str): the refusal when the text never ends.
+        """
+        src = self.src
+        out = ["["]
+        if src.peek() == "^":
+            out.append(src.get() or "")
+        if src.peek() == "]":
+            out.append(src.get() or "")
+        while True:
+            ch = src.get()
+            if ch is None or ch == "\n":
+                raise self.fail(unterminated)
+            if ch == "]":
+                out.append(ch)
+                return "".join(out)
+            if ch == "[" and src.peek() in (":", ".", "="):
+                kind = src.get() or ""
+                out.append("[" + kind)
+                while True:
+                    inner = src.get()
+                    if inner is None or inner == "\n":
+                        raise self.fail(unterminated)
+                    out.append(inner)
+                    if inner == kind and src.peek() == "]":
+                        out.append(src.get() or "")
+                        break
+                continue
+            out.append(ch)
+
+    def regex(self, raw: str, icase: bool, multiline: bool) -> SedRegex:
+        if raw == "":
+            if icase or multiline:
+                raise self.fail("cannot specify modifiers on empty regexp")
+            return SedRegex(None)
+        try:
+            text = self.view(_regex_text(raw))
+        except _RecursiveEscape:
+            raise self.fail(_RECURSIVE) from None
+        try:
+            compiled = PosixRegex(
+                text, self.extended, "sed", icase, self.utf8, multiline
+            )
+        except RegexError as exc:
+            if exc.message.startswith("character class syntax is"):
+                raise SedError(
+                    f"sed: {exc.message}", 4, self.program.wfiles
+                ) from exc
+            raise self.fail(exc.message) from exc
+        return SedRegex(compiled)
+
+    def end_of_command(self) -> None:
+        src = self.src
+        ch = src.skip(_BLANKS)
+        if ch is None:
+            return
+        if ch in "\n;":
+            src.get()
+            return
+        if ch in "}#":
+            return
+        src.get()
+        raise self.fail("extra characters after command")
+
+    def command(self) -> None:
+        src = self.src
+        cmd = SedCommand(name="")
+        cmd.addr1 = self.address()
+        if cmd.addr1 is not None:
+            if src.skip(_BLANKS) == ",":
+                src.get()
+                cmd.addr2 = self.second_address()
+        ch = src.skip(_BLANKS)
+        bang: int | None = None
+        if ch == "!":
+            src.get()
+            bang = src.pos
+            cmd.negate = True
+            ch = src.skip(_BLANKS)
+            if ch == "!":
+                src.get()
+                raise self.fail("multiple `!'s")
+        name = src.get()
+        if name is None or name == "\n" or name == ";":
+            raise self.fail("missing command")
+        cmd.name = name
+        self.check_addresses(cmd, bang)
+        handler = _HANDLERS.get(name)
+        if handler is None:
+            if name == "e":
+                raise self.fail("`e' command not supported")
+            raise self.fail(f"unknown command: `{name}'")
+        handler(self, cmd)
+
+    def check_addresses(self, cmd: SedCommand, bang: int | None) -> None:
+        """Refuse addresses the command cannot take, where GNU does: line
+        0 at the ``!`` when there is one, the rest at the command.
+
+        Args:
+            cmd (SedCommand): the command, its letter read.
+            bang (int | None): where a ``!`` ended.
+        """
+        first, second = cmd.addr1, cmd.addr2
+        if first is not None and first.number == 0:
+            zero_line = (
+                first.kind is AddressKind.LINE
+                and (second is None or second.kind is not AddressKind.REGEX)
+                and not (cmd.name == "r" and second is None)
+            )
+            if zero_line:
+                raise self.fail_at(bang, "invalid usage of line address 0")
+        if cmd.name == ":" and first is not None:
+            raise self.fail(": doesn't want any addresses")
+        if cmd.name == "#" and first is not None:
+            raise self.fail("comments don't accept any addresses")
+        if cmd.name in "qQ" and second is not None:
+            raise self.fail("command only uses one address")
+
+    def add(self, cmd: SedCommand) -> None:
+        self.program.commands.append(cmd)
+
+    def label(self) -> str:
+        src = self.src
+        src.skip(_BLANKS)
+        start = src.pos
+        while (ch := src.peek()) is not None and ch not in _SPACES + ";}#":
+            src.pos += 1
+        return src.text[start : src.pos]
+
+    def filename(self) -> str:
+        src = self.src
+        src.skip(_BLANKS)
+        start = src.pos
+        while (ch := src.peek()) is not None and ch != "\n":
+            src.pos += 1
+        name = src.text[start : src.pos]
+        if not name:
+            raise self.fail("missing filename in r/R/w/W commands")
+        if src.peek() == "\n":
+            src.get()
+        # A name is shell text in either locale, which the files resolve.
+        return decode_text(from_byte_view(name))
+
+    def wfile(self, name: str) -> None:
+        if name not in self.program.wfiles:
+            self.program.wfiles.append(name)
+
+    def text(self, name: str) -> str | None:
+        """The text of ``a``, ``i`` or ``c``: GNU's one-line form after
+        blanks, or after a backslash and a newline the lines that follow,
+        each escaped newline continuing it. None when there is none at
+        all.
+
+        Args:
+            name (str): the command, ``a``, ``i`` or ``c``.
+        """
+        src = self.src
+        ch = src.skip(_BLANKS)
+        if ch is None or ch == "\n":
+            raise self.fail("expected \\ after `a', `c' or `i'")
+        if ch == "\\":
+            src.get()
+            if src.peek() == "\n":
+                src.get()
+            elif src.peek() is None:
+                return None
+        out: list[str] = []
+        read = recursive = False
+        start = src.pos
+        while (ch := src.get()) is not None:
+            read = True
+            if ch == "\n":
+                break
+            if ch != "\\":
+                out.append(ch)
+                continue
+            nxt = src.peek()
+            if nxt is None:
+                # Text that runs to the end of the script on a backslash
+                # goes out as written, that backslash dropped.
+                return self.view(src.text[start : src.pos - 1]) + "\n"
+            src.get()
+            if nxt == "\n":
+                out.append("\n")
+                continue
+            if nxt == "c" and src.peek() in (None, "\n"):
+                # A `\c` that ends the text: `a` takes the closing newline
+                # into it (^J), `i` and `c` drop it.
+                if src.peek() == "\n":
+                    src.get()
+                if recursive:
+                    raise self.fail(_RECURSIVE)
+                if name == "a":
+                    return self.view("".join(out) + "J")
+                return self.view("".join(out)) + "\n"
+            try:
+                found = _escape(src.text, src.pos - 1)
+            except _RecursiveEscape:
+                # GNU refuses it once the text has been read.
+                recursive = True
+                continue
+            if found is None:
+                out.append(nxt)
+                continue
+            out.append(found[0])
+            src.pos = found[1]
+        if recursive:
+            raise self.fail(_RECURSIVE)
+        if not read:
+            return None
+        return self.view("".join(out)) + "\n"
+
+    def replacement(self, raw: str, groups: int) -> list[ReplacementPart]:
+        parts: list[ReplacementPart] = []
+        literal: list[str] = []
+
+        def flush() -> None:
+            if literal:
+                parts.append(ReplacementPart(text=self.view("".join(literal))))
+                literal.clear()
+
+        i = 0
+        while i < len(raw):
+            ch = raw[i]
+            if ch == "&":
+                flush()
+                parts.append(ReplacementPart(group=0))
+                i += 1
+                continue
+            if ch != "\\" or i + 1 >= len(raw):
+                literal.append(ch)
+                i += 1
+                continue
+            nxt = raw[i + 1]
+            if _is_digit(nxt):
+                group = int(nxt)
+                if group > groups:
+                    raise self.fail(
+                        f"invalid reference \\{group} on `s' command's RHS"
+                    )
+                flush()
+                parts.append(ReplacementPart(group=group))
+                i += 2
+                continue
+            if nxt in _CASE:
+                flush()
+                parts.append(ReplacementPart(case=nxt))
+                i += 2
+                continue
+            found = _escape(raw, i + 1)
+            if found is None:
+                literal.append(nxt)
+                i += 2
+                continue
+            literal.append(found[0])
+            i = found[1]
+        flush()
+        return parts
+
+    def substitute(self, cmd: SedCommand) -> None:
+        src = self.src
+        delim = src.get()
+        if delim is None or delim in "\n\\":
+            raise self.fail("unterminated `s' command")
+        self.delimiter(delim)
+        raw = self.delimited(delim, "unterminated `s' command")
+        rhs = self.rhs(delim)
+        subst = SedSubstitution(SedRegex(None), [])
+        icase = multiline = False
+        seen_g = seen_p = seen_n = False
+        while True:
+            ch = src.get()
+            if ch is None or ch in "\n;":
+                break
+            if ch in "}#":
+                src.unget()
+                break
+            if ch == "\r" and src.peek() == "\n":
+                # A script written with CRLF line ends.
+                src.get()
+                break
+            if ch in _BLANKS:
+                continue
+            if ch == "g":
+                if seen_g:
+                    raise self.fail("multiple `g' options to `s' command")
+                seen_g = subst.global_ = True
+            elif ch == "p":
+                if seen_p:
+                    raise self.fail("multiple `p' options to `s' command")
+                seen_p = subst.print_ = True
+            elif _is_digit(ch):
+                src.unget()
+                if seen_n:
+                    self.number()
+                    raise self.fail("multiple number options to `s' command")
+                seen_n = True
+                subst.occurrence = self.number()
+                if subst.occurrence == 0:
+                    raise self.fail(
+                        "number option to `s' command may not be zero"
+                    )
+            elif ch in "iI":
+                icase = True
+            elif ch in "mM":
+                multiline = True
+            elif ch == "e":
+                raise self.fail("`e' command not supported")
+            elif ch == "w":
+                subst.wfile = self.filename()
+                self.wfile(subst.wfile)
+                break
+            else:
+                raise self.fail("unknown option to `s'")
+        subst.regex = self.regex(raw, icase, multiline)
+        groups = 9 if subst.regex.regex is None else subst.regex.regex.groups
+        try:
+            subst.parts = self.replacement(rhs, groups)
+        except _RecursiveEscape:
+            raise self.fail(_RECURSIVE) from None
+        cmd.subst = subst
+        self.add(cmd)
+
+    def rhs(self, delim: str) -> str:
+        """An ``s`` replacement up to its unescaped delimiter, escapes
+        kept for ``replacement`` and a ``\\delim`` its literal character.
+
+        Args:
+            delim (str): the delimiter.
+        """
+        src = self.src
+        out: list[str] = []
+        while True:
+            ch = src.get()
+            if ch is None or ch == "\n":
+                raise self.fail("unterminated `s' command")
+            if ch == delim:
+                return "".join(out)
+            if ch == "\\":
+                nxt = src.get()
+                if nxt is None or (nxt == "\n" and src.pos - 1 in src.joins):
+                    raise self.fail("unterminated `s' command")
+                if nxt == delim:
+                    out.append("\\" + delim if delim in "&\\" else delim)
+                elif nxt == "\n":
+                    out.append("\n")
+                else:
+                    out.append("\\" + nxt)
+                continue
+            out.append(ch)
+
+    def transliterate(self, cmd: SedCommand) -> None:
+        src = self.src
+        delim = src.get()
+        if delim is None or delim in "\n\\":
+            raise self.fail("unterminated `y' command")
+        self.delimiter(delim)
+        source = self.y_string(delim)
+        target = self.y_string(delim)
+        left, right = self.view(source), self.view(target)
+        if len(left) != len(right):
+            raise self.fail("strings for `y' command are different lengths")
+        table: dict[str, str] = {}
+        for a, b in zip(left, right, strict=True):
+            table.setdefault(a, b)
+        cmd.translit = table
+        self.end_of_command()
+        self.add(cmd)
+
+    def y_string(self, delim: str) -> str:
+        """One ``y`` string: read up to its delimiter first, so no escape
+        can take the delimiter, then decoded.
+
+        Args:
+            delim (str): the delimiter.
+        """
+        src = self.src
+        raw: list[str] = []
+        while True:
+            ch = src.get()
+            if ch is None or ch == "\n":
+                raise self.fail("unterminated `y' command")
+            if ch == delim:
+                break
+            if ch != "\\":
+                raw.append(ch)
+                continue
+            nxt = src.get()
+            if nxt is None or (nxt == "\n" and src.pos - 1 in src.joins):
+                raise self.fail("unterminated `y' command")
+            raw.append(nxt if nxt == delim else "\\" + nxt)
+        try:
+            return _y_text("".join(raw))
+        except _RecursiveEscape:
+            # GNU refuses it at the end of the string.
+            raise self.fail(_RECURSIVE) from None
+
+
+def _simple(compiler: _Compiler, cmd: SedCommand) -> None:
+    compiler.end_of_command()
+    compiler.add(cmd)
+
+
+def _open_block(compiler: _Compiler, cmd: SedCommand) -> None:
+    compiler.blocks.append(len(compiler.program.commands))
+    compiler.add(cmd)
+
+
+def _close_block(compiler: _Compiler, cmd: SedCommand) -> None:
+    if not compiler.blocks:
+        raise compiler.fail("unexpected `}'")
+    if cmd.addr1 is not None:
+        raise compiler.fail("`}' doesn't want any addresses")
+    start = compiler.blocks.pop()
+    compiler.program.commands[start].block_end = len(compiler.program.commands)
+    compiler.end_of_command()
+    compiler.add(cmd)
+
+
+def _with_number(compiler: _Compiler, cmd: SedCommand) -> None:
+    compiler.src.skip(_BLANKS)
+    if _is_digit(compiler.src.peek()):
+        # `l` and `q` keep their number's low 32 bits as a signed int.
+        low = compiler.number() & 0xFFFFFFFF
+        cmd.number = low - (1 << 32) if low >> 31 else low
+    compiler.end_of_command()
+    compiler.add(cmd)
+
+
+def _text(compiler: _Compiler, cmd: SedCommand) -> None:
+    cmd.text = compiler.text(cmd.name)
+    compiler.add(cmd)
+
+
+def _label(compiler: _Compiler, cmd: SedCommand) -> None:
+    label = compiler.label()
+    if not label:
+        raise compiler.fail('":" lacks a label')
+    cmd.label = label
+    compiler.add(cmd)
+
+
+def _branch(compiler: _Compiler, cmd: SedCommand) -> None:
+    cmd.label = compiler.label()
+    compiler.add(cmd)
+
+
+def _read_file(compiler: _Compiler, cmd: SedCommand) -> None:
+    cmd.filename = compiler.filename()
+    names = (
+        compiler.program.rfiles
+        if cmd.name == "r"
+        else compiler.program.reader_files
+    )
+    if cmd.filename not in names:
+        names.append(cmd.filename)
+    compiler.add(cmd)
+
+
+def _write_file(compiler: _Compiler, cmd: SedCommand) -> None:
+    cmd.filename = compiler.filename()
+    compiler.wfile(cmd.filename)
+    compiler.add(cmd)
+
+
+def _version(compiler: _Compiler, cmd: SedCommand) -> None:
+    src = compiler.src
+    src.skip(_BLANKS)
+    start = src.pos
+    while (ch := src.peek()) is not None and ch not in _SPACES + ";}#":
+        src.pos += 1
+    wanted = src.text[start : src.pos]
+    if wanted and strverscmp(wanted, SED_VERSION) > 0:
+        raise compiler.fail("expected newer version of sed")
+    compiler.end_of_command()
+
+
+def _substitute(compiler: _Compiler, cmd: SedCommand) -> None:
+    compiler.substitute(cmd)
+
+
+def _transliterate(compiler: _Compiler, cmd: SedCommand) -> None:
+    compiler.transliterate(cmd)
+
+
+_Handler: TypeAlias = Callable[[_Compiler, SedCommand], None]
+
+_HANDLERS: dict[str, _Handler] = {
+    "{": _open_block,
+    "}": _close_block,
+    "=": _simple,
+    "a": _text,
+    "i": _text,
+    "c": _text,
+    "b": _branch,
+    "t": _branch,
+    "T": _branch,
+    ":": _label,
+    "d": _simple,
+    "D": _simple,
+    "F": _simple,
+    "g": _simple,
+    "G": _simple,
+    "h": _simple,
+    "H": _simple,
+    "l": _with_number,
+    # sed 4.9 still reads `L` as `l` reads, and refuses it where it runs.
+    "L": _with_number,
+    "n": _simple,
+    "N": _simple,
+    "p": _simple,
+    "P": _simple,
+    "q": _with_number,
+    "Q": _with_number,
+    "r": _read_file,
+    "R": _read_file,
+    "s": _substitute,
+    "v": _version,
+    "w": _write_file,
+    "W": _write_file,
+    "x": _simple,
+    "y": _transliterate,
+    "z": _simple,
+}
+
+
+def compile_script(
+    pieces: Sequence[SedScriptPiece], extended: bool, utf8: bool = False
+) -> SedProgram:
+    """Compile a sed script as GNU sed 4.9 reads it.
+
+    The pieces join with newlines, so one command may span them
+    (``-e 'a\\' -e 'text'``), and each diagnostic names the piece it is
+    in: ``-e expression #N, char C`` or ``file NAME line L``.
+
+    Args:
+        pieces (Sequence[SedScriptPiece]): the -e and -f pieces in order.
+        extended (bool): -E: extended rather than basic expressions.
+        utf8 (bool): a UTF-8 locale: the script and the input are
+            characters rather than bytes.
+
+    Raises:
+        SedError: a script GNU refuses, in its wording.
+    """
+    return _Compiler(pieces, extended, utf8).compile()

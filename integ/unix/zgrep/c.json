@@ -106,6 +106,36 @@
       "flags": [
         "c"
       ]
+    },
+    {
+      "id": "zgrep_o_selects_a_line_an_empty_match_leaves_unprinted",
+      "seq": 9970041,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "printf 'ab\\n' | gzip > /data/zo.gz; zgrep -o '^' /data/zo.gz; echo rc=$?; zgrep -oc '[0-9]*' /data/zo.gz; echo rc=$?; rm /data/zo.gz",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=0\n1\nrc=0\n",
+        "stderr": ""
+      }
     }
   ]
 }

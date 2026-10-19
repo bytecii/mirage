@@ -611,6 +611,179 @@
         "stdout": "rc=1\n",
         "stderr": "sed: -e expression #1, char 7: strings for `y' command are different lengths\n"
       }
+    },
+    {
+      "id": "sed_error_line_zero_at_the_bang",
+      "seq": 9970013,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'a\\n' | sed '0!p'; echo rc=$?; printf 'a\\n' | sed '1,2!q'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=1\n",
+        "stderr": "sed: -e expression #1, char 2: invalid usage of line address 0\nsed: -e expression #1, char 5: command only uses one address\n"
+      }
+    },
+    {
+      "id": "sed_error_recursive_escaping_after_c",
+      "seq": 9970021,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo a | sed 's/\\c\\d/X/'; echo rc=$?; echo a | sed 'y/a\\c\\d/XY/'; echo rc=$?; echo a | sed 'a foo\\c\\dbar'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=1\nrc=1\n",
+        "stderr": "sed: -e expression #1, char 9: recursive escaping after \\c not allowed\nsed: -e expression #1, char 8: recursive escaping after \\c not allowed\nsed: -e expression #1, char 12: recursive escaping after \\c not allowed\n"
+      }
+    },
+    {
+      "id": "sed_error_a_piece_ends_inside_a_command",
+      "seq": 9970031,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo a | sed -e 's/a/b\\' -e 'c/'; echo rc=$?; echo a | sed -e '/a\\' -e '/p'; echo rc=$?; echo a | sed -e 'y/a\\' -e '/b/'; echo rc=$?; echo x | sed -e 'a foo\\' -e bar",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=1\nrc=1\nx\nfoo\nbar\n",
+        "stderr": "sed: -e expression #1, char 6: unterminated `s' command\nsed: -e expression #1, char 3: unterminated address regex\nsed: -e expression #1, char 4: unterminated `y' command\n"
+      },
+      "flags": [
+        "e"
+      ]
+    },
+    {
+      "id": "sed_error_a_missing_label_is_quoted_as_bytes",
+      "seq": 9970038,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo x | sed 'b \u6f22'; echo rc=$?; echo x | sed 'b a\\\\b'; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=4\nrc=4\n",
+        "stderr": "sed: can't find label for jump to `\u6f22'\nsed: can't find label for jump to `a\\\\b'\n"
+      }
+    },
+    {
+      "id": "sed_error_L_fails_only_where_it_runs",
+      "seq": 9970040,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo x | sed -e b -e L; echo rc=$?; printf 'x\\ny\\n' | sed 'p;L'; echo rc=$?; echo x | sed -e b -e Lx; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\nrc=0\nx\nrc=4\nrc=1\n",
+        "stderr": "sed: INTERNAL ERROR: Bad cmd L\nsed: -e expression #2, char 2: extra characters after command\n"
+      }
     }
   ]
 }

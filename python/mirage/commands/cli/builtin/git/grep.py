@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import posixpath
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -9,13 +8,7 @@ from dulwich.objects import Blob
 from dulwich.repo import BaseRepo
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.grep_pattern import compile_pattern
 from mirage.commands.builtin.types import RegexSyntax
-from mirage.commands.builtin.utils.bre import (
-    BreError,
-    PosixSyntax,
-    translate_ere,
-)
 from mirage.commands.cli.builtin.git.constants import EXECUTABLE, REGULAR
 from mirage.commands.cli.builtin.git.discover import require_work_tree
 from mirage.commands.cli.builtin.git.errors import (
@@ -56,9 +49,10 @@ from mirage.commands.cli.builtin.git.util import (
     verb_usage,
 )
 from mirage.commands.config import Context
-from mirage.commands.errors import UsageError as PatternError
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
+from mirage.rs.errors import RegexError
+from mirage.rs.regex import PosixRegex, posix_escape, posix_regex
 from mirage.shell.bytes import (
     byte_view,
     encode_text,
@@ -66,7 +60,6 @@ from mirage.shell.bytes import (
     utf8_locale,
 )
 from mirage.types import PathSpec
-from mirage.utils.posix import compile_posix_regex, posix_line_matcher
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +93,24 @@ class GrepFlags:
     utf8: bool
 
 
+def _line_matcher(
+    pattern: PosixRegex, nonempty: bool
+) -> Callable[[str], bool]:
+    """A line test for one pattern; under -w only a match that consumes
+    something counts, so an empty match does not select the line.
+
+    Args:
+        pattern (PosixRegex): the compiled expression.
+        nonempty (bool): require a match that consumes input.
+    """
+    if not nonempty:
+        return lambda line: pattern.search(line) is not None
+    return lambda line: any(
+        span[0] is not None and span[0][0] != span[0][1]
+        for span in pattern.all(line)
+    )
+
+
 def parse_flags(
     fl: FlagView, patterns: list[str], origin: str, utf8: bool
 ) -> GrepFlags:
@@ -126,36 +137,19 @@ def parse_flags(
     compiled = []
     for value in patterns:
         for part in value.split("\n"):
+            view = byte_view(part, utf8)
             try:
-                if syntax is RegexSyntax.EXTENDED and not fixed:
-                    source = translate_ere(
-                        byte_view(part, utf8), PosixSyntax.EXTENDED
-                    )[0]
-                    pattern = compile_posix_regex(
-                        source,
-                        re.IGNORECASE if ignore_case else 0,
-                        utf8,
-                    )
-                else:
-                    pattern = compile_pattern(
-                        byte_view(part, utf8),
-                        ignore_case,
-                        fixed,
-                        False,
-                        syntax,
-                        utf8,
-                    )
-                if whole_word:
-                    pattern = compile_posix_regex(
-                        r"(?<!\w)(?:" + pattern.pattern + r")(?!\w)",
-                        pattern.flags,
-                        utf8,
-                    )
-                compiled.append(posix_line_matcher(pattern, whole_word))
-            except (PatternError, BreError, re.error) as exc:
-                raise PatternCompileError(
-                    origin, part, str(exc).removeprefix("grep: ")
-                ) from exc
+                pattern = posix_regex(
+                    posix_escape(view) if fixed else view,
+                    fixed or syntax is RegexSyntax.EXTENDED,
+                    "posix",
+                    ignore_case,
+                    utf8,
+                    word=whole_word,
+                )
+            except RegexError as exc:
+                raise PatternCompileError(origin, part, exc.message) from exc
+            compiled.append(_line_matcher(pattern, whole_word))
     listing = (
         "files_without_match"
         if fl.as_bool("files_without_match")

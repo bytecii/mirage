@@ -60,6 +60,12 @@ export interface CommitFacts {
   readonly committerTime: number
   readonly committerTimezoneMinutes: number
   readonly parents: readonly string[]
+  /**
+   * The message and the `Name <email>` identities as their bytes, a byte that
+   * is no part of a character as its surrogate escape; set only when the
+   * decoded text lost one, for the filters that match bytes.
+   */
+  readonly bytes?: { readonly message: string; readonly author: string; readonly committer: string }
 }
 
 // The presets this build renders, and the real git presets it refuses by
