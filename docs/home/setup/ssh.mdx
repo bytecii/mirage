@@ -1,0 +1,35 @@
+---
+title: SSH
+icon: terminal
+description: Access a remote directory as workspace files over SFTP.
+---
+
+SSH mounts a directory from a remote server. You need an SSH account with
+access to that directory and an SFTP-enabled server. Available in Python
+and Node.
+
+## Configuration
+
+Set the server, username, key and remote directory:
+
+```yaml
+mounts:
+  /remote:
+    vfs: ssh
+    mode: read
+    config:
+      host: server.example.com
+      username: deploy
+      identity_file: ~/.ssh/id_ed25519
+      root: /srv/data
+```
+
+`ls /remote` lists the remote directory. Set `mode: write` to allow changes,
+subject to the SSH account's permissions.
+
+To run programs on the server, use the [SSH runtime](/home/setup/runtime/sandbox/ssh).
+
+## SDK guides
+
+- [Python SSH VFS](/python/vfs/ssh)
+- [TypeScript SSH setup](/typescript/setup/ssh)

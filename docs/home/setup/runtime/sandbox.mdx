@@ -30,6 +30,18 @@ After following a provider page's **Connecting the workspace** steps, run the
 shared [workspace file check](/home/setup/runtime/overview#verify-workspace-file-access)
 to confirm reads and writes cross the runtime boundary.
 
+## Language compatibility
+
+Python modules, file modes and other language APIs come from the interpreter
+installed in the sandbox image or on the remote machine. For Sandlock, they
+come from this host's interpreter. Mirage forwards the captured program's
+arguments, input, environment and working directory; each provider's
+**Runtime behavior** table describes that boundary.
+
+File operations reach workspace mounts through the connection configured
+for that provider. They also remain subject to the sandbox or host's own
+permissions and confinement.
+
 ## The sandbox image
 
 A sandbox that serves the mounts with its own Mirage needs `fuse3` and
@@ -68,17 +80,14 @@ output.
 
 ## Serving the session's files
 
-With `mount_type: ssh`, a passive `sshfs` helper in the sandbox carries file
-operations over its stdin and stdout to the host's SFTP adapter. That adapter
-calls the session's dispatcher, including hides, path rules, `pre_vfs`, mount
-modes, observation and cache invalidation. It reuses the provider's authenticated
-exec channel; no public listener, separate credential or backend credential in
-the sandbox is required. Each served sandbox belongs to one session.
+With `mount_type: ssh`, workspace file access follows the session's permissions
+and policies. You do not need to expose a public file server or copy service
+credentials into the sandbox. Each sandbox is assigned to one session.
 
-Every restricted prefix must be served by that transport. Root and `/dev`
-restrictions, a hidden mount that would expose underlying guest files, and
-restrictions on a sandbox's own FUSE mount refuse the run. Program-specific file
-rules also refuse it: SFTP cannot identify which remote child issued an open.
-In-process runtimes carry the program identity into the dispatcher. Writes through
-fully served mounts invalidate the affected paths without clearing the whole cache.
-The helper's setup log is removed after either successful setup or failure.
+Mirage refuses to run a program when it cannot enforce the session's file
+restrictions. Unsupported cases include:
+
+- Restrictions on `/` or `/dev`.
+- Hiding a mount when doing so would expose the sandbox's own files underneath.
+- Restrictions on mounts served by a separate Mirage inside the sandbox.
+- File rules that depend on which program opens a file.

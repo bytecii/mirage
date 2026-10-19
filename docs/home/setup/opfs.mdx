@@ -1,0 +1,26 @@
+---
+title: OPFS
+icon: hard-drive
+description: Keep workspace files in browser storage across page reloads.
+---
+
+OPFS uses the browser's Origin Private File System. Files stay scoped to the
+current website's origin and persist across page reloads. Browser only; for
+Python or Node, use [Disk](/home/setup/disk).
+
+## Configuration
+
+```typescript
+import { MountMode, OPFSVFS, Workspace } from '@struktoai/mirage-browser'
+
+const ws = new Workspace(
+  { '/data': new OPFSVFS({ root: 'mirage' }) },
+  { mode: MountMode.WRITE },
+)
+await ws.shell('echo "hello" > /data/note.txt')
+await ws.close()
+```
+
+The browser controls storage quotas and may remove data under storage
+pressure. See the [OPFS guide](/typescript/setup/opfs#storage-and-quotas) for
+checking usage and requesting persistent storage.

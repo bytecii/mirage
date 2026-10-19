@@ -1,16 +1,13 @@
 ---
 title: QuickJS
 icon: js
-description: A small ES2023 engine in WebAssembly for node and js, in both Mirage SDKs.
+description: Run JavaScript scripts and pipe transforms in both Mirage SDKs.
 ---
 
-QuickJS runs `node` and `js`: a bare ES2023 engine in WebAssembly, inside the
-Mirage process, for small scripts and pipe transforms. It is not Node: there
-is no `require`, npm, `fs` or `fetch`. The files it opens are the workspace's,
-under the same mount modes and permissions as shell commands. It is in the
-default runtimes of both SDKs. The Python SDK runs
-[quickjs-ng](https://github.com/quickjs-ng/quickjs), and the TypeScript SDK
-runs [QuickJS](https://bellard.org/quickjs/) through quickjs-emscripten.
+QuickJS is the default runtime for `node` and `js` in both SDKs. It supports
+ES2023 for small scripts and pipe transforms, with access to workspace files
+under the same permissions as shell commands. Despite the command name,
+it does not provide Node.js APIs, npm packages or network access.
 
 ## Installation
 
@@ -76,39 +73,272 @@ list it yourself:
   </Tab>
 </Tabs>
 
-## What is wired
+## JavaScript compatibility
 
-`std` and `os` are globals, as in `qjs --std`. Python uses the supplied
-QuickJS-NG WASI build; TypeScript uses the bundled QuickJS engine and the
-Mirage file adapter. Both expose `std.Error`, `os.platform` (`wasi`),
-`atob`, `btoa`, and `queueMicrotask`.
-
-| JavaScript | Python SDK | TypeScript SDK | Notes |
-| --- | --- | --- | --- |
-| `std.open(path, mode, errorObj)`, modes `r`, `w`, `a`, `+`, `x`, `b` | Yes | Yes | `null` on failure, with `errorObj.errno`. A read-only mount refuses only the modes that write. |
-| FILE `readAsString`, `read`, `getline`, `seek`, `tell`, `eof` | Yes | Yes | |
-| FILE `puts`, `write` | Yes | Yes | Written at `close`, or when the run ends. |
-| FILE `flush` | Yes | Yes | Writes what the FILE buffered to the file. |
-| FILE `printf`, `tello` | Yes | No | |
-| `os.readdir`, `os.stat` | Yes | Yes | Return `[value, errno]`. In Python, `mode` has only the file type bits. |
-| `os.mkdir`, `os.remove`, `os.utimes` | Yes | Yes | `os.remove` also removes an empty directory. |
-| `os.rename` | Yes | Yes | `-75` (`EXDEV`) across mounts. |
-| `os.getcwd`, `os.chdir` | Yes | Yes | The shell's working directory; a change lasts for the run. |
-| `std.getenv` | Yes | Yes | The session's environment. |
-| `scriptArgs`, `std.in.readAsString()` | Yes | Yes | The words after the script, and the piped input. |
-| `std.out.puts`, `std.err.puts`, `console.log`, `print`, `std.exit` | Yes | Yes | |
-| `std.out.printf`, `std.err.printf` | Yes | Yes | C format; return the UTF-8 bytes written. Unlike `printf` on an opened FILE. |
-| `std.loadFile`, `std.printf` | Yes | Yes | `loadFile` returns `null` when reading fails. |
-| `std.writeFile`, `std.fdopen` | Yes | No | |
-| `std.strerror`, `std.setenv`, `std.getenviron`, `std.out.flush` | Yes | No | |
-| `os.open`, `os.read`, `os.write`, `os.seek`, `os.close` | Yes | No | |
-| `os.sleep`, `os.setTimeout` | Yes | No | |
-| `os.lstat`, `os.symlink`, `os.readlink`, `os.realpath` | No | No | |
-| `os.exec`, `std.popen`, `std.tmpfile` | No | No | |
-| `console.error`, `setTimeout`, `fetch`, `require`, `process` | No | No | |
+`std` and `os` are globals. The SDK columns identify where their APIs differ.
 
 In TypeScript, any `std` or `os` function not listed as supported throws
 `TypeError`.
+
+Examples assume a writable `/data` mount. Mount modes and permissions still apply.
+
+### `std.open()`
+
+`std.open(path, mode, errorObj)` returns `null` on failure and sets
+`errorObj.errno`. A read-only mount refuses modes that write. Modes and
+modifiers are listed separately; for example, `rb` combines `r` and `b`.
+
+| Mode or modifier | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `r` | ✓ | ✓ |
+| `w` | ✓ | ✓ |
+| `a` | ✓ | ✓ |
+| `x` | ✓ | ✓ |
+| `b` | ✓ | ✓ |
+| `+` | ✓ | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: append to a workspace file" id="std-open-example">
+    ```javascript
+    const error = {};
+    const file = std.open("/data/log.txt", "a", error);
+    if (file === null) {
+      throw new Error("Open failed: " + error.errno);
+    }
+    try {
+      file.puts("Job completed.\n");
+    } finally {
+      file.close();
+    }
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="std-open-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `x` | Exclusive-creation modifier: use `wx` or `ax`; `x` alone is not a valid mode. |
+    | Write modes | A read-only mount refuses modes that write. |
+  </Accordion>
+</AccordionGroup>
+
+### File objects
+
+| API | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `file.readAsString()` | ✓ | ✓ |
+| `file.read()` | ✓ | ✓ |
+| `file.getline()` | ✓ | ✓ |
+| `file.seek()` | ✓ | ✓ |
+| `file.tell()` | ✓ | ✓ |
+| `file.eof()` | ✓ | ✓ |
+| `file.puts()` | ✓ | ✓ |
+| `file.write()` | ✓ | ✓ |
+| `file.flush()` | ✓ | ✓ |
+| `file.close()` | ✓ | ✓ |
+| `file.printf()` | ✓ | ✗ |
+| `file.tello()` | ✓ | ✗ |
+
+<AccordionGroup>
+  <Accordion title="Example: write, seek and read a file" id="file-objects-example">
+    ```javascript
+    const file = std.open("/data/example.txt", "w+");
+    if (file === null) {
+      throw new Error("Could not open example.txt");
+    }
+    try {
+      file.puts("hello\n");
+      file.seek(0, std.SEEK_SET);
+      print(file.readAsString());
+    } finally {
+      file.close();
+    }
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="file-objects-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `file.printf()` | Not available in the TypeScript SDK. |
+    | `file.tello()` | Not available in the TypeScript SDK. |
+    | `file.puts()`, `file.write()` | Written at `close`, or when the run ends. |
+    | `file.flush()`, `file.close()` | Flushes pending writes to the mount. |
+  </Accordion>
+</AccordionGroup>
+
+### `std`
+
+Environment variables come from the Mirage session. `std.loadFile()` returns
+`null` when reading fails.
+
+| API | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `std.getenv()` | ✓ | ✓ |
+| `std.exit()` | ✓ | ✓ |
+| `std.loadFile()` | ✓ | ✓ |
+| `std.printf()` | ✓ | ✓ |
+| `std.writeFile()` | ✓ | ✗ |
+| `std.fdopen()` | ✓ | ✗ |
+| `std.strerror()` | ✓ | ✗ |
+| `std.setenv()` | ✓ | ✗ |
+| `std.getenviron()` | ✓ | ✗ |
+| `std.Error` | ✓ | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: read a session environment variable" id="std-example">
+    ```javascript
+    const jobId = std.getenv("JOB_ID");
+    std.printf("Job: %s\n", jobId === undefined ? "unknown" : jobId);
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="std-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `std.writeFile()` | Not available in the TypeScript SDK. |
+    | `std.fdopen()` | Not available in the TypeScript SDK. |
+    | `std.strerror()` | Not available in the TypeScript SDK. |
+    | `std.setenv()` | Not available in the TypeScript SDK. |
+    | `std.getenviron()` | Not available in the TypeScript SDK. |
+    | `std.popen()` | ✗ |
+    | `std.tmpfile()` | ✗ |
+  </Accordion>
+</AccordionGroup>
+
+### Standard streams
+
+`std.in` receives the command's piped input.
+
+| API | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `std.in.readAsString()` | ✓ | ✓ |
+| `std.out.puts()` | ✓ | ✓ |
+| `std.err.puts()` | ✓ | ✓ |
+| `std.out.printf()` | ✓ | ✓ |
+| `std.err.printf()` | ✓ | ✓ |
+| `std.out.flush()` | ✓ | ✗ |
+
+<AccordionGroup>
+  <Accordion title="Example: forward piped input" id="standard-streams-example">
+    ```javascript
+    const input = std.in.readAsString();
+    std.out.puts(input);
+    std.err.puts("Input forwarded.\n");
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="standard-streams-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `std.out.flush()` | Not available in the TypeScript SDK. |
+    | `std.out.printf()`, `std.err.printf()` | C format; return the UTF-8 bytes written. Unlike `printf` on an opened FILE. |
+  </Accordion>
+</AccordionGroup>
+
+### `os`
+
+| API | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `os.readdir()` | ✓ | ✓ |
+| `os.stat()` | ✓ | ✓ |
+| `os.mkdir()` | ✓ | ✓ |
+| `os.remove()` | ✓ | ✓ |
+| `os.utimes()` | ✓ | ✓ |
+| `os.rename()` | ✓ | ✓ |
+| `os.getcwd()` | ✓ | ✓ |
+| `os.chdir()` | ✓ | ✓ |
+| `os.open()` | ✓ | ✗ |
+| `os.read()` | ✓ | ✗ |
+| `os.write()` | ✓ | ✗ |
+| `os.seek()` | ✓ | ✗ |
+| `os.close()` | ✓ | ✗ |
+| `os.sleep()` | ✓ | ✗ |
+| `os.setTimeout()` | ✓ | ✗ |
+| `os.platform` | ✓ | ✓ |
+
+- `os.readdir()`: Returns `[value, errno]`.
+
+<AccordionGroup>
+  <Accordion title="Example: list a workspace directory" id="os-example">
+    ```javascript
+    const [names, errno] = os.readdir("/data");
+    if (errno !== 0) {
+      throw new Error("Read directory failed: " + errno);
+    }
+    console.log(names);
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="os-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `os.open()` | Not available in the TypeScript SDK. |
+    | `os.read()` | Not available in the TypeScript SDK. |
+    | `os.write()` | Not available in the TypeScript SDK. |
+    | `os.seek()` | Not available in the TypeScript SDK. |
+    | `os.close()` | Not available in the TypeScript SDK. |
+    | `os.sleep()` | Not available in the TypeScript SDK. |
+    | `os.setTimeout()` | Not available in the TypeScript SDK. |
+    | `os.lstat()` | ✗ |
+    | `os.symlink()` | ✗ |
+    | `os.readlink()` | ✗ |
+    | `os.realpath()` | ✗ |
+    | `os.exec()` | ✗ |
+    | `os.stat()` | Returns `[value, errno]`. In Python, `mode` has only the file type bits. |
+    | `os.remove()` | `os.remove` also removes an empty directory. |
+    | `os.rename()` | `-75` (`EXDEV`) across mounts. |
+    | `os.getcwd()`, `os.chdir()` | The shell's working directory; a change lasts for the run. |
+    | `os.platform` | `wasi`. |
+  </Accordion>
+</AccordionGroup>
+
+### `console` and printing
+
+| API | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `console.log()` | ✓ | ✓ |
+| `print()` | ✓ | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: print a result" id="console-example">
+    ```javascript
+    console.log("Total:", 2 + 3);
+    print("done");
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="console-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `console.error()` | ✗ |
+  </Accordion>
+</AccordionGroup>
+
+### Runtime globals
+
+| API | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| `scriptArgs` | ✓ | ✓ |
+| `atob()` | ✓ | ✓ |
+| `btoa()` | ✓ | ✓ |
+| `queueMicrotask()` | ✓ | ✓ |
+
+- `scriptArgs`: The invocation name and arguments.
+
+<Accordion title="Example: read arguments and encode text" id="globals-example">
+  ```javascript
+  print(scriptArgs.slice(1));
+  const encoded = btoa("hello");
+  print(encoded);
+  print(atob(encoded));
+  ```
+</Accordion>
+
+### Unavailable host APIs
+
+Unavailable in this runtime.
+
+<Accordion title="Limitations" id="unavailable-host-apis-limitations">
+  | API or behavior | Limitation |
+  | --- | --- |
+  | `setTimeout()` | ✗ |
+  | `fetch()` | ✗ |
+  | `require()` | ✗ |
+  | `process` | ✗ |
+</Accordion>
 
 ## Notes
 
@@ -123,6 +353,3 @@ In TypeScript, any `std` or `os` function not listed as supported throws
 - QuickJS cannot reach host files or the network. `command_limits` bound its
   time and output, and in TypeScript a run also stops at 64 MiB of memory.
   Run untrusted or heavy code in a [sandbox](/home/setup/runtime/sandbox).
-- The Python host inherits the supplied WASI build's diagnostic filenames
-  (`<cmdline>` for evaluated source) and `os.getcwd()` spelling after `..`.
-  Its libc can normalize an empty path before Mirage sees the syscall.

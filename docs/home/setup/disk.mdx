@@ -1,0 +1,29 @@
+---
+title: Disk
+icon: hard-drive
+description: Make a directory on your host available as workspace files.
+---
+
+Disk mounts a host directory at a workspace path. Available in Python and
+Node; for browser storage, use [OPFS](/home/setup/opfs).
+
+## Configuration
+
+Replace `root` with the directory you want to access:
+
+```yaml
+mounts:
+  /data:
+    vfs: disk
+    mode: read
+    config:
+      root: /path/to/files
+```
+
+`ls /data` lists that directory. Set `mode: write` to allow changes to its
+files through Mirage.
+
+## SDK guides
+
+- [Python Disk VFS](/python/vfs/disk)
+- [TypeScript Disk setup](/typescript/setup/disk)

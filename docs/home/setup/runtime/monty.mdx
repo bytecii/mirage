@@ -1,14 +1,13 @@
 ---
 title: Monty
 icon: /images/pydantic-logo.svg
-description: A fast Python subset, written in Rust, and the default python3 in both Mirage SDKs.
+description: The default Python runtime in both Mirage SDKs, supporting a subset of Python.
 ---
 
-[Pydantic Monty](https://github.com/pydantic/monty) runs a subset of Python,
-written in Rust, inside the Mirage process. A run starts in microseconds. It
-has no host files, environment or network: the files it opens are the
-workspace's, under the same mount modes and permissions as shell commands.
-It is the default `python3` in both SDKs, in Node and in browsers.
+[Pydantic Monty](https://github.com/pydantic/monty) runs `python3` in both
+SDKs, including Node and browsers. It supports a subset of Python and works
+with workspace files under the same permissions as shell commands. Programs
+cannot access host files, host environment variables or the network.
 
 ## Installation
 
@@ -61,7 +60,8 @@ it yourself:
 
 ## Memory
 
-`max_memory` caps the heap one run may use, spelled as sandlock spells it:
+Set `max_memory` to limit the Python program's memory per run, using a size
+such as `64M`:
 
 ```yaml
 runtimes:
@@ -72,71 +72,304 @@ runtimes:
 
 A run that needs more raises `MemoryError`. There is no cap by default.
 
-## What is wired
+## Python compatibility
 
-Monty implements part of Python; see [Python subset](#python-subset). For
-files, processes and the environment:
+Support applies to both SDKs unless a row says otherwise.
+For Python syntax and standard-library coverage, see
+[Monty's limitations](https://pydantic.dev/docs/monty/limitations/).
 
-| Python | Supported | Notes |
-| --- | --- | --- |
-| `open()` with `r`, `w`, `a`, plus `b` | Yes | |
-| `open()` with `x` or `+` | No | |
-| `f.read()`, `f.readline()`, `f.readlines()`, `f.seek()`, `f.tell()` | Yes | The whole file is read at once. |
-| `f.write()` | Yes | Each call is written at once. |
-| `for line in f`, `f.truncate()`, `f.fileno()` | No | |
-| `Path.open`, `read_text`, `read_bytes`, `write_text`, `write_bytes` | Yes | |
-| `os.stat`, `Path.stat`, `exists`, `is_file`, `is_dir`, `is_symlink` | Yes | In TypeScript, use the named fields (`st.st_size`), not `st[6]`. |
-| `os.lstat`, `os.fstat` | No | |
-| `os.listdir`, `Path.iterdir` | Yes | |
-| `os.scandir`, `os.walk`, `Path.glob`, `Path.rglob` | No | |
-| `os.mkdir`, `os.makedirs`, `Path.mkdir` | Yes | |
-| `os.rmdir`, `Path.rmdir`, `os.remove`, `os.unlink`, `Path.unlink` | Yes | |
-| `os.rename`, `os.replace`, `Path.rename` | Yes | Raises `OSError` across mounts. |
-| `os.getcwd`, `Path.cwd`, `Path.resolve` | Yes | The shell's working directory. |
-| `os.chdir` | Python SDK | Lasts for the run. Raises `RuntimeError` in TypeScript. |
-| `os.environ`, `os.getenv` | Yes | The session's environment, never the host's. |
-| `argv`, `stdin` globals | Yes | The words after the script, and the piped input. |
-| `sys.argv` | Interpreter placeholder | Use `argv` for the invocation name and arguments. |
-| `sys.stdin` | No | Use `stdin`. |
-| `os.urandom` | Yes | Up to 1 MiB per call. |
-| `os.path` | No | |
-| `os.open` and file descriptors, `os.truncate` | No | |
-| `os.symlink`, `os.readlink`, `os.link` | No | |
-| `os.utime`, `os.chmod`, `Path.touch`, `os.getxattr` | No | |
-| `json.load`, `json.dump` | No | Use `json.loads(f.read())` and `f.write(json.dumps(value))`. |
-| `glob`, `shutil`, `subprocess`, `socket` | No | Importing one fails. |
+Examples assume a writable `/data` mount. Mount modes and permissions still apply.
+
+### `open()`
+
+Modes and modifiers are listed separately; for example, `rb` combines `r` and `b`.
+
+| Mode or modifier | Support |
+| --- | --- |
+| `r` | ✓ |
+| `w` | ✓ |
+| `a` | ✓ |
+| `b` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: append to a workspace file" id="open-example">
+    ```python
+    with open("/data/log.txt", "a") as f:
+        f.write("Job completed.\n")
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="open-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `x` | Exclusive creation is not supported. |
+    | `+` | Read/write update modes (`r+`, `w+`, `a+`) are not supported. |
+  </Accordion>
+</AccordionGroup>
+
+### File objects
+
+| API | Support |
+| --- | --- |
+| `f.read()` | ✓ |
+| `f.readline()` | ✓ |
+| `f.readlines()` | ✓ |
+| `f.seek()` | ✓ |
+| `f.tell()` | ✓ |
+| `f.write()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: write and read lines" id="file-objects-example">
+    ```python
+    with open("/data/example.txt", "w") as f:
+        f.write("first\nsecond\n")
+
+    with open("/data/example.txt", "r") as f:
+        print(f.readline())  # first
+        f.seek(0)
+        print(f.tell())  # 0
+        print(f.readlines())  # ["first\n", "second\n"]
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="file-objects-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | Reads and seeks | The whole file is loaded into memory; reads and seeks use that copy. |
+    | `for line in f` | ✗ |
+    | `f.truncate()` | ✗ |
+    | `f.fileno()` | ✗ |
+    | `f.write()` | Each call is written at once. |
+  </Accordion>
+</AccordionGroup>
+
+### `os`
+
+The working directory and environment come from the Mirage session, not the host.
+
+#### File operations
+
+| API | Support |
+| --- | --- |
+| `os.remove()` | ✓ |
+| `os.unlink()` | ✓ |
+| `os.rename()` | ✓ |
+| `os.replace()` | ✓ |
+
+#### Directory operations
+
+| API | Support |
+| --- | --- |
+| `os.listdir()` | ✓ |
+| `os.mkdir()` | ✓ |
+| `os.makedirs()` | ✓ |
+| `os.rmdir()` | ✓ |
+
+#### Metadata and links
+
+| API | Support |
+| --- | --- |
+| `os.stat()` | ✓ |
+
+#### Environment and working directory
+
+| API | Support |
+| --- | --- |
+| `os.getcwd()` | ✓ |
+| `os.chdir()` | Python SDK only |
+| `os.environ` | ✓ |
+| `os.getenv()` | ✓ |
+| `os.urandom()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: list a workspace directory" id="os-example">
+    ```python
+    import os
+
+    print(os.listdir("/data"))
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="os-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `os.open()` | ✗ |
+    | File descriptors | ✗ |
+    | `os.truncate()` | ✗ |
+    | `os.scandir()` | ✗ |
+    | `os.walk()` | ✗ |
+    | `os.lstat()` | ✗ |
+    | `os.fstat()` | ✗ |
+    | `os.symlink()` | ✗ |
+    | `os.readlink()` | ✗ |
+    | `os.link()` | ✗ |
+    | `os.utime()` | ✗ |
+    | `os.chmod()` | ✗ |
+    | `os.getxattr()` | ✗ |
+    | `os.rename()`, `os.replace()` | Raises `OSError` across mounts. |
+    | `os.stat()` | In TypeScript, use named fields such as `st.st_size`. Whole-second timestamps may be integers. |
+    | `os.chdir()` | Lasts for the run. Raises `RuntimeError` in TypeScript. |
+    | `os.urandom()` | Up to 1 MiB per call. |
+  </Accordion>
+</AccordionGroup>
+
+### `os.path`
+
+Use the supported `pathlib.Path` methods for workspace paths.
+
+<AccordionGroup>
+  <Accordion title="Example: check a path with pathlib" id="os-path-example">
+    ```python
+    from pathlib import Path
+
+    print(Path("/data/input.txt").exists())
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="os-path-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `os.path` | Unavailable in the Monty version used by Mirage. Use `pathlib.Path` instead. |
+  </Accordion>
+</AccordionGroup>
+
+### `pathlib`
+
+`Path.cwd()` and relative path resolution use the shell's working directory.
+
+| API | Support |
+| --- | --- |
+| `Path.open()` | ✓ |
+| `Path.read_text()` | ✓ |
+| `Path.read_bytes()` | ✓ |
+| `Path.write_text()` | ✓ |
+| `Path.write_bytes()` | ✓ |
+| `Path.stat()` | ✓ |
+| `Path.exists()` | ✓ |
+| `Path.is_file()` | ✓ |
+| `Path.is_dir()` | ✓ |
+| `Path.is_symlink()` | ✓ |
+| `Path.iterdir()` | ✓ |
+| `Path.mkdir()` | ✓ |
+| `Path.rmdir()` | ✓ |
+| `Path.unlink()` | ✓ |
+| `Path.rename()` | ✓ |
+| `Path.cwd()` | ✓ |
+| `Path.resolve()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: create and inspect a workspace file" id="pathlib-example">
+    ```python
+    from pathlib import Path
+
+    path = Path("/data/example.txt")
+    path.write_text("hello\n")
+    print(path.read_text())
+    print(path.stat().st_size)
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="pathlib-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `Path.glob()` | ✗ |
+    | `Path.rglob()` | ✗ |
+    | `Path.touch()` | ✗ |
+    | `Path.stat()` | In TypeScript, use the named fields (`st.st_size`), not `st[6]`. |
+    | `Path.rename()` | Raises `OSError` across mounts. |
+  </Accordion>
+</AccordionGroup>
+
+### `sys`
+
+Mirage passes command inputs through the [runtime globals](#runtime-globals).
+
+<AccordionGroup>
+  <Accordion title="Example: use Mirage command inputs" id="sys-example">
+    ```python
+    print(argv[1:])
+    print(stdin)
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="sys-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `sys.argv` | Does not receive the invocation's arguments. Use `argv` instead. |
+    | `sys.stdin` | Not available. Use `stdin` for piped input. |
+  </Accordion>
+</AccordionGroup>
+
+### `json`
+
+JSON parsing and serialization come from Monty; see its
+[`json` reference](https://pydantic.dev/docs/monty/limitations/json/).
+
+<AccordionGroup>
+  <Accordion title="Example: write and read workspace JSON" id="json-example">
+    ```python
+    import json
+
+    with open("/data/result.json", "w") as f:
+        f.write(json.dumps({"status": "done"}))
+
+    with open("/data/result.json", "r") as f:
+        result = json.loads(f.read())
+    print(result["status"])  # done
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="json-limitations">
+    Monty 1.0.0 does not provide `json.load()` or `json.dump()`. For workspace
+    files, use `json.loads(f.read())` and `f.write(json.dumps(value))`, as above.
+    See [Monty's JSON limitations](https://pydantic.dev/docs/monty/limitations/json/)
+    for supported options and other differences from CPython.
+  </Accordion>
+</AccordionGroup>
+
+### Runtime globals
+
+| API | Support |
+| --- | --- |
+| `argv` | ✓ |
+| `stdin` | ✓ |
+| `__file__` | ✓ |
+
+- `argv`: The invocation name and arguments.
+- `stdin`: The piped input.
+- `__file__`: The script's name under the starting directory.
+
+<Accordion title="Example: read invocation inputs" id="globals-example">
+  ```python
+  print(argv)
+  print(stdin)
+  ```
+</Accordion>
 
 ## Notes
 
 - A run starts in the shell's working directory. The script and every
   relative path pass the same mount and permission checks as `cat`: a rule
   protecting `/data/job.py` refuses `python3 job.py` from `/data`.
-- The words after the script are its `argv` as typed, with globs expanded as
-  bash expands them. A word naming another mount is only a string.
+- Script arguments follow shell expansion, including globs.
 - A console session takes the working directory on its first input and keeps
   its own after that.
-- `__file__` is the script's name under the starting directory.
+- `raise SystemExit` exits successfully. `raise SystemExit("message")` exits
+  with status 1 and prints the message.
 
 ## Python subset
 
 Monty 1.0.0 implements a subset of Python, and Mirage never falls back to
 another interpreter.
 
-- **Stdlib:** `asyncio`, `base64`, `binascii`, `collections`, `copy`,
-  `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`,
-  `pathlib`, `random`, `re`, `sys`, `time`, `typing`, `unicodedata`, each
-  partial. No third-party imports.
-- **Syntax:** no class inheritance, metaclasses, `classmethod`,
-  `staticmethod`, `property`, method decorators or `yield`. Plain classes, function decorators,
-  `with`, f-strings and comprehensions work.
-- **Introspection:** no `dir` (use `hasattr`), `vars`, `globals`, `help`,
-  `callable`, `issubclass`, `super`, `compile` or `__dict__`.
+Monty maintains the details of its
+[standard-library modules](https://pydantic.dev/docs/monty/limitations/modules/)
+and [language limitations](https://pydantic.dev/docs/monty/limitations/language/).
+Those pages track upstream Monty; the integration tables above describe the
+version used by Mirage. Third-party imports are unavailable.
 
-Mirage disables Monty's default ten-second sleep cap and assert-message
-annotations. The suspension budget is 2³¹−1 host round trips per checkout;
-command timeouts still bound a run. Program output has no separate
-Python-host collector cap. `raise SystemExit` exits successfully; a string
-message exits with status 1 and that message. Monty does not accept numeric
-exception arguments. TypeScript stat timestamps with no fractional part
-arrive as integers because the engine's JavaScript input encoding has no
-way to force an integral number to Python `float`.
+## Unsupported modules
+
+Common modules unavailable in Monty 1.0.0:
+
+- **Files:** `glob`, `io`, `os.path`, `shutil`, `tempfile`.
+- **Networking:** `http`, `socket`, `ssl`, `urllib`.
+- **Processes and concurrency:** `concurrent.futures`, `multiprocessing`, `queue`, `subprocess`, `threading`.
+- **Data formats and archives:** `array`, `csv`, `pickle`, `struct`, `tomllib`, `zipfile`, `zlib`.
+- **Numbers and hashing:** `decimal`, `fractions`, `hashlib`, `hmac`, `uuid`.
+- **Language and introspection:** `abc`, `contextlib`, `ctypes`, `importlib`, `inspect`, `types`, `weakref`.
+- **CLI and diagnostics:** `argparse`, `logging`, `traceback`, `unittest`, `warnings`.
+- **Other utilities:** `enum`, `heapq`, `operator`, `string`.

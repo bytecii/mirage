@@ -1,15 +1,13 @@
 ---
 title: WASI
 icon: /images/webassembly-logo.svg
-description: Full CPython in WebAssembly on wasmtime, for python3 in the Python SDK.
+description: Run Python in WebAssembly with access to workspace files, in the Python SDK.
 ---
 
-`wasi` runs full CPython, with the whole standard library, compiled to
-WebAssembly and run on [wasmtime](https://wasmtime.dev) inside the Mirage
-process. It has no host files or network: the files it opens are the
-workspace's, under the same mount modes and permissions as shell commands.
-The first run compiles the interpreter and caches it; later runs start in
-milliseconds. Python SDK only.
+`wasi` runs CPython in WebAssembly, with the standard library available
+subject to the restrictions below. Programs can access workspace files
+under the same permissions as shell commands, but cannot access host files
+or the network. Python SDK only.
 
 ## Installation
 
@@ -66,40 +64,280 @@ runtimes:
 A run that needs more raises `MemoryError`. CPython starts at about 40M, so
 a cap below that fails every run. There is no cap by default.
 
-## What is wired
+## Python compatibility
 
-Anything built on these calls, such as `os.path`, `pathlib`, `glob`,
-`shutil` and `json.load`, works too.
+Examples assume a writable `/data` mount. Mount modes and permissions still apply.
 
-| Python | Supported | Notes |
-| --- | --- | --- |
-| `open()` in every mode, `os.open` | Yes | |
-| `f.read()`, `os.read`, `os.pread` | Yes | Read in ranges, as the program asks. |
-| `f.write()`, `os.write`, `os.pwrite` | Yes | Written at close or `os.fsync`. |
-| `f.truncate()`, `os.truncate` | Yes | |
-| `os.stat`, `os.lstat`, `os.fstat`, `Path.stat` | Yes | `st_mode` has only the file type bits. |
-| `os.listdir`, `os.scandir`, `os.walk`, `glob.glob`, `Path.glob` | Yes | |
-| `os.mkdir`, `os.makedirs`, `os.rmdir`, `shutil.rmtree` | Yes | |
-| `os.remove`, `os.unlink`, `Path.unlink` | Yes | |
-| `os.rename`, `os.replace`, `shutil.move` | Yes | `EXDEV` across mounts, where `shutil.move` copies instead. |
-| `os.symlink`, `os.readlink` | Yes | |
-| `os.utime`, `Path.touch` | Yes | |
-| `os.getcwd`, `os.chdir` | Yes | The shell's working directory; a change lasts for the run. |
-| `os.environ`, `sys.argv`, `sys.stdin` | Yes | The session's environment, the words after the script, and the piped input. |
-| `os.chmod` | No | Does nothing. |
-| `os.link` | No | Raises `PermissionError`. |
-| `os.getxattr` and the other xattr calls | No | They do not exist. |
-| `subprocess`, `socket` | No | Raise `OSError` (errno 58). |
+### `open()`
 
-Paths outside the mounts show the CPython build, read-only.
+Modes and modifiers are listed separately; for example, `rb` combines `r` and `b`.
 
+| Mode or modifier | Support |
+| --- | --- |
+| `r` | ✓ |
+| `w` | ✓ |
+| `a` | ✓ |
+| `x` | ✓ |
+| `b` | ✓ |
+| `t` | ✓ |
+| `+` | ✓ |
 
-Compiled modules and idle engines are reused across runs; each invocation still
-gets a fresh store, filesystem descriptors, memory and interruption epoch. A
-sleeping guest observes cancellation through the preview1 poll bridge. Exit
-statuses use the low eight bits, including 130, 200 and 255, and open files are
-flushed on exit. Traceback source lines come from the user program's line cache.
+<AccordionGroup>
+  <Accordion title="Example: append to a workspace file" id="open-example">
+    ```python
+    with open("/data/log.txt", "a") as f:
+        f.write("Job completed.\n")
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="open-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | File access | Writes to workspace files follow mount permissions. Paths outside the mounts expose the CPython build read-only. |
+  </Accordion>
+</AccordionGroup>
 
-The CPython WASI libc can normalize an empty path before issuing a syscall;
-Mirage cannot recover spelling already removed by the interpreter. Its preview1
-boundary rejects empty paths and preserves trailing directory requirements.
+### File objects
+
+Reads fetch ranges from the mount as the program asks for them.
+
+| API | Support |
+| --- | --- |
+| `f.read()` | ✓ |
+| `f.write()` | ✓ |
+| `f.truncate()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: write, read and truncate a file" id="file-objects-example">
+    ```python
+    with open("/data/example.txt", "w+") as f:
+        f.write("first\nsecond\n")
+        f.seek(0)
+        print(f.read(5))  # first
+        f.truncate(5)
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="file-objects-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `f.write()` | Written at close or `os.fsync`. |
+  </Accordion>
+</AccordionGroup>
+
+### `os`
+
+#### File operations
+
+`os.read()` and `os.pread()` fetch ranges from the mount as the program asks.
+
+| API | Support |
+| --- | --- |
+| `os.open()` | ✓ |
+| `os.read()` | ✓ |
+| `os.pread()` | ✓ |
+| `os.write()` | ✓ |
+| `os.pwrite()` | ✓ |
+| `os.fsync()` | ✓ |
+| `os.truncate()` | ✓ |
+| `os.remove()` | ✓ |
+| `os.unlink()` | ✓ |
+| `os.rename()` | ✓ |
+| `os.replace()` | ✓ |
+
+#### Directory operations
+
+| API | Support |
+| --- | --- |
+| `os.listdir()` | ✓ |
+| `os.scandir()` | ✓ |
+| `os.walk()` | ✓ |
+| `os.mkdir()` | ✓ |
+| `os.makedirs()` | ✓ |
+| `os.rmdir()` | ✓ |
+
+#### Metadata and links
+
+| API | Support |
+| --- | --- |
+| `os.stat()` | ✓ |
+| `os.lstat()` | ✓ |
+| `os.fstat()` | ✓ |
+| `os.symlink()` | ✓ |
+| `os.readlink()` | ✓ |
+| `os.utime()` | ✓ |
+
+#### Environment and working directory
+
+| API | Support |
+| --- | --- |
+| `os.getcwd()` | ✓ |
+| `os.chdir()` | ✓ |
+| `os.environ` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: list a workspace directory" id="os-example">
+    ```python
+    import os
+
+    print(os.listdir("/data"))
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="os-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `os.chmod()` | Accepted, but has no effect. |
+    | `os.link()` | Raises `PermissionError`. |
+    | `os.getxattr()` | ✗ |
+    | `os.setxattr()` | ✗ |
+    | `os.listxattr()` | ✗ |
+    | `os.removexattr()` | ✗ |
+    | `os.write()`, `os.pwrite()` | Written at close or `os.fsync`. |
+    | `os.rename()`, `os.replace()` | `EXDEV` across mounts, where `shutil.move` copies instead. |
+    | `os.stat()`, `os.lstat()`, `os.fstat()` | `st_mode` has only the file type bits. |
+    | `os.getcwd()`, `os.chdir()` | The shell's working directory; a change lasts for the run. |
+    | `os.environ` | The session's environment, never the host's. |
+  </Accordion>
+</AccordionGroup>
+
+### `os.path`
+
+| API | Support |
+| --- | --- |
+| `os.path` | ✓ |
+
+<Accordion title="Example: check a workspace path" id="os-path-example">
+  ```python
+  import os.path
+
+  path = os.path.join("/data", "input.txt")
+  print(os.path.exists(path))
+  ```
+</Accordion>
+
+### `pathlib`
+
+| API | Support |
+| --- | --- |
+| `Path.stat()` | ✓ |
+| `Path.glob()` | ✓ |
+| `Path.unlink()` | ✓ |
+| `Path.touch()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: create and inspect a workspace file" id="pathlib-example">
+    ```python
+    from pathlib import Path
+
+    path = Path("/data/example.txt")
+    path.write_text("hello\n")
+    print(path.read_text())
+    print(path.stat().st_size)
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="pathlib-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `Path.stat()` | `st_mode` has only the file type bits. |
+  </Accordion>
+</AccordionGroup>
+
+### `sys`
+
+| API | Support |
+| --- | --- |
+| `sys.argv` | ✓ |
+| `sys.stdin` | ✓ |
+
+<Accordion title="Example: read arguments and piped input" id="sys-example">
+  ```python
+  import sys
+
+  print(sys.argv[1:])
+  print(sys.stdin.read())
+  ```
+</Accordion>
+
+### `json`
+
+| API | Support |
+| --- | --- |
+| `json.load()` | ✓ |
+
+<Accordion title="Example: write and read workspace JSON" id="json-example">
+  ```python
+  import json
+
+  with open("/data/result.json", "w") as f:
+      json.dump({"status": "done"}, f)
+
+  with open("/data/result.json", "r") as f:
+      result = json.load(f)
+  print(result["status"])  # done
+  ```
+</Accordion>
+
+### `glob`
+
+| API | Support |
+| --- | --- |
+| `glob.glob()` | ✓ |
+
+<Accordion title="Example: find workspace text files" id="glob-example">
+  ```python
+  import glob
+
+  print(glob.glob("/data/*.txt"))
+  ```
+</Accordion>
+
+### `shutil`
+
+| API | Support |
+| --- | --- |
+| `shutil.rmtree()` | ✓ |
+| `shutil.move()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: move a workspace file" id="shutil-example">
+    ```python
+    import shutil
+
+    with open("/data/draft.txt", "w") as f:
+        f.write("ready\n")
+
+    shutil.move("/data/draft.txt", "/data/final.txt")
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="shutil-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `shutil.move()` | Copies instead when a rename would cross mounts (`EXDEV`). |
+  </Accordion>
+</AccordionGroup>
+
+### `subprocess`
+
+Process creation is unavailable in this runtime.
+
+<Accordion title="Limitations" id="subprocess-limitations">
+  | API or behavior | Limitation |
+  | --- | --- |
+  | `subprocess` | Raises `OSError` (errno 58). |
+</Accordion>
+
+### `socket`
+
+Network connections are unavailable in this runtime.
+
+<Accordion title="Limitations" id="socket-limitations">
+  | API or behavior | Limitation |
+  | --- | --- |
+  | `socket` | Raises `OSError` (errno 58). |
+</Accordion>
+
+## Notes
+
+- Each command starts with fresh Python state. Files saved to workspace
+  mounts persist between commands.
+- Exit codes are limited to 0–255.
+- Empty-path behavior depends on the Python build. Use `.` for the current
+  directory.
