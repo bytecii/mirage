@@ -18,6 +18,7 @@ from dataclasses import FrozenInstanceError, fields, replace
 import pytest
 
 from mirage import Action, CommandContext, Deny, Policy, Workspace
+from mirage.observe import context as observe_context
 from mirage.policy import (
     Ask,
     CommandResultContext,
@@ -44,6 +45,8 @@ from mirage.runtime.python.monty import runtime as monty_runtime
 from mirage.runtime.types import ScriptSource
 from mirage.shell.console.types import Channel
 from mirage.types import Limit, MountMode, OnExceed, PathSpec, Refusal
+from mirage.utils.path import norm
+from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Session
 
@@ -393,13 +396,17 @@ class BrokenPostVfs(Policy):
 
 
 @pytest.mark.asyncio
-async def test_a_committed_write_is_recorded_when_bookkeeping_fails():
+async def test_a_committed_write_is_recorded_when_bookkeeping_fails(
+    tmp_path,
+):
     # The backend applied the write, then a step after it (here an
     # invalid post_vfs return, but any foreign bookkeeping error looks
     # the same) blew up. The error must propagate AND the transfer must
-    # stay on the books: the dispatcher stamped the report at completion, so
-    # the record does not depend on what kind of exception followed.
-    ws = Workspace({"/data/": ColdRemote()}, mode=MountMode.WRITE)
+    # stay on the books: the backend recorded it as it wrote, so the
+    # record does not depend on what kind of exception followed.
+    ws = Workspace(
+        {"/data/": DiskVFS(root=str(tmp_path))}, mode=MountMode.WRITE
+    )
     try:
         await ws.shell("mkdir -p /data/prod")
         ws.vfs.records.clear()
@@ -408,7 +415,7 @@ async def test_a_committed_write_is_recorded_when_bookkeeping_fails():
             await ws.vfs.write("/data/prod/x.txt", b"123456")
         assert await ws.vfs.read("/data/prod/x.txt") == b"123456"
         writes = [r for r in ws.vfs.records if r.op == "write"]
-        assert [(r.source, r.bytes) for r in writes] == [("s3", 6)]
+        assert [(r.source, r.bytes) for r in writes] == [("disk", 6)]
         assert ws.vfs.network_bytes >= 6
     finally:
         await ws.close()
@@ -1629,6 +1636,119 @@ async def test_post_command_reads_the_files_its_command_read():
             0,
             b"cat: Permission denied\n",
         )
+    finally:
+        await ws.close()
+
+
+class AccountsAtClose(RAMVFS):
+    """Streams a file a little at a time and records what a read moved
+    when its stream closes, as a backend that learns it at the end does."""
+
+    caches_reads = False
+
+    def read_stream(self, path: PathSpec):
+        return self._chunks(
+            path, self.accessor.store.files[norm(path.vfs_path)]
+        )
+
+    async def _chunks(self, path: PathSpec, data: bytes):
+        timer = observe_context.start_op()
+        sent = 0
+        try:
+            for start in range(0, len(data), 1024):
+                chunk = data[start : start + 1024]
+                sent += len(chunk)
+                yield chunk
+        finally:
+            observe_context.record("read", path.virtual, "s3", sent, timer)
+
+
+class RecordsByCommand(Policy):
+    def __init__(self) -> None:
+        self.seen: dict[str, list[dict]] = {}
+
+    async def post_command(self, ctx: CommandResultContext) -> Action | None:
+        self.seen[ctx.command] = list(ctx.records)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_stream_its_reader_stops_early_closes_as_its_command():
+    # head pulls cat's output after cat returned and stops after a line:
+    # the read is cat's, and so is the record its backend makes as the
+    # stream closes, so head is charged with nothing.
+    ws = Workspace({"/data/": AccountsAtClose()}, mode=MountMode.WRITE)
+    try:
+        big = b"".join(b"line %d\n" % i for i in range(20000))
+        await ws.vfs.write("/data/big", big)
+        policy = RecordsByCommand()
+        ws.policies.add(policy)
+        out = await ws.shell("cat /data/big | head -1")
+        assert (out.exit_code, await out.materialize_stdout()) == (
+            0,
+            b"line 0\n",
+        )
+        (read,) = policy.seen["cat"]
+        assert (read["op"], read["path"]) == ("read", "/data/big")
+        assert 0 < read["bytes"] < len(big)
+        assert policy.seen["head"] == []
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_once_nod_lasts_while_the_line_streams_and_no_longer():
+    # The approved retry opens /data/b only once /data/a is drained, after
+    # the line returned its output: the nod still covers it. The run
+    # after asks again.
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        await ws.vfs.write("/data/a", b"a\n" * 50000)
+        await ws.vfs.write("/data/b", b"b\n" * 3)
+        ws.create_session(
+            "agent",
+            profile={
+                "commands": {"ask": [{"commands": {"cat": ["/data/b"]}}]}
+            },
+        )
+        line = "cat /data/a /data/b | tail -c 4"
+        held = await ws.shell(line, session_id="agent")
+        assert held.refusal is not None and held.refusal.kind == "pending"
+        (nod,) = ws.decisions.pending()
+        await ws.decisions.answer(nod.id, Outcome.ALLOW)
+        out = await ws.shell(line, session_id="agent")
+        assert (out.exit_code, await out.materialize_stdout()) == (
+            0,
+            b"b\nb\n",
+        )
+        again = await ws.shell(line, session_id="agent")
+        assert again.refusal is not None and again.refusal.kind == "pending"
+    finally:
+        await ws.close()
+
+
+class AskBigReads(Policy):
+    async def pre_vfs(self, ctx: VfsContext) -> Action | None:
+        if ctx.call.name == "read" and ctx.path.virtual == "/data/big":
+            return Ask("big read")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_once_nod_covers_one_streamed_read_however_far_it_is_pulled():
+    ws = Workspace({"/data/": AccountsAtClose()}, mode=MountMode.WRITE)
+    try:
+        await ws.vfs.write("/data/big", b"x" * 10000)
+        ws.policies.add(AskBigReads())
+        with pytest.raises(PolicyDenied) as held:
+            await ws.vfs.read_stream("/data/big")
+        await ws.decisions.answer(held.value.refusal.ask_id, Outcome.ALLOW)
+        stream = await ws.vfs.read_stream("/data/big")
+        assert len(await anext(stream)) == 1024
+        await stream.aclose()
+        with pytest.raises(PolicyDenied) as again:
+            await ws.vfs.read_stream("/data/big")
+        assert again.value.refusal.kind == "pending"
     finally:
         await ws.close()
 

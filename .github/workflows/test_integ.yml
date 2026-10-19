@@ -607,7 +607,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       mongodb:
-        image: mongo:8
+        # MongoDB 8 refuses to start on the runners' kernel 6.19+ (SERVER-121912).
+        image: mongo:7.0
         ports:
           - 27017:27017
         options: >-
@@ -852,7 +853,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       mongodb:
-        image: mongo:8
+        # MongoDB 8 refuses to start on the runners' kernel 6.19+ (SERVER-121912).
+        image: mongo:7.0
         ports:
           - 27017:27017
         options: >-
@@ -973,7 +975,8 @@ jobs:
       - name: Start MongoDB replica set
         run: |
           trap 'docker inspect mongo; docker logs --tail 100 mongo' ERR
-          docker run -d --name mongo -p 27017:27017 mongo:8 \
+          # MongoDB 8 refuses to start on the runners' kernel 6.19+ (SERVER-121912).
+          docker run -d --name mongo -p 27017:27017 mongo:7.0 \
             mongod --replSet rs0 --bind_ip_all
           for i in $(seq 1 60); do
             if docker exec mongo bash -c 'true > /dev/tcp/127.0.0.1/27017' >/dev/null 2>&1; then
@@ -1592,7 +1595,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       mongodb:
-        image: mongo:8
+        # MongoDB 8 refuses to start on the runners' kernel 6.19+ (SERVER-121912).
+        image: mongo:7.0
         ports:
           - 27017:27017
         options: >-

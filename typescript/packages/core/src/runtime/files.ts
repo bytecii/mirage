@@ -33,12 +33,11 @@ import { CycleError, resolvePath } from '../utils/path.ts'
 import type { FlushStep, Kept } from './handles/index.ts'
 import { PrefixResolver, type MountResolver } from './resolver.ts'
 import type { BridgeDispatchFn } from './types.ts'
-import { ScopedResolver, workspaceBridge, type WorkspaceBinding } from './binding.ts'
+import { CallerResolver, workspaceBridge, type WorkspaceBinding } from './binding.ts'
 import { linkView } from '../commands/builtin/utils/links.ts'
 import type { Context } from '../commands/config.ts'
-import { captureSessionContext } from '../context/session_context.ts'
+import { awaitsAs, callsAs, currentCaller } from '../context/session_context.ts'
 import { PathSpec, type FileStat, type SetAttrFields } from '../types.ts'
-import { ContextScope } from '../utils/context_scope.ts'
 import { concat } from '../utils/bytes.ts'
 import { entryName } from '../utils/remnants.ts'
 import type { VFSEntry, VFSStat } from './types.ts'
@@ -175,12 +174,12 @@ export class RuntimeFiles {
               (await vfs.dispatch(name, PathSpec.fromStrPath(path), args, kwargs))[0],
           )
     if (bridge === null) return null
-    const scope = new ContextScope(captureSessionContext())
+    const caller = currentCaller()
     const links = linkView(vfs)
     return new RuntimeFiles(
-      scope.wrap(bridge),
-      new ScopedResolver(binding.resolver, scope),
-      links === undefined ? null : scope.wrap(links.resolve.bind(links)),
+      awaitsAs(caller, bridge),
+      new CallerResolver(binding.resolver, caller),
+      links === undefined ? null : callsAs(caller, links.resolve.bind(links)),
     )
   }
 

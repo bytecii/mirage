@@ -297,20 +297,6 @@
                 "pwrite /data/log.txt": 0,
                 "append /data/log.txt": 0
               }
-            },
-            "host@s3": {
-              "ops_count": {
-                "write /data/log.txt": 0,
-                "pwrite /data/log.txt": 1,
-                "append /data/log.txt": 0
-              }
-            },
-            "host@redis": {
-              "ops_count": {
-                "write /data/log.txt": 0,
-                "pwrite /data/log.txt": 1,
-                "append /data/log.txt": 0
-              }
             }
           }
         },
@@ -354,13 +340,6 @@
                 "write /data/log.txt": 200,
                 "pwrite /data/log.txt": 0,
                 "append /data/log.txt": 0
-              }
-            },
-            "host@s3": {
-              "ops_count": {
-                "write /data/log.txt": 0,
-                "pwrite /data/log.txt": 0,
-                "append /data/log.txt": 1
               }
             }
           }

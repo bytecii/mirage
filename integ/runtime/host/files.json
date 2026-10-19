@@ -38,6 +38,14 @@
             "ops_absent": [
               "create /data/nope.txt"
             ]
+          },
+          "expect_on": {
+            "s3": {
+              "ops_contain": [
+                "read /data/seed.txt",
+                "write /data/new.txt"
+              ]
+            }
           }
         },
         {

@@ -23,6 +23,7 @@ import {
   runExplaining,
 } from '../context/session_context.ts'
 import { eacces, erofs } from '../errors/fs.ts'
+import { commandRecords } from '../observe/context.ts'
 import { fsErrorLine } from '../errors/render.ts'
 import { Limit, type PathSpec, type Refusal } from '../types.ts'
 import type { Policy } from './base.ts'
@@ -247,6 +248,19 @@ async function explainedOp(
  * an ask its read meets reads the ledger and records nothing. `caller` is
  * who makes the call; without one, the gate reads the async context's.
  */
+/**
+ * A VFS call's policy answer, the policy's own reads recorded apart. They
+ * still reach the ledger, but they are no records of the call being
+ * judged: counted as its, they would pass for the call's own record (a RAM
+ * unlink records none, so the facade records it) and be charged to the
+ * command the call runs in. Without task isolation the binding would reach
+ * other tasks' ops, and there the facade records its op itself anyway.
+ * Mirrors Python's `_apart`.
+ */
+function apart<T>(answer: () => Promise<T>): Promise<T> {
+  return asyncContextIsolatesTasks ? commandRecords(answer, true) : answer()
+}
+
 export async function preVfsGate(
   policies: Policies,
   call: VfsCall,
@@ -277,9 +291,9 @@ export async function preVfsGate(
   const line = caller === undefined ? lineRunning() : caller.refusals !== null
   if (Array.isArray(trace)) {
     const decide = async (): Promise<VfsExplanation | null> =>
-      checkHidden && (await policies.hides(ctx))
+      checkHidden && (await apart(() => policies.hides(ctx)))
         ? null
-        : explainedOp(policies, ctx, decisions, line)
+        : apart(() => explainedOp(policies, ctx, decisions, line))
     // Without task isolation the binding would reach other tasks' ops; there
     // the mark rides a deciding method's own files and program instead.
     const noted = await (asyncContextIsolatesTasks
@@ -295,7 +309,9 @@ export async function preVfsGate(
   if (!(policies.wants('preVfs') || checkHidden || (write && context.mode !== undefined))) {
     return
   }
-  const answer: Hide | Deny | Ask | null = await policies.preVfs(ctx, checkHidden, line || deciding)
+  const answer: Hide | Deny | Ask | null = await apart(() =>
+    policies.preVfs(ctx, checkHidden, line || deciding),
+  )
   if (answer?.kind === 'hide') throw answer.error
   await refuseOp(ctx, answer, line ? null : decisions, caller)
 }
@@ -361,7 +377,7 @@ export async function postVfsGate(
     caller: policyCaller((caller ?? currentCaller()).session),
     result,
   }
-  await refuseOp(ctx, await policies.postVfs(ctx), decisions, caller)
+  await refuseOp(ctx, await apart(() => policies.postVfs(ctx)), decisions, caller)
 }
 
 /**

@@ -38,7 +38,7 @@ from mirage.policy import (
 from mirage.policy.match import Outcome, Ruling, decide, has_rules
 from mirage.policy.match.decide import source_of
 from mirage.shell import parse
-from mirage.shell.bytes import decode_text
+from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.helpers import (
     get_parts,
     get_text,
@@ -1599,9 +1599,12 @@ def _scope_node(
         return [ShellNode(shape, get_text(node), tuple(inner))]
 
     children: list[ShellNode | CommandExplanation] = convert(parse(text))
-    raw = text.encode()
+    # The shell's own spelling: a scope's text can carry a byte no UTF-8
+    # encodes (`env` running `$'\xff'`), and the offsets are the
+    # parser's, counted on these bytes.
+    raw = encode_text(text)
     for (start, end), ones in mine.items():
-        spoken = raw[start:end].decode(errors="replace")
+        spoken = decode_text(raw[start:end])
         children.extend(
             _command_of(one, spoken, (), runtime_of) for one in ones
         )

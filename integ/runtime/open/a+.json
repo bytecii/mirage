@@ -43,11 +43,6 @@
               "ops_contain": [
                 "write /data/log.txt"
               ]
-            },
-            "host@s3": {
-              "ops_contain": [
-                "append /data/log.txt"
-              ]
             }
           }
         },

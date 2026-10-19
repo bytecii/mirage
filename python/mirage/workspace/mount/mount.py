@@ -74,6 +74,7 @@ from mirage.context import (
     reset_caller,
     strongest_mode_under,
 )
+from mirage.context.session_context import with_caller
 from mirage.core.dev.device import active_pipe, pipe_below
 from mirage.core.dev.pipe import DevicePipe
 from mirage.core.generic.rewrite import (
@@ -105,7 +106,6 @@ from mirage.types import (
     WritePolicy,
 )
 from mirage.utils.activity import Activity
-from mirage.utils.context_scope import ContextScope
 from mirage.utils.filetype import get_extension
 from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import mount_key
@@ -163,7 +163,7 @@ def _wrap_mount_streams(
     stream, io = result
     if stream is None or isinstance(stream, (bytes, bytearray)):
         return stream, io
-    wrapped = ContextScope().stream(with_host_io(stream))
+    wrapped = with_caller(with_host_io(stream), current_caller())
     return (activity.hold(wrapped) if activity is not None else wrapped), io
 
 
@@ -2560,12 +2560,8 @@ class MountEntry:
             limit.timeout_seconds if limit is not None else None,
             "read",
         )
-        token = bind_caller(self._on_mount(current_caller()))
-        try:
-            pulls = ContextScope()
-        finally:
-            reset_caller(token)
+        caller = self._on_mount(current_caller())
         return cast(
             AsyncIterator[bytes],
-            self.activity.hold(pulls.stream(with_host_io(stream))),
+            self.activity.hold(with_caller(with_host_io(stream), caller)),
         )

@@ -19,6 +19,7 @@ import { CLI, CLIHandler } from '../commands/cli/types.ts'
 import { command } from '../commands/config.ts'
 import { CommandSpec } from '../commands/spec/types.ts'
 import { IOResult, type ByteSource } from '../io/types.ts'
+import type { VfsContext } from '../policy/types.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { MountMode } from '../types.ts'
@@ -507,6 +508,81 @@ describe('native output', () => {
       expect(new TextDecoder().decode(result.stdout)).toBe('x')
       expect(result.exitCode).toBe(0)
       expect(closed).toBe(true)
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('the ledger a file call lands in', () => {
+  // Twin of test_a_call_to_another_workspace_is_on_that_workspaces_ledger:
+  // a handler on one workspace's line reading another workspace's files
+  // makes a read that is the other workspace's, in its ledger, not the
+  // line's.
+  it("is the called workspace's, from another workspace's line", async () => {
+    const other = new Workspace(
+      { '/o': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: parser },
+    )
+    const { ws } = buildWorkspace()
+    try {
+      await other.vfs.write('/o/f.txt', 'theirs\n')
+      other.vfs.records.splice(0)
+      ws.mount('/ram').registerCommands(
+        command({
+          name: 'peek',
+          vfs: 'ram',
+          spec: new CommandSpec(),
+          fn: async () => [await other.vfs.read('/o/f.txt'), new IOResult()],
+        }),
+      )
+      await ws.shell('cd /ram')
+      const result = await ws.shell('peek')
+      expect(new TextDecoder().decode(result.stdout)).toBe('theirs\n')
+      expect(other.vfs.records.map((r) => [r.op, r.path])).toEqual([['read', '/o/f.txt']])
+      expect(ws.vfs.records.map((r) => r.path)).not.toContain('/o/f.txt')
+    } finally {
+      await ws.close()
+      await other.close()
+    }
+  })
+
+  // Twin of test_a_policys_read_leaves_the_op_it_judges_on_the_ledger: a
+  // preVfs policy reading through the dispatcher, as a profile script's
+  // read does: what it reads is no record of the unlink it judges, which
+  // RAM does not record itself.
+  it('keeps the op a policy judges, past what the policy read', async () => {
+    const ws = new Workspace({ '/d': new RAMVFS() }, { mode: MountMode.WRITE, shellParser: parser })
+    try {
+      await ws.vfs.write('/d/rules', 'keep\n')
+      await ws.vfs.write('/d/f', 'gone\n')
+      ws.policies.add({
+        async preVfs(ctx: VfsContext): Promise<null> {
+          if (ctx.call.name === 'unlink') await ws.dispatch('read', '/d/rules')
+          return null
+        },
+      })
+      ws.vfs.records.splice(0)
+      await ws.vfs.unlink('/d/f')
+      expect(ws.vfs.records.map((r) => [r.op, r.path])).toEqual([
+        ['read', '/d/rules'],
+        ['unlink', '/d/f'],
+      ])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  // Twin of test_a_write_admission_check_takes_no_record: the check writes
+  // nothing, so a record of it would read as a write and drop the path's
+  // snapshot pin.
+  it('takes no record of a write admission check', async () => {
+    const ws = new Workspace({ '/o': new RAMVFS() }, { mode: MountMode.WRITE, shellParser: parser })
+    try {
+      await ws.vfs.write('/o/f.txt', 'mine\n')
+      ws.vfs.records.splice(0)
+      await ws.vfs.dispatch('write', '/o/f.txt', [], { admit_only: true })
+      expect(ws.vfs.records).toEqual([])
     } finally {
       await ws.close()
     }

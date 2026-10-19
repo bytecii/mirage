@@ -24,8 +24,7 @@ import { EXTERNAL_COMMANDS } from '../../../runtime/constants.ts'
 import { BytePipe } from '../../../io/pipe.ts'
 import { PipeClosed } from '../../../io/errors.ts'
 import { OutputStream, closeQuietly } from '../../../io/stream.ts'
-import { ContextScope } from '../../../utils/context_scope.ts'
-import { captureSessionContext } from '../../../context/session_context.ts'
+import { currentCaller, withCaller } from '../../../context/session_context.ts'
 import { isProcessExecutor, isStreamingProcess } from '../../../runtime/mixin.ts'
 import type { RouteDecision } from '../../../runtime/routing/types.ts'
 import { shellJoin } from '../../../shell/join.ts'
@@ -127,7 +126,7 @@ function streamExternal(
   const pipe = new BytePipe()
   const controller = new AbortController()
   const runSignal = mergeSignals(signal, controller.signal) ?? controller.signal
-  const scope = new ContextScope(captureSessionContext())
+  const caller = currentCaller()
   const io = new IOResult({
     producer: {
       command: argv.name,
@@ -195,7 +194,7 @@ function streamExternal(
       await close()
     }
   }
-  return [new OutputStream(scope.stream(output()), close), io, node]
+  return [new OutputStream(withCaller(output(), caller), close), io, node]
 }
 
 /**

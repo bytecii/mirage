@@ -16,10 +16,16 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from mirage.errors.fs import eacces, enoent, erofs
 from mirage.types import (
@@ -55,6 +61,9 @@ if TYPE_CHECKING:
     from mirage.workspace.evaluation import EvaluationContext
     from mirage.workspace.session.session import SessionState
     from mirage.workspace.types import ExecutionNode, StatusWriter
+
+
+T = TypeVar("T")
 
 
 class SessionOwner(ABC):
@@ -149,6 +158,8 @@ class Caller:
             level running a command, for a level whose output is a value
             (a substitution's) to send another level's stream bytes
             toward it.
+        execution (str | None): the execution (a line, a job, a spawned
+            process) the call runs in, which its records name.
     """
 
     session: SessionState | None = None
@@ -184,6 +195,7 @@ class Caller:
     own_version: tuple[str, str | OwnRead | None] | None = None
     command_started: int | None = None
     enclosing: JobConsole | None = None
+    execution: str | None = None
 
     @property
     def visibility(self) -> Visibility | None:
@@ -245,6 +257,112 @@ def reset_caller(token: CallerToken) -> None:
     """
     restored = {name: getattr(token.before, name) for name in token.names}
     _caller.set(replace(_caller.get(), **restored))
+
+
+def current_execution_id() -> str | None:
+    """The execution the current call runs in, which its records name."""
+    return _caller.get().execution
+
+
+async def run_with_execution(
+    execution_id: str, run: Callable[[], Awaitable[T]]
+) -> T:
+    """Run ``run`` as part of the execution ``execution_id``.
+
+    Args:
+        execution_id (str): the execution (a line, a job, a spawned
+            process).
+        run (Callable[[], Awaitable[T]]): what runs in it.
+    """
+    token = _bind(execution=execution_id)
+    try:
+        return await run()
+    finally:
+        reset_caller(token)
+
+
+def calls_as(caller: Caller, fn: Callable[..., T]) -> Callable[..., T]:
+    """``fn`` run as ``caller`` wherever it is called from: a runtime's
+    guest asks its questions from a thread of its own, which carries no
+    caller.
+
+    Args:
+        caller (Caller): who the calls are made as.
+        fn (Callable[..., T]): a synchronous function.
+    """
+
+    def call(*args: Any, **kwargs: Any) -> T:
+        before = _caller.get()
+        _caller.set(caller)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _caller.set(before)
+
+    return call
+
+
+def awaits_as(
+    caller: Caller, fn: Callable[..., Awaitable[T]]
+) -> Callable[..., Awaitable[T]]:
+    """``fn`` run as ``caller`` whoever awaits it.
+
+    Args:
+        caller (Caller): who the calls are made as.
+        fn (Callable[..., Awaitable[T]]): an asynchronous function.
+    """
+
+    async def call(*args: Any, **kwargs: Any) -> T:
+        before = _caller.get()
+        _caller.set(caller)
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _caller.set(before)
+
+    return call
+
+
+async def with_caller(
+    it: AsyncIterator[T], caller: Caller
+) -> AsyncIterator[T]:
+    """``it`` pulled and closed as ``caller``.
+
+    A stream keeps the caller it was made with: whoever pulls it and
+    however late (a reader further down a pipeline, a host draining a
+    line's output), what each pull runs (a backend's lazy read, the
+    record it makes, the pins and cache scope it reads) is that caller's,
+    and so is the close a reader that stops early sends. What a pull
+    binds stays the stream's for its next pull and never reaches the
+    reader.
+
+    Args:
+        it (AsyncIterator[T]): the stream.
+        caller (Caller): the caller it was made with.
+    """
+    iterator = it.__aiter__()
+    own = caller
+    try:
+        while True:
+            before = _caller.get()
+            _caller.set(own)
+            try:
+                item = await iterator.__anext__()
+            except StopAsyncIteration:
+                return
+            finally:
+                own = _caller.get()
+                _caller.set(before)
+            yield item
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            before = _caller.get()
+            _caller.set(own)
+            try:
+                await close()
+            finally:
+                _caller.set(before)
 
 
 def set_current_session(

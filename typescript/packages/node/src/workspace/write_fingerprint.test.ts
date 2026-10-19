@@ -20,6 +20,8 @@ import {
   ReadPolicy,
 } from '@struktoai/mirage-core/types'
 import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { PolicyError } from '@struktoai/mirage-core/policy/errors'
+import type { Action, VfsResultContext } from '@struktoai/mirage-core/policy/types'
 import { yieldBytes } from '@struktoai/mirage-core/io/stream'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { S3Config } from '../vfs/s3/config.ts'
@@ -82,6 +84,51 @@ describe('object-store write fingerprint (mocked S3)', () => {
       expect(ws.records.map((r) => [r.op, r.path, r.fingerprint])).toEqual([
         ['write', '/s3/x.txt', etagOf('hello\n')],
       ])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a file tool write records the ETag S3 returned', async () => {
+    // ws.vfs records into the same ledger a shell line does, with the
+    // fingerprint the backend returned, so a snapshot pins the write.
+    const ws = makeWorkspace(BOUNDED)
+    try {
+      await ws.vfs.write('/s3/x.txt', 'hello\n')
+      expect(ws.records.map((r) => [r.op, r.path, r.source, r.fingerprint])).toEqual([
+        ['write', '/s3/x.txt', 's3', etagOf('hello\n')],
+      ])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('records a committed write when bookkeeping after it fails', async () => {
+    // The backend applied the write, then a step after it (here an invalid
+    // postVfs return, but any foreign bookkeeping error looks the same)
+    // blew up. The error must propagate AND the transfer must stay on the
+    // books: the backend recorded it as it wrote, so the record does not
+    // depend on what kind of exception followed. Mirrors Python's
+    // test_policies.py.
+    const ws = new Workspace(
+      { '/s3': new S3VFS(makeConfig()) },
+      {
+        mode: MountMode.WRITE,
+        read: BOUNDED,
+        policies: [
+          {
+            postVfs: (ctx: VfsResultContext): Action | null =>
+              ctx.write && ctx.path.virtual === '/s3/a.txt' ? (42 as unknown as Action) : null,
+          },
+        ],
+      },
+    )
+    try {
+      await expect(ws.vfs.write('/s3/a.txt', '123456')).rejects.toThrow(PolicyError)
+      expect(DEC.decode(await ws.vfs.read('/s3/a.txt'))).toBe('123456')
+      const writes = ws.records.filter((r) => r.op === 'write')
+      expect(writes.map((r) => [r.source, r.bytes])).toEqual([['s3', 6]])
+      expect(ws.networkBytes).toBeGreaterThanOrEqual(6)
     } finally {
       await ws.close()
     }

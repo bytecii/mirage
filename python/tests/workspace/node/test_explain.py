@@ -1622,3 +1622,19 @@ async def test_a_policy_that_fails_explains_as_a_deny():
         )
     finally:
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_explain_reads_a_scope_that_spells_a_byte_past_utf8():
+    # `env` runs printf as a scope of its own, spelled from the expanded
+    # words, and `$'\xff'` expands to a byte no UTF-8 encodes.
+    workspace = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        said = await workspace.explain("env printf '%d\\n' $'\\x27\\xff'")
+        (env,) = said.node.children
+        (scope,) = env.children
+        (printf,) = scope.children
+        assert (said.exit_code, printf.command) == (0, "printf")
+        assert printf.words[-1].text == "'\udcff"
+    finally:
+        await workspace.close()

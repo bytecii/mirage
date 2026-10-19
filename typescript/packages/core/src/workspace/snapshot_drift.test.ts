@@ -192,6 +192,30 @@ describe('Workspace snapshot: capture and replay drift detection', () => {
     await loaded.close()
   })
 
+  it('pins what a file tool read, as a line read is pinned', async () => {
+    // ws.vfs records into the same ledger a shell line does, with the
+    // fingerprint and revision the backend returned, so the read is pinned
+    // and a load serves the bytes it saw.
+    const accessor = new FakeRemoteAccessor()
+    accessor.put('/remote/a.txt', new TextEncoder().encode('v1'))
+    const ws = build(accessor)
+    expect(new TextDecoder().decode(await ws.vfs.read('/remote/a.txt'))).toBe('v1')
+    const snap = join(tempDir, 'file-tool.json')
+    await ws.snapshot(snap)
+
+    accessor.put('/remote/a.txt', new TextEncoder().encode('v2-upstream'))
+
+    const loaded = await Workspace.load(
+      snap,
+      { mode: MountMode.WRITE, shellParser: parser },
+      { '/remote/': new FakeRemoteVFS(accessor) },
+    )
+    expect(Object.keys(loaded.revisions)).toEqual(['/remote/a.txt'])
+    expect(new TextDecoder().decode(await loaded.vfs.read('/remote/a.txt'))).toBe('v1')
+    await ws.close()
+    await loaded.close()
+  })
+
   it.each(['shell', 'dispatch'])(
     'STRICT load probes beyond warm metadata via %s',
     async (surface) => {

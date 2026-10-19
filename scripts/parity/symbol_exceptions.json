@@ -129,11 +129,6 @@
     "untilInputCloses": "Node waits on Writable close events with removable listeners; Python cancels the feeding asyncio task when process.wait completes."
    }
   },
-  "execution/context": {
-   "typescript_only": {
-    "captureExecutionContext": "Deferred TypeScript callbacks restore the execution async-local store explicitly; Python contextvars travel with the copied context."
-   }
-  },
   "workspace/workspace/workspace": {
    "typescript_only": {
     "refuseWrite": "Without async task isolation (the browser fallback) a hook cannot run as a policy deciding, so its session view refuses writes by hand; Python's contextvars always isolate tasks."
@@ -636,7 +631,8 @@
   },
   "observe/context": {
    "python_only": {
-    "active_lost": "The running line's lost paths ride Python's Recorder, which is still bound when apply_io runs, so the dispatcher reads them from the context. TypeScript applies a line's results after its recording scope ends, so it keys them by the line's records instead (lostPaths/lostByLine)."
+    "active_lost": "The running line's lost paths ride Python's Recorder, which is still bound when apply_io runs, so the dispatcher reads them from the context. TypeScript applies a line's results after its recording scope ends, so it keys them by the line's records instead (lostPaths/lostByLine).",
+    "fresh_recorder": "Python's recorder is a frozen Recorder that carries the line's lost paths and version index, built in one place for a line and for a file call outside one; TypeScript's recording is a plain records array and mount id, made where it is needed."
    },
    "typescript_only": {
     "lostByLine": "TypeScript keys a line's lost paths by its records array, because applyIo runs after runWithRecording returns; Python keeps them on the Recorder (active_lost).",
@@ -791,11 +787,6 @@
     "servingMount": "Reads the mount a command's files were said to run in (Files.servedBy) before the async context, which the browser's fallback storage does not isolate between tasks; Python's task context always isolates, so crosses_mounts and mount_root read it directly."
    }
   },
-  "utils/context_scope": {
-   "python_only": {
-    "InlineAwait": "asyncio awaits a coroutine in another context, or lets another task cancel it, only through a task of its own, which costs two turns of the event loop per stream pull; TypeScript replays its context in a closure and awaits the promise directly."
-   }
-  },
   "runtime/mixin": {
    "python_only": {
     "StreamingProcessMixin": "Python detects the streaming capability by mixin inheritance; TypeScript uses a nominal symbol, interface and type guard."
@@ -889,6 +880,16 @@
   "commands/builtin/generic/rg": {
    "typescript_only": {
     "owned": "Wasm streams require explicit handle disposal after final progress; Python releases native state with object ownership."
+   }
+  },
+  "io/stream": {
+   "python_only": {
+    "InlineAwait": "asyncio awaits a coroutine in another context, or lets another task cancel it, only through a task of its own, which costs two turns of the event loop per stream pull; TypeScript replays its context in a closure and awaits the promise directly."
+   }
+  },
+  "process/types": {
+   "typescript_only": {
+    "ExecutionBind": "TypeScript's process layer sits below the session the caller carries, so importing the caller's runWithExecution would close a type cycle; the workspace hands the supervisor the binder. Python's process handle imports run_with_execution directly."
    }
   }
  }

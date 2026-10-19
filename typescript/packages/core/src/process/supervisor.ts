@@ -1,7 +1,7 @@
 import { DEFAULT_PROCESS_PERMISSIONS, type ProcessPermissions } from './config.ts'
 import type { PathSpec, ProcessScope } from '../types.ts'
 import { ProcessHandle } from './handle.ts'
-import type { ProcessRunner } from './types.ts'
+import type { ExecutionBind, ProcessRunner } from './types.ts'
 import type { ProcessView } from './view.ts'
 import { newExecutionId } from '../execution/context.ts'
 
@@ -11,6 +11,13 @@ export class ProcessSupervisor {
   private readonly runners = new Map<number, { generation: number; handle: ProcessHandle }>()
   private readonly generations = new Map<string, number>()
   private stopped = false
+
+  /**
+   * @param bind runs each runner as part of its execution, so what it
+   *   records names it; the workspace hands over the caller's
+   *   `runWithExecution`. Without one a runner runs as it is.
+   */
+  constructor(private readonly bind: ExecutionBind = (_id, run) => run()) {}
 
   /**
    * Host-only: the supplied runner must admit commands before effects.
@@ -68,6 +75,7 @@ export class ProcessSupervisor {
       (id) => {
         this.runners.delete(id)
       },
+      this.bind,
     )
     this.runners.set(pid, { generation: this.generations.get(init.sessionId) ?? 0, handle })
     return handle

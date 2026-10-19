@@ -168,3 +168,21 @@ async def test_top_level_line_cannot_bypass_spawn_process_cap():
         assert result.stdout == b"254\nok\n"
     finally:
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_command_records_under_its_own_execution():
+    # The child's file calls carry the execution id its handle bound, not
+    # the spawning caller's.
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, runtimes=[])
+    try:
+        await ws.vfs.write("/data/f", b"x\n")
+        del ws.vfs.records[:]
+        child = ws.spawn(SpawnRequest(("cat", "/data/f")))
+        assert (await child.communicate()).stdout == b"x\n"
+        info = await child.wait()
+        reads = [r for r in ws.vfs.records if r.path == "/data/f"]
+        assert reads
+        assert {r.execution_id for r in reads} == {info.execution_id}
+    finally:
+        await ws.close()

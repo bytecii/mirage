@@ -14,15 +14,20 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Generator,
+    Iterable,
+)
 from functools import partial
-from typing import TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from mirage.concurrency.limiter import settle
 from mirage.io import IOResult
 from mirage.io.async_line_iterator import SharedInput
 from mirage.io.types import ByteSource, materialize  # noqa: F401
-from mirage.utils.context_scope import InlineAwait
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -90,6 +95,80 @@ async def close_quietly(stream: bytes | AsyncIterator[_T] | None) -> None:
         # closing a drained stream is cleanup; failures must not mask the
         # consumer's own result
         logger.debug("stream closer failed: %s", exc)
+
+
+class InlineAwait(Generic[_T]):
+    """Await an awaitable inside the awaiting task.
+
+    asyncio runs a coroutine in another context, or lets another task
+    cancel it, only through a task of its own, and a task costs two turns
+    of the event loop: on a command's output that is most of what one
+    write costs. This drives the awaitable's own steps instead and hands
+    the event loop each future a step waits on, so the awaiting task waits
+    on it directly. ``cancel`` does what cancelling such a task would: it
+    cancels the future the step waits on, or throws CancelledError into
+    the next step.
+
+    Args:
+        awaitable (Awaitable[_T]): what to await, once.
+    """
+
+    def __init__(self, awaitable: Awaitable[_T]) -> None:
+        self._awaitable = awaitable
+        self._waiting: Any = None
+        self._cancelling = False
+        self._finished = False
+        self._ended: asyncio.Future[None] | None = None
+
+    def cancel(self) -> None:
+        """Cancel the step in flight, or the next one to run."""
+        waiting = self._waiting
+        if isinstance(waiting, asyncio.Future) and waiting.cancel():
+            return
+        self._cancelling = True
+
+    def ended(self) -> asyncio.Future[None]:
+        """A future that resolves once the last step has run."""
+        if self._ended is None:
+            self._ended = asyncio.get_running_loop().create_future()
+            if self._finished:
+                self._ended.set_result(None)
+        return self._ended
+
+    def _step(
+        self, steps: Any, value: Any, error: BaseException | None
+    ) -> Any:
+        if error is not None:
+            return steps.throw(error)
+        return steps.send(value)
+
+    def __await__(self) -> Generator[Any, None, _T]:
+        steps = self._awaitable.__await__()
+        value: Any = None
+        error: BaseException | None = None
+        try:
+            while True:
+                if self._cancelling and error is None:
+                    self._cancelling = False
+                    error = asyncio.CancelledError()
+                try:
+                    yielded = self._step(steps, value, error)
+                except StopIteration as stop:
+                    return cast(_T, stop.value)
+                self._waiting = yielded
+                try:
+                    value, error = (yield yielded), None
+                except GeneratorExit:
+                    steps.close()
+                    raise
+                except BaseException as exc:
+                    value, error = None, exc
+                finally:
+                    self._waiting = None
+        finally:
+            self._finished = True
+            if self._ended is not None and not self._ended.done():
+                self._ended.set_result(None)
 
 
 class OutputStream:

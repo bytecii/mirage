@@ -21,7 +21,12 @@ import { UnsupportedExecutionError } from './errors.ts'
 import type { DispatchFn, ExecutionKind, Program, RunResult } from './types.ts'
 import { RuntimeFiles } from './files.ts'
 import type { Context } from '../commands/config.ts'
-import { getCurrentSessionFor, runWithSession } from '../context/session_context.ts'
+import {
+  callsAs,
+  getCurrentSessionFor,
+  runWithCaller,
+  runWithSession,
+} from '../context/session_context.ts'
 import { materialize } from '../io/types.ts'
 import { linkView, mountView } from '../commands/builtin/utils/links.ts'
 import { MontyRuntime } from './python/monty/runtime.ts'
@@ -172,11 +177,11 @@ describe('execution bindings', () => {
         refusal: { reason: 'protected' },
       })
       const reads = await Promise.all([
-        context.scope.run(async () => {
+        runWithCaller(context.caller, async () => {
           await Promise.resolve()
           return required(context.ctx.session).get('PUBLIC')
         }),
-        other.scope.run(async () => {
+        runWithCaller(other.caller, async () => {
           await Promise.resolve()
           return required(other.ctx.session).get('PUBLIC')
         }),
@@ -196,7 +201,9 @@ describe('execution bindings', () => {
       expect(required(linkView(context.ctx.vfs)).resolve('/data/link')).toBe('/data/a')
       ws.addMount('/data/nested', new RAMVFS(), MountMode.EXEC)
       expect(context.resolver.ownerOf('/data/nested/a')).toBe('/data/nested/')
-      const vfs = required(context.scope.call(() => RuntimeFiles.of(context.ctx, context.binding)))
+      const vfs = required(
+        callsAs(context.caller, () => RuntimeFiles.of(context.ctx, context.binding))(),
+      )
       expect(dec.decode(await vfs.read('/data/link'))).toBe('shared\n')
       expect((await vfs.stat('/data/a')).mode & 0o777).toBe(0o600)
     } finally {

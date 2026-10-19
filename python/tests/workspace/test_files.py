@@ -22,8 +22,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mirage import Workspace
+from mirage.commands.config import command
+from mirage.commands.spec.types import CommandSpec
 from mirage.context import reset_current_session, set_current_session
 from mirage.errors.types import CommandTimeoutError
+from mirage.io import IOResult
 from mirage.policy import (
     Action,
     Deny,
@@ -32,7 +35,14 @@ from mirage.policy import (
     VfsContext,
     VfsResultContext,
 )
-from mirage.types import FileType, HiddenPaths, Limit, MountMode, Visibility
+from mirage.types import (
+    FileType,
+    HiddenPaths,
+    Limit,
+    MountMode,
+    PathSpec,
+    Visibility,
+)
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.ram.store import RAMStore
@@ -1192,3 +1202,73 @@ def test_is_mounted_skips_the_anchor_and_claims_for_a_root_mount():
     assert not anchored.vfs.is_mounted("/tmp/x.txt")
     rooted = Workspace({"/": RAMVFS()})
     assert rooted.vfs.is_mounted("/tmp/x.txt")
+
+
+@pytest.mark.asyncio
+async def test_a_call_to_another_workspace_is_on_that_workspaces_ledger():
+    # A handler on one workspace's line reading another workspace's files:
+    # the read is the other workspace's, in its ledger, not the line's.
+    other = Workspace({"/o/": RAMVFS()}, mode=MountMode.WRITE)
+    await other.vfs.write("/o/f.txt", b"theirs\n")
+    del other.vfs.records[:]
+
+    @command("peek", vfs="ram", spec=CommandSpec())
+    async def peek(accessor, paths, texts, opts):
+        return await other.vfs.read("/o/f.txt"), IOResult()
+
+    ws = Workspace({"/m/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        ws.mount("/m").register_commands([peek])
+        await ws.shell("cd /m")
+        result = await ws.shell("peek")
+        assert result.stdout == b"theirs\n"
+        assert [(r.op, r.path) for r in other.vfs.records] == [
+            ("read", "/o/f.txt")
+        ]
+        assert "/o/f.txt" not in [r.path for r in ws.vfs.records]
+    finally:
+        await ws.close()
+        await other.close()
+
+
+@pytest.mark.asyncio
+async def test_a_write_admission_check_takes_no_record():
+    # The check writes nothing, so a record of it would read as a write
+    # and drop the path's snapshot pin.
+    ws = Workspace({"/o/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        await ws.vfs.write("/o/f.txt", b"mine\n")
+        del ws.vfs.records[:]
+        await ws.vfs.dispatch(
+            "write", PathSpec.from_str_path("/o/f.txt"), admit_only=True
+        )
+        assert ws.vfs.records == []
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_policys_read_leaves_the_op_it_judges_on_the_ledger():
+    # A pre_vfs policy reading through the dispatcher, as a profile
+    # script's read does: what it reads is no record of the unlink it
+    # judges, which RAM does not record itself.
+    ws = Workspace({"/d/": RAMVFS()}, mode=MountMode.WRITE)
+
+    class Reads(Policy):
+        async def pre_vfs(self, ctx: VfsContext) -> None:
+            if ctx.call.name == "unlink":
+                await ws.dispatch("read", PathSpec.from_str_path("/d/rules"))
+            return None
+
+    try:
+        await ws.vfs.write("/d/rules", b"keep\n")
+        await ws.vfs.write("/d/f", b"gone\n")
+        ws.policies.add(Reads())
+        del ws.vfs.records[:]
+        await ws.vfs.unlink("/d/f")
+        assert [(r.op, r.path) for r in ws.vfs.records] == [
+            ("read", "/d/rules"),
+            ("unlink", "/d/f"),
+        ]
+    finally:
+        await ws.close()
