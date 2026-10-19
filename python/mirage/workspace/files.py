@@ -639,8 +639,8 @@ class Files:
             nofollow (bool): Report a trailing symlink itself rather
                 than its target (lstat), which is how an exclusive open
                 learns a dangling link is a name that is there.
-            fresh (bool): Ask the backend past the mount's listing index.
-                Namespace attributes and cached rendered sizes still apply.
+            fresh (bool): Ask the backend past the mount's listing index
+                and reconcile the index and file cache with its answer.
             session_id (str | None): Session to run as outside a line.
         """
         options = {}

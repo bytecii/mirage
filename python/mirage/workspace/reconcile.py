@@ -369,6 +369,40 @@ class Reconciler:
         if mount.read.policy is ReadPolicy.FRESH and name in _REVALIDATE_OPS:
             await self.on_missing(path)
 
+    async def on_fresh_stat(
+        self, mount: MountEntry, path: str, row: FileStat | None
+    ) -> None:
+        """Reconcile one path with what a fresh stat got from the backend.
+
+        The probe's reactions, for one path: a path the backend no longer
+        has evicts and GCs, a cached copy its fingerprint cannot vouch for
+        is dropped, and a stored row that disagrees goes with its parent
+        listing demoted, so the next stat or listing asks the backend.
+
+        Args:
+            mount (MountEntry): the mount that answered.
+            path (str): absolute virtual path the stat asked about.
+            row (FileStat | None): the backend's answer, None when it
+                reported the path gone.
+        """
+        if row is None:
+            await self.on_missing(path)
+        elif row.fingerprint is None or not await self._cache.is_fresh(
+            path, row.fingerprint
+        ):
+            await self._cache.remove(path)
+        stored = (await mount.index.get(path)).entry
+        same = (
+            row is not None
+            and stored is not None
+            and stored.type == row.type
+            and stored.size == row.size
+            and stored.modified == row.modified
+            and stored.fingerprint == row.fingerprint
+        )
+        if not same:
+            await mount.index.invalidate_entry(path)
+
     async def on_gone(
         self, gone: list[Evicted], excluded: tuple[str, ...] = ()
     ) -> None:

@@ -190,6 +190,51 @@ class TestFreshStat:
             await ws.close()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("replacement", [b"grown\n", None])
+    async def test_fresh_stat_reconciles_the_index(self, replacement):
+        vfs = RAMVFS()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        other = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            listed = await ws.vfs.stat("/data/f.txt")
+            await ws.mount("/data").index.set_dir(
+                "/data",
+                [("f.txt", listed)],
+                datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            if replacement is None:
+                await other.vfs.unlink("/data/f.txt")
+                with pytest.raises(FileNotFoundError):
+                    await ws.vfs.stat("/data/f.txt", fresh=True)
+                with pytest.raises(FileNotFoundError):
+                    await ws.vfs.stat("/data/f.txt")
+                assert await ws.vfs.readdir("/data") == []
+            else:
+                await other.vfs.write("/data/f.txt", replacement)
+                assert (await ws.vfs.stat("/data/f.txt", fresh=True)).size == 6
+                assert (await ws.vfs.stat("/data/f.txt")).size == 6
+        finally:
+            await other.close()
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_drops_a_cached_copy_it_cannot_vouch_for(self):
+        vfs = RAMVFS()
+        vfs.caches_reads = True
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            assert await ws.vfs.read("/data/f.txt") == b"old"
+            vfs._store.files["/f.txt"] = b"grown\n"
+            assert await ws.vfs.read("/data/f.txt") == b"old"
+            await ws.vfs.stat("/data/f.txt", fresh=True)
+            assert not await ws.cache.exists("/data/f.txt")
+            assert await ws.vfs.read("/data/f.txt") == b"grown\n"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
     async def test_fresh_stat_follows_a_link_to_current_metadata(self):
         vfs = RAMVFS()
         ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)

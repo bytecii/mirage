@@ -479,7 +479,7 @@ interface Call {
   /**
    * Whether a stat asks the backend past the mount's index, through a
    * throwaway store as a `read: fresh` probe does, with the index's rows only
-   * as hints.
+   * as hints, and reconciles the index and file cache with the answer.
    */
   fresh: boolean
   /**
@@ -1857,6 +1857,13 @@ export class Dispatcher {
       } else {
         const answered = probed(call, mount)
         result = answered ?? (await run(fullKwargs))
+        if (call.fresh) {
+          await this.reconciler.onFreshStat(
+            mount,
+            p.virtual,
+            result instanceof FileStat ? result : null,
+          )
+        }
         if (name === 'stat') result = await sized(mount, p, result)
       }
     } catch (err) {
@@ -1868,7 +1875,11 @@ export class Dispatcher {
         const fallback =
           isMissingPath(err) || isEnotdir(err) ? this.namespaceResult(name, p.virtual) : null
         if (fallback === null) {
-          await this.reconciler.onEnoent(mount, name, p.virtual, err)
+          if (call.fresh && (isMissingPath(err) || isEnotdir(err))) {
+            await this.reconciler.onFreshStat(mount, p.virtual, null)
+          } else {
+            await this.reconciler.onEnoent(mount, name, p.virtual, err)
+          }
           throw err
         }
         result = fallback

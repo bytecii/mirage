@@ -319,6 +319,28 @@ export class Reconciler {
     }
   }
 
+  // Reconcile one path with what a fresh stat got from the backend (`row`,
+  // null when it reported the path gone). The probe's reactions, for one
+  // path: a path the backend no longer has evicts and GCs, a cached copy its
+  // fingerprint cannot vouch for is dropped, and a stored row that disagrees
+  // goes with its parent listing demoted, so the next stat or listing asks
+  // the backend.
+  async onFreshStat(mount: MountEntry, path: string, row: FileStat | null): Promise<void> {
+    if (row === null) {
+      await this.onMissing(path)
+    } else if (row.fingerprint === null || !(await this.cache.isFresh(path, row.fingerprint))) {
+      await this.cache.remove(path)
+    }
+    const stored = (await mount.index.get(path)).entry
+    const same =
+      row !== null &&
+      stored?.type === row.type &&
+      stored.size === row.size &&
+      stored.modified === row.modified &&
+      stored.fingerprint === row.fingerprint
+    if (!same) await mount.index.invalidateEntry(path)
+  }
+
   async onGone(gone: readonly Evicted[], excluded: readonly string[] = []): Promise<void> {
     const paths = new Set(gone.map((child) => rstripSlash(child.path) || '/'))
     const folders = new Set(

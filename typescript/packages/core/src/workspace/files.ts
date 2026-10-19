@@ -656,8 +656,8 @@ export class Files {
   /**
    * One path's row. `nofollow` reports a trailing symlink itself rather
    * than its target (lstat), so a dangling link is a name that is there.
-   * `fresh` asks the backend past the mount's listing index. Namespace
-   * attributes and cached rendered sizes still apply.
+   * `fresh` asks the backend past the mount's listing index and reconciles
+   * the index and file cache with its answer.
    */
   async stat(
     path: string | PathSpec,

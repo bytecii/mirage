@@ -314,9 +314,10 @@ The file API, run as the session. Paths are absolute, bytes are `bytes`. A missi
 
 `stat` can reuse metadata from the mount's listing index. Set `fresh=True` to
 ask the backend past that index, for example after another client replaces or
-deletes a file. Namespace attributes and cached rendered sizes still apply.
-The result remains a `FileStat`, with `None` for backend version fields the
-backend does not provide. `nofollow=True` still reports a trailing symlink
+deletes a file. Later calls see the answer too: a changed or deleted file
+leaves the index, and a cached copy the backend cannot vouch for is dropped.
+Namespace attributes still apply. The result remains a `FileStat`, with `None`
+for backend version fields the backend does not provide. `nofollow=True` still reports a trailing symlink
 itself. Session visibility and access rules apply to both modes.
 
 ```python

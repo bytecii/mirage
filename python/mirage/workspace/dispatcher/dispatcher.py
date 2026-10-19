@@ -670,7 +670,8 @@ class _Call:
             served from it nor kept in it.
         fresh (bool): whether a stat asks the backend past the mount's
             index, through a throwaway store as a ``read: fresh`` probe
-            does, with the index's rows only as hints.
+            does, with the index's rows only as hints, and reconciles the
+            index and file cache with the answer.
         walked (PathSpec | None): the path before a link at its final
             name was followed, the one a listing's names are spelled
             under; None when nothing was followed.
@@ -1895,6 +1896,10 @@ class Dispatcher:
                         **kwargs,
                     )
                 )
+                if call.fresh:
+                    await self._reconciler.on_fresh_stat(
+                        mount, call.path.virtual, result
+                    )
                 if call.name == "stat":
                     result = await _sized(mount, call.path, result)
         except (FileNotFoundError, NotADirectoryError):
@@ -1902,9 +1907,14 @@ class Dispatcher:
                 call.name, call.path.virtual, call.vis
             )
             if result is None:
-                await self._reconciler.on_enoent(
-                    mount, call.name, call.path.virtual
-                )
+                if call.fresh:
+                    await self._reconciler.on_fresh_stat(
+                        mount, call.path.virtual, None
+                    )
+                else:
+                    await self._reconciler.on_enoent(
+                        mount, call.name, call.path.virtual
+                    )
                 raise
             _memory_answered(call.report)
         except OSError as exc:

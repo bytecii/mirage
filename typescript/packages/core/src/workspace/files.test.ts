@@ -206,6 +206,51 @@ describe('fresh stat', () => {
     })
   })
 
+  it.each(['grown\n', null])('reconciles the index after replacement %j', async (replacement) => {
+    const vfs = new RAMVFS()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    const other = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir('/data', [['f.txt', listed]], new Date(Date.now() + 3_600_000))
+      if (replacement === null) {
+        await other.vfs.unlink('/data/f.txt')
+        await expect(ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).rejects.toMatchObject({
+          code: 'ENOENT',
+        })
+        await expect(ws.vfs.stat('/data/f.txt')).rejects.toMatchObject({ code: 'ENOENT' })
+        expect(await ws.vfs.readdir('/data')).toEqual([])
+      } else {
+        await other.vfs.write('/data/f.txt', replacement)
+        expect((await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).size).toBe(6)
+        expect((await ws.vfs.stat('/data/f.txt')).size).toBe(6)
+      }
+    } finally {
+      await other.close()
+      await ws.close()
+    }
+  })
+
+  it('drops a cached copy it cannot vouch for', async () => {
+    const vfs = new RAMVFS()
+    ;(vfs as unknown as { cachesReads: boolean }).cachesReads = true
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('old')
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('old')
+      await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      expect(await ws.cache.exists('/data/f.txt')).toBe(false)
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('grown\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('follows a link to current metadata', async () => {
     const vfs = new RAMVFS()
     const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
