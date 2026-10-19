@@ -17,7 +17,7 @@ icon: /images/openai-logo.svg
 npm install -g @struktoai/mirage-cli
 ```
 
-On macOS, FUSE also needs the [macFUSE 4 workaround](/typescript/setup/fuse#macos-4-symlink-workaround). Install [Codex](https://github.com/openai/codex) separately.
+Install [Codex](https://github.com/openai/codex) separately.
 
 ## Workspace
 
@@ -26,13 +26,6 @@ mode: write
 mounts:
   /:
     vfs: ram
-    backend: fuse                 # FUSE only
-    mountpoint: /tmp/mirage-demo  # FUSE only
-  /s3:
-    vfs: s3
-    mode: read
-    config:
-      bucket: my-bucket
 ```
 
 ```bash
@@ -98,8 +91,20 @@ The remote URL and environment id come from the harness's session, and `CODEX_AP
 
 ## FUSE
 
+Install your platform's [FUSE driver](/home/setup/fuse). On macOS, also follow the [macFUSE 4 workaround](/typescript/setup/fuse#macos-4-symlink-workaround). Then expose the RAM mount at a local folder:
+
+```yaml workspace-fuse.yaml
+mode: write
+mounts:
+  /:
+    vfs: ram
+    backend: fuse
+    mountpoint: /tmp/mirage-demo
+```
+
 ```bash
+mirage workspace create workspace-fuse.yaml --id demo-fuse
 cd /tmp/mirage-demo && codex
 ```
 
-Every file and shell call Codex makes goes through Mirage: `/tmp/mirage-demo/s3` is the bucket. In the Codex app, open the mountpoint as the project folder. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
+File operations inside `/tmp/mirage-demo` go through Mirage. The mount does not restrict the agent’s access to other host paths. In the Codex app, open the mountpoint as the project folder. `mirage workspace delete demo-fuse` unmounts it. On macOS the daemon holds one FUSE mount at a time.

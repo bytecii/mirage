@@ -4,26 +4,21 @@ description: Run @anthropic-ai/claude-agent-sdk against a Mirage workspace throu
 icon: /images/claude-logo.svg
 ---
 
-The [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/) builds agents on Claude. Mirage exposes any `Workspace` to the SDK as an in-process MCP server, so every file and shell operation the agent runs is routed through Mirage instead of the host filesystem.
+The [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/) builds agents on Claude. Mirage exposes any `Workspace` to the SDK as an in-process MCP server. Calls to the Mirage tools run in that workspace, under its mounts and policies.
 
-This is distinct from [Claude Code](/typescript/agents/claude-code), which points the `claude` CLI at a FUSE mountpoint. Use this SDK integration when you build your own agent with the SDK's `query()` and want Mirage tools rather than the built-in file tools.
+This is distinct from [Claude Code](/typescript/agents/claude-code), which points the `claude` CLI at a FUSE mountpoint. Use this SDK integration when you build your own agent with the SDK's `query()` and want to add Mirage tools.
 
 ## Install
 
-`@struktoai/mirage-agents/claude-agent-sdk` is runtime-agnostic. Pair it with `@struktoai/mirage-node` for Node or `@struktoai/mirage-browser` for the browser.
+Use this integration from Node. The Claude Agent SDK launches the native Claude Code runtime, so the complete `query()` workflow does not run in a browser.
 
-<CodeGroup>
-```bash Node
+```bash
 pnpm add @struktoai/mirage-agents @struktoai/mirage-node @anthropic-ai/claude-agent-sdk
 ```
-```bash Browser
-pnpm add @struktoai/mirage-agents @struktoai/mirage-browser @anthropic-ai/claude-agent-sdk
-```
-</CodeGroup>
 
 ## Usage
 
-`buildOptions` wires a workspace into ready-to-use query options: it registers the Mirage MCP server, restricts the agent to Mirage's tools, and injects a system prompt describing the mounted paths.
+`buildOptions` adds and preapproves Mirage tools, and describes the mounted paths in the system prompt. Built-in SDK tools remain available under the SDK’s [permission rules](https://code.claude.com/docs/en/agent-sdk/permissions).
 
 ```ts
 import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'

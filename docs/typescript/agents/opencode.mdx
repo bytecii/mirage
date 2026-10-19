@@ -8,12 +8,14 @@ icon: /images/opencode-logo.svg
 
 ## Install
 
-Create a `mirage.yaml` in your project:
+Create a `mirage.yaml` that mounts your project at `/` inside Mirage using [Disk](/typescript/setup/disk):
 
 ```yaml mirage.yaml
 mounts:
   /:
-    vfs: ram
+    vfs: disk
+    config:
+      root: /absolute/path/to/project
 ```
 
 Add the plugin to `opencode.json`:

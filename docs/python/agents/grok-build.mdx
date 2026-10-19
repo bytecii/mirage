@@ -6,14 +6,10 @@ icon: /images/grok-logo.svg
 
 | Way | Grok Build gets | Needs |
 | --- | --- | --- |
-| [CLI](#cli) | Mirage's seven tools, beside its own | Node.js 20.10 or newer |
-| [FUSE](#fuse) | its own tools, on the workspace as a folder | a [FUSE driver](/home/setup/fuse) |
+| [CLI](#cli) | Mirage's seven tools, beside its own | a [supported Node release](/typescript/install#quick-install) |
+| [FUSE](#fuse) | its own tools, on the workspace as a folder | `mirage-ai[fuse]` and a [FUSE driver](/home/setup/fuse) |
 
 ## Install
-
-```bash
-uv tool install 'mirage-ai[fuse]'
-```
 
 Install [Grok Build](https://x.ai/cli) separately; its command is `grok`.
 
@@ -24,13 +20,6 @@ mode: write
 mounts:
   /:
     vfs: ram
-    backend: fuse                 # FUSE only
-    mountpoint: /tmp/mirage-demo  # FUSE only
-  /s3:
-    vfs: s3
-    mode: read
-    config:
-      bucket: my-bucket
 ```
 
 ## CLI
@@ -43,9 +32,26 @@ The plugin runs `mirage mcp` through `npx` on your project's `.mirage/workspace.
 
 ## FUSE
 
+Install Mirage with FUSE support and your platform's [FUSE driver](/home/setup/fuse):
+
+```bash
+uv tool install 'mirage-ai[fuse]'
+```
+
+For this route, add the kernel backend and local mountpoint to `.mirage/workspace.yaml`:
+
+```yaml .mirage/workspace.yaml
+mode: write
+mounts:
+  /:
+    vfs: ram
+    backend: fuse
+    mountpoint: /tmp/mirage-demo
+```
+
 ```bash
 mirage workspace create .mirage/workspace.yaml --id demo
 cd /tmp/mirage-demo && grok
 ```
 
-Every file and shell call Grok makes goes through Mirage: `/tmp/mirage-demo/s3` is the bucket. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
+File operations inside `/tmp/mirage-demo` go through Mirage. The mount does not restrict the agent’s access to other host paths. `mirage workspace delete demo` unmounts it. On macOS the daemon holds one FUSE mount at a time.
