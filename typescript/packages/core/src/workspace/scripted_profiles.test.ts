@@ -47,6 +47,17 @@ def answer():
 print(json.dumps(answer()))
 `
 
+// A program that denies with what its caller says: the same session id
+// and working directory a coded policy reads off `ctx.caller`.
+const CALLER = `${CONTEXT}
+caller = ctx['caller']['session']
+if ctx['command'] == 'cat':
+    print(json.dumps({
+        'kind': 'deny',
+        'reason': caller['session_id'] + ' in ' + caller['cwd'],
+    }))
+`
+
 type Method = 'preExecute' | 'preCommand' | 'preVfs' | 'preSession'
 
 // One profile named release with a policy and nothing else, so what
@@ -96,6 +107,20 @@ describe('profile policies', () => {
       expect(denied.exitCode).toBe(126)
       expect(denied.stderrText).toBe('cat: Permission denied\n')
       expect(denied.refusal).toMatchObject({ kind: 'deny', reason: 'sealed by release' })
+    } finally {
+      await ws.close()
+    }
+  }, 120000)
+
+  it('sees who makes the call as a coded policy does', async () => {
+    const ws = await build(scripted({ preCommand: CALLER }))
+    try {
+      await ws.vfs.write('/data/owner.txt', 'core\n')
+      ws.createSession('s', { profile: 'release' })
+      await ws.shell('cd /data', { sessionId: 's' })
+      const denied = await ws.shell('cat owner.txt', { sessionId: 's' })
+      expect(denied.exitCode).toBe(126)
+      expect(denied.refusal).toMatchObject({ kind: 'deny', reason: 's in /data' })
     } finally {
       await ws.close()
     }

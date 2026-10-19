@@ -236,6 +236,8 @@ async def pre_vfs_gate(
             run's op, which the dry run may not let change anything (an
             ask its read meets reads the ledger and records nothing).
     """
+    if caller is None:
+        caller = current_caller()
     ctx = VfsContext(
         call=call,
         path=path,
@@ -243,9 +245,8 @@ async def pre_vfs_gate(
         prefix=prefix,
         session_id=session_id,
         mode=mode,
+        caller=caller,
     )
-    if caller is None:
-        caller = current_caller()
     trace = caller.explaining
     line = caller.refusals is not None
     if isinstance(trace, list):
@@ -408,6 +409,7 @@ async def post_vfs_gate(
         prefix=prefix,
         session_id=session_id,
         mode=mode,
+        caller=caller,
         result=result,
     )
     await _refuse_op(ctx, await policies.post_vfs(ctx), decisions, caller)
@@ -625,8 +627,8 @@ class Policies:
         self.decisions = Decisions()
         self.views: (
             Callable[
-                [str, "SessionState | None"],
-                tuple[SessionView, "Files"] | None,
+                [str, "SessionState | None", Caller | None],
+                tuple[SessionView, "Files", Caller] | None,
             ]
             | None
         ) = None
@@ -798,15 +800,15 @@ class Policies:
                 continue
             name = type(policy).__name__
             handles = (
-                self.views(ctx.session_id, None)
+                self.views(ctx.session_id, None, ctx.caller)
                 if not rules_only
                 and self.views is not None
                 and ctx.session is None
                 else None
             )
             if handles is not None:
-                session, vfs = handles
-                ctx = replace(ctx, session=session, vfs=vfs)
+                session, vfs, caller = handles
+                ctx = replace(ctx, session=session, vfs=vfs, caller=caller)
             token = set_explaining(DryRun.DECIDING)
             try:
                 answered = getattr(policy, method)(ctx)

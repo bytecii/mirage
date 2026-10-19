@@ -135,6 +135,7 @@ Every `ctx` also carries:
 | `session_id` | the session the action runs as |
 | `session` | the session, read only: `get(name)`, `snapshot()`, `cwd()`, `is_readonly(name)`, `profile()` |
 | `vfs` | the session's files, read only: `read`, `stat`, `readdir`, `exists`, and where the mounts are (`mount_of`, `is_mount`, `submounts`), hides applied |
+| `caller` | who makes the call (a `Caller`), read only: `caller.session` is the session above, with its `session_id` and `cwd` |
 
 `words` is the command line word by word, after expansion. Each word has
 a `text`, a `kind` (`name`, `subcommand`, `option`, `value`, `operand` or
@@ -176,15 +177,15 @@ claim to check, not as a credential:
 | The agent sets | Through |
 | --- | --- |
 | `line`, `command`, `words`, `argv`, `paths`, `walks` | the line it types, after expansion |
-| `cwd`, `session.cwd()` | `cd` |
+| `cwd`, `session.cwd()`, `caller.session.cwd` | `cd` |
 | `env`, `session.get()`, `session.snapshot()` | `export` and assignments, except a name `session.is_readonly()` reports |
 | `key`, `value` at `pre_session` | the write it asked for |
 | `call`, `path`, `write` at `pre_vfs` | the file call it made |
 | `exit_code`, `stderr`, `output`, `records`, `result`, `old` | what its own command or call produced |
 
-The host sets `session_id`, `profile`, `mounts`, `prefix` and `mode`, and
-what `vfs` shows: the agent cannot change them from inside the
-session. Decide who may do what from those, and from a variable only
+The host sets `session_id` (`caller.session.session_id` too), `profile`,
+`mounts`, `prefix` and `mode`, and what `vfs` shows: the agent cannot
+change them from inside the session. Decide who may do what from those, and from a variable only
 when the profile marks it read-only.
 
 A policy written as a program, on monty or Python on wasm, gets the same

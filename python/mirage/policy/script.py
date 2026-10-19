@@ -24,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from mirage.commands.config import Context
 from mirage.context.session_context import (
+    Caller,
     bind_caller,
     current_caller,
     reset_caller,
@@ -72,6 +73,25 @@ logger = logging.getLogger(__name__)
 _LIVE = frozenset({"session", "vfs"})
 
 
+def _caller_data(caller: Caller | None) -> JsonValue:
+    """A context's caller as a program reads it: the facts a policy
+    reads of it, its session's id and working directory.
+
+    Args:
+        caller (Caller | None): who makes the call.
+    """
+    if caller is None:
+        return None
+    session = caller.session
+    return {
+        "session": (
+            None
+            if session is None
+            else {"session_id": session.session_id, "cwd": session.cwd}
+        )
+    }
+
+
 def _plain(value: Any) -> JsonValue:
     """A value as a program reads it: JSON-shaped data, bytes as text,
     a path as its virtual spelling, a model or record as its fields
@@ -92,7 +112,11 @@ def _plain(value: Any) -> JsonValue:
         return _plain(value.model_dump())
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
-            f.name: _plain(getattr(value, f.name))
+            f.name: (
+                _caller_data(getattr(value, f.name))
+                if f.name == "caller"
+                else _plain(getattr(value, f.name))
+            )
             for f in dataclasses.fields(value)
             if f.name not in _LIVE
         }

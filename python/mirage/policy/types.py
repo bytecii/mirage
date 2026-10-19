@@ -26,6 +26,7 @@ from mirage.vfs.types import VfsCall
 from mirage.view.types import SessionView
 
 if TYPE_CHECKING:
+    from mirage.context.session_context import Caller
     from mirage.workspace.files import Files
 
 
@@ -751,6 +752,9 @@ class CommandContext:
         vfs (Files | None): the session's files, read only: a write is
             refused and no method runs again for a read. Filled when a
             method is asked.
+        caller (Caller | None): who makes the call, read only: its
+            ``session`` is the session above (``session_id``, ``cwd``).
+            Filled when a method is asked.
     """
 
     command: str
@@ -767,6 +771,7 @@ class CommandContext:
     write: bool = False
     session: SessionView | None = None
     vfs: "Files | None" = None
+    caller: "Caller | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -815,6 +820,8 @@ class RouteContext:
         session (SessionView | None): the session, read only: a write
             through it is refused.
         vfs (Files | None): the session's files, read only.
+        caller (Caller | None): who makes the call, read only: its
+            ``session`` is the session above.
     """
 
     line: str
@@ -822,6 +829,7 @@ class RouteContext:
     session_id: str
     session: SessionView | None = None
     vfs: "Files | None" = None
+    caller: "Caller | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,6 +856,8 @@ class VfsContext:
             None at an entry point that judges the mode itself.
         session (SessionView | None): the session, read only.
         vfs (Files | None): the session's files, read only.
+        caller (Caller | None): who makes the call, read only: its
+            ``session`` is the session above.
     """
 
     call: VfsCall
@@ -858,6 +868,7 @@ class VfsContext:
     mode: MountMode | None = None
     session: SessionView | None = None
     vfs: "Files | None" = None
+    caller: "Caller | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -917,6 +928,8 @@ class SessionContext:
             scope a rule to one agent (deny ``set`` for session X).
         session (SessionView | None): the session, read only.
         vfs (Files | None): the session's files, read only.
+        caller (Caller | None): who makes the call, read only: its
+            ``session`` is the session above.
     """
 
     verb: str
@@ -925,6 +938,7 @@ class SessionContext:
     session_id: str = ""
     session: SessionView | None = None
     vfs: "Files | None" = None
+    caller: "Caller | None" = None
 
 
 @dataclass(frozen=True, slots=True)

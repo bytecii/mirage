@@ -416,8 +416,9 @@ export class Workspace {
     // from when given (a line explain walks, a call's cwd and env), else
     // the one the call is made under when the method's is it, else the
     // session the id names, the default for none; nothing for an id this
-    // workspace holds no session for.
-    this.registry.policies.views = (sessionId, given) => {
+    // workspace holds no session for. Its caller is the one the call is
+    // made by, with that session.
+    this.registry.policies.views = (sessionId, given, caller) => {
       let session =
         given ??
         (asyncContextIsolatesTasks ? getCurrentSessionUnlessForeign(this.sessionManager) : null)
@@ -432,12 +433,14 @@ export class Workspace {
       const vfs = withCaller(this.vfs.forSession(session.sessionId), {
         explaining: DryRun.DECIDING,
       })
-      if (asyncContextIsolatesTasks) return { session: view, vfs }
+      const called = { ...(caller ?? currentCaller()), session }
+      if (asyncContextIsolatesTasks) return { session: view, vfs, caller: called }
       // Without task isolation the mark cannot reach a session write through
       // the async context, so there its session refuses every write.
       return {
         session: { ...view, set: refuseWrite, unset: refuseWrite, mark: refuseWrite },
         vfs,
+        caller: called,
       }
     }
     // Installed CLIs, fully separate from mounts: a spec name resolves

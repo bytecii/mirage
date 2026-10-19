@@ -272,6 +272,7 @@ export async function preVfsGate(
     sessionId,
     ...(issuer !== undefined ? { issuer } : {}),
     ...context,
+    caller: caller ?? currentCaller(),
   }
   const trace = caller === undefined ? explaining() : caller.explaining
   const line = caller === undefined ? lineRunning() : caller.refusals !== null
@@ -358,6 +359,7 @@ export async function postVfsGate(
     sessionId,
     ...(issuer !== undefined ? { issuer } : {}),
     ...context,
+    caller: caller ?? currentCaller(),
     result,
   }
   await refuseOp(ctx, await policies.postVfs(ctx), decisions, caller)
@@ -483,7 +485,8 @@ export class Policies {
     | ((
         sessionId: string,
         session?: SessionState,
-      ) => (Required<Pick<RouteContext, 'session'>> & Pick<RouteContext, 'vfs'>) | null)
+        caller?: Caller,
+      ) => (Required<Pick<RouteContext, 'session' | 'caller'>> & Pick<RouteContext, 'vfs'>) | null)
     | null = null
 
   constructor(policies?: readonly Policy[]) {
@@ -616,7 +619,7 @@ export class Policies {
       const name = policy.constructor.name || 'policy'
       const handles =
         !rulesOnly && this.views !== null && seen.session === undefined
-          ? this.views(seen.sessionId ?? '')
+          ? this.views(seen.sessionId ?? '', undefined, seen.caller)
           : null
       if (handles !== null) seen = { ...seen, ...handles }
       const asked = seen

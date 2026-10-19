@@ -20,7 +20,8 @@ import { RAMVFS } from '../vfs/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { Limit, MountMode, OnExceed, PathSpec } from '../types.ts'
 import { MountRegistry } from '../workspace/mount/registry.ts'
-import { Workspace } from '../workspace/workspace/workspace.ts'
+import { Session, Workspace } from '../workspace/workspace/workspace.ts'
+import type { Caller } from '../context/session_context.ts'
 import type { Policy } from './base.ts'
 import { ebusy } from '../errors/fs.ts'
 import { MountRootPolicy } from './builtin/mount_root.ts'
@@ -1231,6 +1232,54 @@ describe('what a method sees', () => {
       // explain walks the `cd` on a copy, and the method reads that copy.
       await ws.explain('cd /; echo hi')
       expect(reader.seen.at(-1)?.[0]).toBe('/')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class SeesCaller implements Policy {
+    readonly seen: [string, string, string][] = []
+
+    private note(method: string, ctx: { caller?: Caller }): void {
+      const session = ctx.caller?.session
+      if (session === undefined || session === null) throw new Error('no caller')
+      this.seen.push([method, session.sessionId, session.cwd])
+    }
+
+    preCommand(ctx: CommandContext): Action | null {
+      if (ctx.command === 'cat') this.note('preCommand', ctx)
+      return null
+    }
+
+    preVfs(ctx: VfsContext): Action | null {
+      if (ctx.path.virtual === '/data/owner.txt') this.note('preVfs', ctx)
+      return null
+    }
+
+    preSession(ctx: SessionContext): Action | null {
+      if (ctx.key === 'TEAM') this.note('preSession', ctx)
+      return null
+    }
+  }
+
+  it('sees who makes the call', async () => {
+    const seer = new SeesCaller()
+    const ws = executableWorkspace(undefined, [seer])
+    try {
+      await ws.vfs.write('/data/owner.txt', 'core\n')
+      seer.seen.length = 0
+      ws.createSession('agent')
+      await ws.shell('cd /data', { sessionId: 'agent' })
+      await ws.shell('export TEAM=core', { sessionId: 'agent' })
+      await ws.shell('cat /data/owner.txt', { sessionId: 'agent' })
+      await new Session(ws, 'agent').vfs.read('/data/owner.txt')
+      expect(seer.seen).toEqual([
+        ['preSession', 'agent', '/data'],
+        ['preCommand', 'agent', '/data'],
+        ['preVfs', 'agent', '/data'],
+      ])
+      await ws.explain('cat /data/owner.txt', 'agent')
+      expect(seer.seen.at(-1)).toEqual(['preCommand', 'agent', '/data'])
     } finally {
       await ws.close()
     }

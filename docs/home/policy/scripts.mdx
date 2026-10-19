@@ -134,7 +134,8 @@ For `cat notes.txt | wc -l` in `/data`, `pre_execute` gets:
   "cwd": "/data",
   "env": {"PWD": "/data", "TEAM": "core", "OLDPWD": "/"},
   "profile": "reviewer",
-  "mounts": ["/.bash_history", "/data", "/dev", "/usr/bin"]
+  "mounts": ["/.bash_history", "/data", "/dev", "/usr/bin"],
+  "caller": {"session": {"session_id": "agent", "cwd": "/data"}}
 }
 ```
 
@@ -157,8 +158,10 @@ A `post_` method gets its `pre_` method's `ctx` plus what came back:
 | `post_vfs` | `result` |
 | `post_session` | `old` |
 
-Every `ctx` also has `session_id`, `cwd`, `env`, `profile` and `mounts`,
-the mount roots the session can see. The agent sets most of these fields;
+Every `ctx` also has `session_id`, `cwd`, `env`, `profile`, `mounts`, the
+mount roots the session can see, and `caller`, whose `session` holds the
+`session_id` and `cwd` a coded policy reads off `ctx.caller`. The agent
+sets most of these fields;
 [what the agent controls](/home/policy/policies#what-the-agent-controls)
 says which ones a program can trust.
 

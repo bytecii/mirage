@@ -569,11 +569,11 @@ async def gate(
     # line explain walks is the walked one, not the stored one.
     views = registry.policies.views
     handles = (
-        views(session.session_id, session)
+        views(session.session_id, session, None)
         if views is not None and not rules_only
         else None
     )
-    view, vfs = handles or (None, None)
+    view, vfs, caller = handles or (None, None, None)
     ctx = CommandContext(
         command=name,
         paths=_seen(
@@ -610,6 +610,7 @@ async def gate(
         ),
         session=view,
         vfs=vfs,
+        caller=caller,
     )
     said = await registry.policies.answers(
         "pre_command", ctx, every, rules_only

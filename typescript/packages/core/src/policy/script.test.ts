@@ -38,7 +38,8 @@ import {
   type VfsContext,
   type VfsResultContext,
 } from './types.ts'
-import { sessionAccess } from '../context/session_context.ts'
+import { currentCaller, sessionAccess } from '../context/session_context.ts'
+import { SessionState } from '../workspace/session/session.ts'
 
 // Mirrors python/tests/policy/test_script.py.
 
@@ -340,6 +341,16 @@ describe('scriptContext', () => {
     expect(data.mounts).toEqual(['/data'])
     expect(Object.keys(data)).not.toContain('session')
     expect(Object.keys(data)).not.toContain('ns')
+  })
+
+  it("reads a caller as its session's id and working directory", () => {
+    const session = new SessionState({ sessionId: 's', cwd: '/data' })
+    const data = scriptContext(ctx('cat', { caller: { ...currentCaller(), session } }))
+    expect(data.caller).toEqual({ session: { session_id: 's', cwd: '/data' } })
+    expect(scriptContext(ctx('cat', { caller: currentCaller() })).caller).toEqual({
+      session: null,
+    })
+    expect(scriptContext(ctx('cat'))).not.toHaveProperty('caller')
   })
 
   it('lists each command of a line as preCommand reads it', () => {
