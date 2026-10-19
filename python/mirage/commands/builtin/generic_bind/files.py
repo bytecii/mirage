@@ -92,9 +92,9 @@ class CommandFiles:
         read_range (ReadBytesFn): ``read_range(path, offset, size)``.
         read_stream (ReadStreamFn): the stored bytes, opened at the
             first pull.
-        read_warm (Callable): the stored bytes a read is served from the
-            read cache; None when it holds no copy it would serve, and
-            then no backend is asked.
+        is_warm (Callable): whether the read cache holds a copy a read
+            would be served from; it fetches neither the copy nor
+            anything from the backend.
         write (Callable): ``write(path, data)``.
         append (Callable): ``append(path, data)``.
         pwrite (Callable): ``pwrite(path, data, offset)``.
@@ -141,7 +141,7 @@ class CommandFiles:
     read_bytes: ReadBytesFn
     read_range: ReadBytesFn
     read_stream: ReadStreamFn
-    read_warm: Callable[[PathSpec], Awaitable[bytes | None]]
+    is_warm: Callable[[PathSpec], Awaitable[bool]]
     write: Callable[[PathSpec, ByteSource], Awaitable[None]]
     append: Callable[[PathSpec, ByteSource], Awaitable[None]]
     pwrite: Callable[[PathSpec, bytes, int], Awaitable[None]]
@@ -497,7 +497,7 @@ def file_size(
     async def size(path: PathSpec) -> int | None:
         if revision_for(path.virtual) is not None:
             return None
-        if await files.read_warm(path) is not None:
+        if await files.is_warm(path):
             return None
         st = await _stat_refusing_dirs(files, ctx, path)
         if st.type != FileType.FILE or st.mode is not None:
@@ -690,13 +690,13 @@ def command_files(
     ) -> bytes:
         return await _dispatched_bytes(dispatch, path, offset, size)
 
-    async def read_warm(path: PathSpec) -> bytes | None:
+    async def is_warm(path: PathSpec) -> bool:
         # A run across mounts runs in no mount's cache scope: it takes an
         # operand's size from its stat, warm or not.
         if crossing:
-            return None
-        data, _ = await dispatch("read", path, filetype=None, warm=True)
-        return cast(bytes | None, data)
+            return False
+        held, _ = await dispatch("read", path, filetype=None, warm=True)
+        return held is True
 
     read_stream: ReadStreamFn = raw_stream
     if reading is not None and reading.split:
@@ -829,7 +829,7 @@ def command_files(
         read_bytes=raw_bytes,
         read_range=raw_range,
         read_stream=read_stream,
-        read_warm=read_warm,
+        is_warm=is_warm,
         write=write,
         append=append,
         pwrite=pwrite,

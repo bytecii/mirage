@@ -61,10 +61,10 @@ export interface CommandFiles {
   /** The stored bytes, opened at the first pull. */
   readonly readStream: (path: PathSpec) => AsyncIterable<Uint8Array>
   /**
-   * The stored bytes a read is served from the read cache; null when it
-   * holds no copy it would serve, and then no backend is asked.
+   * Whether the read cache holds a copy a read would be served from; it
+   * fetches neither the copy nor anything from the backend.
    */
-  readonly readWarm: (path: PathSpec) => Promise<Uint8Array | null>
+  readonly isWarm: (path: PathSpec) => Promise<boolean>
   readonly write: (path: PathSpec, data: ByteSource) => Promise<void>
   readonly append: (path: PathSpec, data: ByteSource) => Promise<void>
   readonly pwrite: (path: PathSpec, data: Uint8Array, offset: number) => Promise<void>
@@ -366,7 +366,7 @@ export function fileSize(
 ): (p: PathSpec) => Promise<number | null> {
   return async (p) => {
     if (revisionFor(p.virtual) !== null) return null
-    if ((await files.readWarm(p)) !== null) return null
+    if (await files.isWarm(p)) return null
     const st = await statRefusingDirs(files, ctx, p)
     if (st.type !== FileType.FILE || st.mode !== null) return null
     if (ctx.vfs === undefined) return st.size
@@ -498,10 +498,8 @@ export function commandFiles(ctx: Context, paths: readonly PathSpec[] = []): Com
       : (path: PathSpec) => guardInput(rawStream(path), ctx, reading.split)
   // A run across mounts runs in no mount's cache scope: it takes an operand's
   // size from its stat, warm or not.
-  const readWarm = async (path: PathSpec): Promise<Uint8Array | null> =>
-    crossing
-      ? null
-      : ((await call('read', path, [], { filetype: null, warm: true })) as Uint8Array | null)
+  const isWarm = async (path: PathSpec): Promise<boolean> =>
+    crossing ? false : (await call('read', path, [], { filetype: null, warm: true })) === true
   const stat = guard(rawStat)
   const readdir = guard(rawReaddir)
   const links = crossing ? undefined : linksOf(ctx)
@@ -513,7 +511,7 @@ export function commandFiles(ctx: Context, paths: readonly PathSpec[] = []): Com
     readBytes: guard(rawBytes),
     readRange: guard(rawRange),
     readStream,
-    readWarm: guard(readWarm),
+    isWarm: guard(isWarm),
     write: guard(async (path: PathSpec, data: ByteSource) => {
       await call('write', path, [data])
     }),

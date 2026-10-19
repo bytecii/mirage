@@ -479,7 +479,11 @@ interface Call {
   stream: boolean
   /** Whether a read skips the file cache, neither served from it nor kept in it. */
   direct: boolean
-  /** Whether a read is answered from the file cache alone: the copy it holds, else null, never the backend. */
+  /**
+   * Whether a read only asks whether the file cache holds a copy: true once the
+   * caller's rule lets the read through, else null; never the bytes, never the
+   * backend.
+   */
   warm: boolean
   /**
    * Whether a stat asks the backend past the mount's index, through a
@@ -846,12 +850,11 @@ export class Dispatcher {
       return [null, new IOResult()]
     }
     if (call.warm) {
-      if (!(await this.held(call, owner))) {
-        memoryAnswered(report)
-        return [null, new IOResult()]
-      }
+      const held = await this.held(call, owner)
       const ruleGate = this.caller?.ruleGate ?? null
-      if (ruleGate !== null) judge(ruleGate, call.typed, call.walked, call.path)
+      if (held && ruleGate !== null) judge(ruleGate, call.typed, call.walked, call.path)
+      memoryAnswered(report)
+      return [held ? true : null, new IOResult()]
     }
     // mkdir(2) looks its name up first, so on a read-only region that lookup
     // answers for the mode, after every other policy has spoken. A dry run
@@ -929,7 +932,7 @@ export class Dispatcher {
     if (mark === null) throw enotsup(vfs.name, name, call.path)
     await mount.ensureReady()
     const cached = await this.serveCached(call, mount, vfs, boundary, mark)
-    if (cached !== null || call.warm) {
+    if (cached !== null) {
       return [cached, new IOResult()]
     }
     const settles =
@@ -1053,10 +1056,19 @@ export class Dispatcher {
       return false
     }
     const prober = this.caller === null ? undefined : { ...this.caller, ruleGate: null }
+    // A read follows a final link, so the kind is its target's, as GNU's cat
+    // calls a link to a directory one; the error keeps the name as typed.
+    let followed: string
+    try {
+      followed = this.namespace.follow(path.virtual)
+    } catch (e) {
+      if (e instanceof CycleError) return false
+      throw e
+    }
     return readHitADir(
       (p) => this.lstat(prober, p),
       (p) => this.listing(prober, p),
-      path,
+      followed === path.virtual ? path : PathSpec.fromStrPath(followed),
       err,
     )
   }

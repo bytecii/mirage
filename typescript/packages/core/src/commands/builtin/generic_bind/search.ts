@@ -295,7 +295,7 @@ async function fullScan(
  * is worth reading. An operand
  * named on the line is never ruled out by a search asked about directories,
  * nor is a path pinned to a revision, since a search sees the current content,
- * nor a file the read cache holds (`readWarm`), which a read serves as it was
+ * nor a file the read cache holds (`isWarm`), which a read serves as it was
  * cached, nor a path a link leads elsewhere, which the mount's search never
  * sees.
  * Both are asked through the dispatcher, which drops what the session hides
@@ -391,8 +391,8 @@ export async function searchReads(
       !(asked.readsBinary && BINARY_EXTENSIONS.has(getExtension(path.virtual) ?? '')) &&
       !found.has(key.toLowerCase()) &&
       (searchable === null || searchable.some((glob) => globPrefixMatch(key, glob)))
-    if (ruledOut) return (await files.readWarm(path)) !== null ? null : new Uint8Array(0)
-    if (lines === undefined || (await files.readWarm(path)) !== null) return null
+    if (ruledOut) return (await files.isWarm(path)) ? null : new Uint8Array(0)
+    if (lines === undefined || (await files.isWarm(path))) return null
     const ignoreCase = { ignoreCase: asked.ignoreCase }
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {

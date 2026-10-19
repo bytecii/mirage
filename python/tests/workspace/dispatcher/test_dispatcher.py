@@ -1640,6 +1640,27 @@ async def test_a_read_of_a_directory_is_refused_for_every_caller(
         await ws.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", sorted(_WS_READS))
+async def test_a_read_through_a_link_takes_its_targets_kind(read):
+    # GNU's cat calls a link to a directory a directory, at the name it
+    # was given; a link that leads nowhere stays absent, though its
+    # parent lists its name.
+    vfs = RAMVFS()
+    vfs._store.dirs.add("/")
+    vfs._store.files["/sub/x"] = b"x"
+    ws = Workspace({"/m": vfs}, mode=MountMode.WRITE)
+    try:
+        await ws.shell("ln -s /m/sub /m/alias; ln -s /m/nope /m/gone")
+        with pytest.raises(IsADirectoryError) as raised:
+            await _WS_READS[read](ws, "/m/alias")
+        assert "/m/alias" in str(raised.value)
+        with pytest.raises(FileNotFoundError):
+            await _WS_READS[read](ws, "/m/gone")
+    finally:
+        await ws.close()
+
+
 class _UpstreamFailingRAM(_DirVoiceRAM):
     """A store whose backend fails for a path in ``voiced``, on a stat as
     on a read."""
@@ -1768,7 +1789,9 @@ async def test_a_stand_in_gives_way_to_the_read_for_a_cached_file():
 
 
 @pytest.mark.asyncio
-async def test_a_warm_read_answers_the_cached_copy_or_none():
+async def test_a_warm_read_answers_whether_a_copy_is_held():
+    # Presence only: a held copy is never fetched to answer, since every
+    # caller then reads the file anyway (wc -c, grep's narrowing).
     vfs = _StandInRAM()
     vfs._store.dirs.add("/")
     vfs._store.files.update({"/cold": b"a\n", "/warm": b"b\n"})
@@ -1778,14 +1801,17 @@ async def test_a_warm_read_answers_the_cached_copy_or_none():
         vfs._store.files["/warm"] = b"changed\n"
         reads = AsyncMock(wraps=vfs.read)
         vfs.read = reads
+        fetched = AsyncMock(wraps=ws.cache.get)
+        ws.cache.get = fetched
         cold, _ = await ws.vfs.dispatch(
             "read", PathSpec.from_str_path("/m/cold"), warm=True
         )
         warm, _ = await ws.vfs.dispatch(
             "read", PathSpec.from_str_path("/m/warm"), warm=True
         )
-        assert (cold, warm) == (None, b"b\n")
+        assert (cold, warm) == (None, True)
         assert reads.call_args_list == []
+        assert fetched.call_args_list == []
     finally:
         await ws.close()
 

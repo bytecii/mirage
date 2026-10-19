@@ -88,9 +88,12 @@ function keyed(backend: Backend, calls: string[] = []): DispatchFn {
   }
 }
 
-function answering(st: FileStat, now: FileStat = st, warm: Uint8Array | null = null): DispatchFn {
+function answering(st: FileStat, now: FileStat = st, warm = false): DispatchFn {
   return (name, _p, _args, kwargs = {}) =>
-    Promise.resolve([name === 'read' ? warm : kwargs.fresh === true ? now : st, new IOResult()])
+    Promise.resolve([
+      name === 'read' ? (warm ? true : null) : kwargs.fresh === true ? now : st,
+      new IOResult(),
+    ])
 }
 
 interface Mounts {
@@ -221,13 +224,13 @@ describe('the abort guard', () => {
 
 describe('fileSize', () => {
   it.each([
-    ['a store file', stat({ size: 7 }), undefined, null, false, 7],
-    ['a file whose size moved', stat({ size: 7 }), stat({ size: 9 }), null, false, null],
-    ['a file the read cache holds', stat({ size: 7 }), undefined, ENC.encode('x'), false, null],
-    ['a path pinned to a revision', stat({ size: 7 }), undefined, null, true, null],
-    ['a file with permission bits', stat({ size: 7, mode: 0o644 }), undefined, null, false, null],
-    ['a file of unknown size', stat(), undefined, null, false, null],
-    ['a device', stat({ type: FileType.CHAR_DEVICE, size: 0 }), undefined, null, false, null],
+    ['a store file', stat({ size: 7 }), undefined, false, false, 7],
+    ['a file whose size moved', stat({ size: 7 }), stat({ size: 9 }), false, false, null],
+    ['a file the read cache holds', stat({ size: 7 }), undefined, true, false, null],
+    ['a path pinned to a revision', stat({ size: 7 }), undefined, false, true, null],
+    ['a file with permission bits', stat({ size: 7, mode: 0o644 }), undefined, false, false, null],
+    ['a file of unknown size', stat(), undefined, false, false, null],
+    ['a device', stat({ type: FileType.CHAR_DEVICE, size: 0 }), undefined, false, false, null],
   ])('answers %s', async (_, st, now, warm, pinned, size) => {
     const ctx = contextFor(answering(st, now, warm))
     const bound = fileSize(await guarded(ctx), ctx)

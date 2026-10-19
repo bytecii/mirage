@@ -2818,6 +2818,33 @@ describe.each(WS_READS)('a %s read through ws.vfs', (_, read) => {
     },
   )
 
+  it("gives a read through a link its target's kind", async () => {
+    // GNU's cat calls a link to a directory a directory, at the name it was
+    // given; a link that leads nowhere stays absent, though its parent lists
+    // its name.
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/')
+    vfs.store.files.set('/sub/x', ENC.encode('x'))
+    const ws = new Workspace(
+      { '/m': vfs },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      await ws.shell('ln -s /m/sub /m/alias; ln -s /m/nope /m/gone')
+      const refused = (p: string) =>
+        read(ws, p).then(
+          () => null,
+          (err: unknown) => err as { code?: string; message?: string },
+        )
+      const alias = await refused('/m/alias')
+      expect(alias?.code).toBe('EISDIR')
+      expect(alias?.message).toContain('/m/alias')
+      expect((await refused('/m/gone'))?.code).toBe('ENOENT')
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('keeps the error of a file whose backend fails', async () => {
     // The directory probe's stat fails too, which proves nothing; the
     // parent's listing names the file, so reading past that stat called it
@@ -2931,17 +2958,21 @@ describe('the cache stage', () => {
     }
   })
 
-  it('answers a warm read with the cached copy or null', async () => {
+  it('answers a warm read with whether a copy is held', async () => {
+    // Presence only: a held copy is never fetched to answer, since every
+    // caller then reads the file anyway (wc -c, grep's narrowing).
     const [vfs, ws] = standIns()
     try {
       await ws.vfs.read('/m/warm')
       vfs.store.files.set('/warm', ENC.encode('changed\n'))
       const reads = vi.spyOn(vfs, 'read')
+      const fetched = vi.spyOn(ws.cache, 'get')
       const [cold] = await ws.vfs.dispatch('read', '/m/cold', [], { warm: true })
       const [warm] = await ws.vfs.dispatch('read', '/m/warm', [], { warm: true })
       expect(cold).toBeNull()
-      expect(DEC.decode(warm as Uint8Array)).toBe('b\n')
+      expect(warm).toBe(true)
       expect(reads.mock.calls).toEqual([])
+      expect(fetched.mock.calls).toEqual([])
     } finally {
       await ws.close()
     }

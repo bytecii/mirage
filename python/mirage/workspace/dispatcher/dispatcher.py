@@ -677,8 +677,9 @@ class _Call:
         stream (bool): whether a read is answered as it is pulled.
         direct (bool): whether a read skips the file cache, neither
             served from it nor kept in it.
-        warm (bool): whether a read is answered from the file cache
-            alone: the copy it holds, else None, never the backend.
+        warm (bool): whether a read only asks whether the file cache
+            holds a copy: True once the caller's rule lets the read
+            through, else None; never the bytes, never the backend.
         fresh (bool): whether a stat asks the backend past the mount's
             index, through a throwaway store as a ``read: fresh`` probe
             does, with the index's rows only as hints, and reconciles the
@@ -1014,10 +1015,21 @@ class Dispatcher:
         ):
             return False
         prober = dataclasses.replace(caller, rule_gate=None)
+        # A read follows a final link, so the kind is its target's, as
+        # GNU's cat calls a link to a directory one; the error keeps the
+        # name as typed.
+        try:
+            followed = self._namespace.follow(path.virtual)
+        except CycleError:
+            return False
         return await read_hit_a_dir(
             functools.partial(self._lstat, prober),
             functools.partial(self._listing, prober),
-            path,
+            (
+                path
+                if followed == path.virtual
+                else PathSpec.from_str_path(followed)
+            ),
             exc,
         )
 
@@ -1153,11 +1165,11 @@ class Dispatcher:
             _memory_answered(report)
             return None, IOResult()
         if warm:
-            if not await self._held(call, mount):
-                _memory_answered(report)
-                return None, IOResult()
-            if caller.rule_gate is not None:
+            held = await self._held(call, mount)
+            if held and caller.rule_gate is not None:
                 _judge(caller.rule_gate, call.typed, call.walked, call.path)
+            _memory_answered(report)
+            return (True if held else None), IOResult()
         if mount is None:
             return (
                 self._on_device(
@@ -1211,7 +1223,7 @@ class Dispatcher:
             return None, IOResult()
         await mount.ensure_ready()
         served = await self._serve_cached(call, mount, boundary, mark)
-        if served is not None or warm:
+        if served is not None:
             return served, IOResult()
         settles = (
             name in DISPATCH_WRITE_OPS

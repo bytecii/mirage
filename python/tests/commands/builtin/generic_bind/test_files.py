@@ -102,11 +102,11 @@ def _st(kind: FileType = FileType.FILE, **fields: Any) -> FileStat:
 
 
 def _answering(
-    st: FileStat, now: FileStat | None = None, warm: bytes | None = None
+    st: FileStat, now: FileStat | None = None, warm: bool = False
 ) -> Any:
     async def dispatch(name, path, /, **kwargs):
         if name == "read":
-            return warm, IOResult()
+            return (True if warm else None), IOResult()
         return (now or st) if kwargs.get("fresh") else st, IOResult()
 
     return dispatch
@@ -217,13 +217,13 @@ async def test_a_glob_resolves_under_its_mounts_cap_and_none_reads_as_stdin():
 @pytest.mark.parametrize(
     "st,now,warm,pin,size",
     [
-        (_st(size=7), None, None, None, 7),
-        (_st(size=7), _st(size=9), None, None, None),
-        (_st(size=7), None, b"cached", None, None),
-        (_st(size=7), None, None, {"/f": "v1"}, None),
-        (_st(size=7, mode=0o644), None, None, None, None),
-        (_st(), None, None, None, None),
-        (_st(FileType.CHAR_DEVICE, size=0), None, None, None, None),
+        (_st(size=7), None, False, None, 7),
+        (_st(size=7), _st(size=9), False, None, None),
+        (_st(size=7), None, True, None, None),
+        (_st(size=7), None, False, {"/f": "v1"}, None),
+        (_st(size=7, mode=0o644), None, False, None, None),
+        (_st(), None, False, None, None),
+        (_st(FileType.CHAR_DEVICE, size=0), None, False, None, None),
     ],
     ids="file moved cached pinned mode unsized device".split(),
 )

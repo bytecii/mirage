@@ -366,7 +366,7 @@ async def search_reads(
     An operand named on the line is never ruled out by a search asked
     about directories, nor is a path pinned to a revision, since a
     search sees the current content, nor a file the read cache holds
-    (``read_warm``), which a read serves as it was cached, nor a path a
+    (``is_warm``), which a read serves as it was cached, nor a path a
     link leads elsewhere, which the mount's search never sees. Both are
     asked through the dispatcher, which drops what the session hides
     from a ``files_containing`` answer, judges ``lines_containing`` as a
@@ -485,8 +485,8 @@ async def search_reads(
             )
         )
         if ruled_out:
-            return None if await files.read_warm(path) is not None else b""
-        if lines is None or await files.read_warm(path) is not None:
+            return None if await files.is_warm(path) else b""
+        if lines is None or await files.is_warm(path):
             return None
         if terms.line_output and len(terms.texts) == 1:
             found: ByteSource | None = await lines(
