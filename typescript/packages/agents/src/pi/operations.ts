@@ -97,8 +97,11 @@ export function mirageOperations(
     writeFile: (absolutePath: string, content: string) => versions.write(absolutePath, content),
     mkdir: async (dir: string) => {
       await ensureParents(vfs, dir)
-      if (!(await vfs.exists(dir))) {
+      if (await vfs.exists(dir)) return
+      try {
         await vfs.mkdir(dir)
+      } catch (err) {
+        if (!(await vfs.isDir(dir))) throw err
       }
     },
   }

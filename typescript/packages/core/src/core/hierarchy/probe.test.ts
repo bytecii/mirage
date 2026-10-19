@@ -26,6 +26,15 @@ function spec(mountPath: string): PathSpec {
   })
 }
 
+function thrownCode(fn: () => unknown): unknown {
+  try {
+    fn()
+  } catch (err) {
+    return (err as { code?: unknown }).code
+  }
+  return null
+}
+
 describe('hierarchy probe', () => {
   it('parentSpec is the directory holding the path', () => {
     const parent = parentSpec(spec('/rooms/red/a.json'))
@@ -36,16 +45,8 @@ describe('hierarchy probe', () => {
     const row = new FileStat({ name: 'a.json', type: FileType.FILE })
     expect(fileEntry(spec('/rooms/red/a.json'), row)).toBe(row)
     const folder = new FileStat({ name: 'red', type: FileType.DIRECTORY })
-    const code = (fn: () => unknown): unknown => {
-      try {
-        fn()
-      } catch (err) {
-        return (err as { code?: unknown }).code
-      }
-      return null
-    }
-    expect(code(() => fileEntry(spec('/rooms/red'), folder))).toBe('EISDIR')
-    expect(code(() => fileEntry(spec('/'), null))).toBe('EISDIR')
-    expect(code(() => fileEntry(spec('/rooms/red/missing.json'), null))).toBe('ENOENT')
+    expect(thrownCode(() => fileEntry(spec('/rooms/red'), folder))).toBe('EISDIR')
+    expect(thrownCode(() => fileEntry(spec('/'), null))).toBe('EISDIR')
+    expect(thrownCode(() => fileEntry(spec('/rooms/red/missing.json'), null))).toBe('ENOENT')
   })
 })
