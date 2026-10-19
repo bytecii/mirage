@@ -14,7 +14,7 @@ chooses the underlying runtime.
 <CodeGroup>
 
 ```python Python
-from mirage import MountMode, RAMVFS, Workspace
+from mirage import RAMVFS, Workspace
 from mirage.policy import CommandContext, Deny, Policy
 
 class NoForcePush(Policy):
@@ -25,11 +25,7 @@ class NoForcePush(Policy):
         return None
 
 no_force_push = NoForcePush()
-ws = Workspace(
-    {"/": RAMVFS()},
-    mode=MountMode.WRITE,
-    policies=[no_force_push],
-)
+ws = Workspace({"/": RAMVFS()}, policies=[no_force_push])
 
 r = await ws.shell("git push --force origin main")
 # b'git: Permission denied\n' 126
@@ -40,7 +36,7 @@ ws.policies.remove(no_force_push)
 ```
 
 ```typescript TypeScript
-import { MountMode, RAMVFS, Workspace, type Policy } from '@struktoai/mirage-node'
+import { RAMVFS, Workspace, type Policy } from '@struktoai/mirage-node'
 
 const noForcePush: Policy = {
   preCommand(ctx) {
@@ -50,10 +46,7 @@ const noForcePush: Policy = {
   },
 }
 
-const ws = new Workspace(
-  { '/': new RAMVFS() },
-  { mode: MountMode.WRITE, policies: [noForcePush] },
-)
+const ws = new Workspace({ '/': new RAMVFS() }, { policies: [noForcePush] })
 
 const r = await ws.shell('git push --force origin main')
 // git: Permission denied 126
@@ -385,7 +378,7 @@ Deny at `post_session` gives the same answer and puts the old value back.
 | `None` | no opinion |
 | `Deny(reason)` | refuses the action |
 | `Deny(reason, path=p)` | fails the command with `p`'s own error; the rest of the line still runs |
-| `Ask(reason)` | asks the host; an inline answer may continue this request, otherwise the caller retries after an answer; see [Asks](#asks) |
+| `Ask(reason)` | asks the host; see [Asks](#asks) |
 | `Route(runtime)` | chooses the underlying runtime |
 | `Limit(max_lines=, max_bytes=)` | cuts the output at the bound, with a notice on stderr; with `on_exceed` set to error, no output and exit 1 |
 
@@ -397,27 +390,21 @@ raises refuses too. What the agent reads for each is on
 
 ## Asks
 
-An Ask has two host integration flows:
+An Ask records a question in the workspace's ledger:
 
-- With `on_ask` (`onAsk`), Mirage awaits the callback. An allow answer lets
-  the current request continue; a deny answer refuses it.
-- Without a callback, Mirage refuses the current request as pending and
-  records the question in the workspace's ledger. The host reads and answers
-  the record, then the caller explicitly retries the action.
+- With `on_ask` (`onAsk`), an inline allow answer continues the current request;
+  a deny answer refuses it.
+- Without an inline answer, including when the callback returns no decision,
+  the request returns pending. The host answers the ledger, then the caller retries.
 
-An allowed ledger answer applies to that retry according to its scope:
+Ledger answers apply as follows:
 
 - `allow`, scope `once` (default): the retry runs and spends it.
 - `allow`, scope `session`: everything the ask covers, for the rest of
   that session.
 - `deny`: the retry is refused; running it again asks again.
 
-The deferred flow is therefore: run, inspect
-[`ws.decisions`](/python/access/in-app#ws-decisions), answer the ask, then
-run the command again. A complete
-[Python example](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/ask_pending.py)
-and [TypeScript example](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/ask_pending.ts)
-show both answer scopes. Hosts can also answer later through
+A host answers through [`ws.decisions`](/python/access/in-app#ws-decisions),
 [`mirage workspace allow`](/home/access/cli#asks) or
 [`POST /asks/{ask_id}`](/home/access/http#asks). An Ask from a `post_`
 method comes after the action ran, so nothing is undone: what came back is
