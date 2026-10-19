@@ -260,8 +260,9 @@
             ]
           },
           {
-            "group": "Authentications",
+            "group": "Configuration",
             "pages": [
+              "home/configuration",
               "home/authentication"
             ]
           },

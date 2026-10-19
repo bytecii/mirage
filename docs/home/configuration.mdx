@@ -1,0 +1,101 @@
+---
+title: Workspace configuration
+description: Configure workspace.yaml mounts, commands, runtimes, profiles and credentials.
+icon: sliders
+---
+
+A workspace config describes one virtual terminal. Python and TypeScript use
+`snake_case` YAML keys. TypeScript constructor options use camelCase, such as
+`commandLimits`; provider and runtime guides show their SDK equivalents.
+
+## Start with RAM
+
+`mounts` is the only required top-level key. This config creates a writable,
+in-memory mount without credentials:
+
+```yaml workspace.yaml
+mounts:
+  /data:
+    vfs: ram
+```
+
+Create a workspace, check it, and remove it:
+
+```bash
+mirage workspace create workspace.yaml --id config-demo &&
+mirage shell -w config-demo -c 'echo ready > /data/status && cat /data/status' &&
+mirage workspace delete config-demo
+```
+
+The shell command prints `ready`. Replace RAM using a [VFS setup guide](/home/setup/vfs).
+YAML defaults `mode` to `write`; direct Python and TypeScript `Workspace`
+constructors default to `read`.
+
+## Workspace settings
+
+| Key | Purpose |
+| --- | --- |
+| `mounts` | Map virtual prefixes to VFS configurations, described below. |
+| `mode` | Default mount access: `read`, `write` or `exec`. |
+| `read`, `write` | Default mount policies. Reads default to `bounded` with a 600-second bound; writes to `unconditional`. |
+| `clis` | Install [virtual CLIs](/home/setup/clis) by command name. |
+| `runtimes` | Ordered [runtimes](/home/setup/runtime/overview) for programs. |
+| `route_policy` | Choose runtimes with a [routing policy](/home/policy/route-runtime). |
+| `profiles`, `profile` | Define [agent profiles](/home/profiles) and select the default. |
+| `command_limits` | Set [output and execution limits](/home/core/output-limits). |
+| `env` | Seed literal or managed environment variables, described below. |
+| `secrets` | Declare named [credential sources](/home/authentication). |
+| `cache`, `index` | Configure cached file content and directory/stat metadata. |
+| `store`, `console` | Configure workspace state and background-job output storage. |
+| `io` | Set byte-queue capacity with `buffer_bytes`. |
+| `default_session_id`, `workspace_id` | Set explicit identifiers instead of generated ones. |
+
+Unknown keys are errors. Provider fields belong under `mounts.<prefix>.config`,
+CLI fields under `clis.<name>.config`, and runtime fields under `runtimes[].config`.
+
+## Mount settings
+
+Each mount key is an absolute virtual prefix, such as `/data`.
+
+| Key | Purpose |
+| --- | --- |
+| `vfs` | Required registered VFS name, such as `ram` or `s3`. |
+| `config` | Provider-specific fields from its [setup guide](/home/setup/vfs). |
+| `mode` | Override the workspace's access mode. |
+| `read`, `ttl` | Override the read policy. An explicit `read: bounded` requires `ttl` in positive whole seconds. |
+| `write` | Override the write policy with one the backend supports. |
+| `command_limits` | Override limits for commands using this mount. |
+| `index` | Replace the workspace's index configuration for this mount. |
+| `backend`, `mountpoint` | Expose a local folder using [FUSE or FSKit](/home/setup/fuse). The default backend is `workspace`. |
+
+## Environment and credential pointers
+
+A string sets a literal exported variable. A pointer fetches a credential
+instead of storing its value in YAML:
+
+```yaml
+env:
+  APP_ENV: production
+  API_TOKEN:
+    from: env
+    readonly: true
+```
+
+Here `API_TOKEN` comes from the Mirage process environment. Managed entries
+default `key` to the variable's name and are always exported. `readonly`
+prevents shell assignment and `unset`. Fetching is lazy on first reference;
+`fetch: eager` requests it before execution even when the line does not name it.
+
+Pointers inside mount or registered CLI configs require an explicit `key` and
+are resolved before the provider is constructed. See [Service credentials](/home/authentication)
+for `from`, `ref` and `key` examples.
+
+## Values and paths
+
+`${NAME}` placeholders are substituted from the host process environment when
+the config loads. A missing variable is an error. Use a credential pointer
+when the value should be fetched through a source instead.
+
+Relative script paths and file-based code references resolve from the config
+file's directory. Relative dotenv paths resolve from the Mirage process's
+working directory.
