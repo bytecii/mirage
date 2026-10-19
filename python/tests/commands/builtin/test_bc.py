@@ -46,13 +46,13 @@ async def _collect(ait):
 
 def test_bc_add():
     ws, _ = _ws()
-    stdout, _ = _run_raw(ws, "bc", stdin=b"2+3")
+    stdout, _ = _run_raw(ws, "bc", stdin=b"2+3\n")
     assert _bytes(stdout).strip() == b"5"
 
 
 def test_bc_multiply():
     ws, _ = _ws()
-    stdout, _ = _run_raw(ws, "bc", stdin=b"6*7")
+    stdout, _ = _run_raw(ws, "bc", stdin=b"6*7\n")
     assert _bytes(stdout).strip() == b"42"
 
 

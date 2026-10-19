@@ -101,7 +101,7 @@ async def recount(
         vfs (Files | None): Mount ownership and link facts.
         stdin (ByteSource | None): The command's input.
     """
-    if run.io.counted_runs is not None or run.io.exit_code != 0:
+    if run.io.records is not None or run.io.exit_code != 0:
         return run
     _, io = await run_dispatch(
         DISPATCH_BUILDERS[Cmd.WC],
@@ -130,7 +130,7 @@ async def run_wc(
     Each operand runs through its owning mount's ``wc``, so a mount that
     counts without reading its file (a database row count) still does,
     and reading mounts stream. Only the layout spans the line: the counts
-    each run reports (``IOResult.counted_runs``) go through the generic's
+    each run reports (``IOResult.records``) go through the generic's
     formatter with GNU's column width, and no mount's output text is
     read back. A run that succeeds without counts is recounted on its
     own (``recount``).
@@ -163,9 +163,9 @@ async def run_wc(
     sizes: list[int | None] = []
     totals = WCCounts()
     for run in runs:
-        for counted in run.io.counted_runs or []:
+        for counted in run.io.records or []:
             counts = WCCounts(**dict(zip(columns, counted.values)))
-            rows.append((counts, counted.label))
+            rows.append((counts, counted.path.raw_path))
             sizes.append(
                 await operand_size(dispatch, run.scope, list(counted.values))
             )

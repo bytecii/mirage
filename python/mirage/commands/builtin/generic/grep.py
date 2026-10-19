@@ -36,7 +36,11 @@ from mirage.commands.builtin.grep_stream import (
 )
 from mirage.commands.builtin.types import RegexSyntax
 from mirage.commands.builtin.utils.constants import GREP_STDIN_LABEL
-from mirage.commands.builtin.utils.links import links_of, mounts_of
+from mirage.commands.builtin.utils.links import (
+    links_of,
+    mount_root,
+    mounts_of,
+)
 from mirage.commands.builtin.utils.stream import (
     is_stdin,
     operand_label,
@@ -71,7 +75,6 @@ from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.shell.bytes import byte_view, utf8_locale
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import respell_one
 from mirage.view.namespace_view import followed_stat
 
@@ -433,17 +436,16 @@ async def grep_generic(
     if stream is None:
         worker = Worker()
     mounts = mounts_of(ctx)
-    prefix = mount_prefix_of(paths[0].virtual, paths[0].vfs_path)
     rd = mount_parent_readdir(
-        partial(call_readdir, readdir, prefix=prefix), mounts, prefix
+        partial(call_readdir, readdir), mounts, mount_root(ctx)
     )
-    st = mount_parent_stat(partial(call_stat, stat, prefix=prefix), mounts)
+    st = mount_parent_stat(partial(call_stat, stat), mounts)
     links = links_of(ctx)
     # The walk meets links as entries: -r leaves them, -R reads what each
     # one leads to, and a directory it reaches again is a loop.
     follow = links if f.recursive and f.dereference else None
     walked_st = partial(followed_stat, st, follow)
-    rb = partial(call_read_bytes, read_bytes, prefix=prefix)
+    rb = partial(call_read_bytes, read_bytes)
     failed = False
     diagnostics: list[bytes] = []
     matched = False
@@ -509,7 +511,7 @@ async def grep_generic(
                 child = PathSpec(
                     virtual=entry,
                     directory=entry,
-                    vfs_path=mount_key(entry, prefix),
+                    vfs_path=entry.strip("/"),
                     raw_path=respell_one(entry, p.virtual, p.raw_path),
                 )
                 if not dir_admitted(entry, f.filters):

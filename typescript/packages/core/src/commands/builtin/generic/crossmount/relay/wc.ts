@@ -77,7 +77,7 @@ export async function recount(
   vfs: Files | undefined,
   stdin: ByteSource | null,
 ): Promise<OperandRun> {
-  if (run.io.countedRuns !== null || run.io.exitCode !== 0) return run
+  if (run.io.records !== null || run.io.exitCode !== 0) return run
   const builder = DISPATCH_BUILDERS.get(Cmd.WC)
   if (builder === undefined) throw new Error('No dispatch builder for wc')
   const [, io] = await runDispatch(builder, [run.scope], [], bag, dispatch, cwd, vfs, stdin)
@@ -89,7 +89,7 @@ export async function recount(
  * operand runs through its owning mount's wc, so a mount that counts without
  * reading its file (a database row count) still does, and reading mounts
  * stream. Only the layout spans the line: the counts each run reports
- * (`IOResult.countedRuns`) go through the generic's formatter with GNU's
+ * (`IOResult.records`) go through the generic's formatter with GNU's
  * column width, and no mount's output text is read back. A run that succeeds
  * without counts is recounted on its own (`recount`). Mirrors Python's
  * run_wc.
@@ -118,9 +118,9 @@ export async function runWc(
   const sizes: (number | null)[] = []
   const totals = columns.map(() => 0)
   for (const run of runs) {
-    for (const counted of run.io.countedRuns ?? []) {
-      const values = [...counted.values]
-      rows.push({ values, label: counted.label })
+    for (const counted of run.io.records ?? []) {
+      const values = [...(counted.values ?? [])]
+      rows.push({ values, label: counted.path.rawPath })
       sizes.push(await operandSize(dispatch, run.scope, values))
       values.forEach((value, i) => {
         const sum = totals[i] ?? 0

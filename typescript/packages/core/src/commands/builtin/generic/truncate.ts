@@ -15,6 +15,7 @@ import { type FlagValue } from '../../spec/types.ts'
 import { sizeSuffixes } from '../utils/size_suffix.ts'
 import { EOVERFLOW_TEXT } from '../constants.ts'
 import { absentDestError } from '../utils/paths.ts'
+import { endsAtDot } from '../../../utils/path.ts'
 import { encodeText } from '../../../shell/bytes.ts'
 
 // GNU truncate's letter set differs from split's and od's: lowercase
@@ -169,7 +170,8 @@ async function truncateOne(
     if (why !== null) throw enoent(path)
     current = 0
   }
-  if (directory || (path.rawPath.endsWith('/') && !flags.noCreate)) throw eisdir(path)
+  const slashed = path.rawPath.endsWith('/') && !endsAtDot(path.rawPath)
+  if (directory || (slashed && !flags.noCreate)) throw eisdir(path)
   const size = parseSize(flags.size, current)
   try {
     await truncate(path, size, flags.noCreate)

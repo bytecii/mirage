@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import functools
 import posixpath
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -29,7 +30,13 @@ from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, MountMode, PathSpec, Visibility
 from mirage.utils.hidden import leads_hidden, path_visible
 from mirage.utils.path import norm, norm_dir, owner_prefix
-from mirage.view.types import FollowOperands, NamespaceLinks, SessionBind
+from mirage.view.namespace_view import namespace_names
+from mirage.view.types import (
+    FollowOperands,
+    MountView,
+    NamespaceLinks,
+    SessionBind,
+)
 from mirage.workspace.types import MountRow
 
 
@@ -1132,11 +1139,10 @@ class FilesNamespace:
     The link table and the mount table as the workspace keeps them,
     hidden entries included, so it is never a handler's: a handler asks
     ``Files`` (``is_visible``, ``mount_of``, ``submounts``), which apply
-    the session's hides. The code that walks the namespace beside the
-    dispatcher reads it: the command helpers' link and mount views
-    (globs, ``find -L``, ``cp -L``, ``du``), the mount core and the file
-    tool mapping a path the way the dispatcher does, the runtime's
-    descriptors.
+    the session's hides, and the command helpers read ``FilesView``,
+    which applies them. The code that walks the namespace beside the
+    dispatcher reads it: the mount core and the file tool mapping a path
+    the way the dispatcher does, the runtime's descriptors.
 
     Args:
         links (NamespaceLinks | None): the workspace link table,
@@ -1167,4 +1173,169 @@ def namespace_of(files: Files) -> FilesNamespace:
         follow=files._follow,
         vis=files._vis,
         mounts=files._served,
+    )
+
+
+@dataclass(frozen=True)
+class FilesView:
+    """What a session's files show of the namespace, the session's hides
+    applied.
+
+    The link and mount tables are read here, beside the dispatcher that
+    answers from them, and filtered by the rule it refuses a call by
+    (``Files.is_visible``), so the command helpers that walk the
+    namespace (``links_of``, ``mounts_of``, globs, ``find -L``, ``cp
+    -L``, ``du``) read no table and filter no hide of their own: a
+    hidden link, or one that leads where the session cannot see, has no
+    row and no target; a hidden mount is a boundary a walk stops at but
+    is never named.
+
+    Args:
+        linked (bool): whether a link table stands behind the files.
+        link_at (Callable[[str], FileStat | None]): the link standing at
+            a path, its own row; None where none stands or the session
+            cannot see it.
+        links_below (Callable[[str], list[tuple[str, FileStat]]]): the
+            links under a directory the session sees, with their rows.
+        resolve (Callable[[str], str]): where a path the session sees
+            leads, every link followed; a hidden one is left as typed.
+            Raises CycleError where a link loop stands in the walk.
+        mounts (Callable[[bool], MountView]): where the mount
+            boundaries are, for a walk through the dispatcher (True) or
+            one bound to a mount.
+        owed (Callable[[str], list[str]]): the names a directory holds
+            only as namespace structure: the mounts below it and its
+            links, by their first segment under it.
+        vis (Callable[[], Visibility | None]): the visibility of the
+            session an op would run as.
+        follow (FollowOperands | None): the line's operand resolution a
+            command's globs give their matches.
+    """
+
+    linked: bool
+    link_at: Callable[[str], FileStat | None]
+    links_below: Callable[[str], list[tuple[str, FileStat]]]
+    resolve: Callable[[str], str]
+    mounts: Callable[[bool], MountView]
+    owed: Callable[[str], list[str]]
+    vis: Callable[[], Visibility | None]
+    follow: FollowOperands | None
+
+
+def _mount_view(files: Files, crossing: bool) -> MountView:
+    """Where the mount boundaries are, as the session the files run as
+    sees them.
+
+    Every mount below a path, hidden or not, is a boundary a backend's
+    own walk stops at: a mount the session cannot see still shadows the
+    parent backend's keys under its prefix. Only the visible ones are
+    ever named. A walk through the dispatcher (``crossing``) descends
+    into each mount itself, so it has no boundary to stop at: no mount
+    below a path, and no mount root; and it takes no mount's shortcut,
+    so no mount answers a function for it, caps its globs or narrows
+    its search.
+
+    Args:
+        files (Files): the session's files.
+        crossing (bool): the walk goes through the dispatcher.
+    """
+
+    def below(virtual: str) -> list[str]:
+        if crossing:
+            return []
+        base = norm_dir(virtual)
+        return [
+            m.prefix.rstrip("/") or "/"
+            for m in sorted(files._served(), key=lambda m: m.prefix)
+            if m.prefix != base and m.prefix.startswith(base)
+        ]
+
+    def visible_below(virtual: str) -> list[str]:
+        vis = files._vis()
+        return [root for root in below(virtual) if path_visible(vis, root)]
+
+    def owner(virtual: str) -> MountRow | None:
+        served = files._served()
+        found = owner_prefix([m.prefix for m in served], virtual)
+        return next((m for m in served if m.prefix == found), None)
+
+    def is_root(virtual: str) -> bool:
+        if crossing:
+            return False
+        return any(m.prefix == norm_dir(virtual) for m in files._served())
+
+    def root_of(virtual: str) -> str:
+        row = owner(virtual)
+        return row.prefix if row is not None else "/"
+
+    def max_du_entries(virtual: str) -> int | None:
+        row = owner(virtual)
+        return row.max_du_entries if row is not None else None
+
+    def answers(virtual: str, name: str) -> bool:
+        row = None if crossing else owner(virtual)
+        return row is not None and name in row.calls
+
+    def max_glob_matches(virtual: str) -> int | None:
+        row = None if crossing else owner(virtual)
+        return row.max_glob_matches if row is not None else None
+
+    def searchable(virtual: str) -> tuple[str, ...] | None:
+        row = None if crossing else owner(virtual)
+        return row.searchable if row is not None else None
+
+    return MountView(
+        descendants=below,
+        visible_descendants=visible_below,
+        is_root=is_root,
+        root_of=root_of,
+        max_du_entries=max_du_entries,
+        answers=answers,
+        max_glob_matches=max_glob_matches,
+        searchable=searchable,
+    )
+
+
+def view_of(files: Files) -> FilesView:
+    """The namespace a session's files show, its hides applied, for the
+    command helpers that walk it (``FilesView``).
+
+    Args:
+        files (Files): the session's files.
+    """
+    table = files._links
+
+    def link_at(virtual: str) -> FileStat | None:
+        if table is None or not files.is_visible(virtual):
+            return None
+        return table.link_stat_at(virtual)
+
+    def links_below(directory: str) -> list[tuple[str, FileStat]]:
+        if table is None:
+            return []
+        return [
+            (path, row)
+            for path, row in table.link_stats_below(directory)
+            if files.is_visible(path)
+        ]
+
+    def resolve(virtual: str) -> str:
+        if table is None or not path_visible(files._vis(), virtual):
+            return virtual
+        return posixpath.normpath(table.follow(virtual))
+
+    def owed(directory: str) -> list[str]:
+        return namespace_names(
+            files._vis(), [m.prefix for m in files._served()], table, directory
+        )
+
+    return FilesView(
+        linked=table is not None,
+        link_at=link_at,
+        links_below=links_below,
+        resolve=resolve,
+        mounts=functools.partial(_mount_view, files),
+        owed=owed,
+        vis=files._vis,
+        follow=files._follow,
     )

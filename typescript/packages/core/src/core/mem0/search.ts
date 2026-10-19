@@ -12,10 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { SearchQuery } from '../../vfs/types.ts'
 import { validateOptions, intOption, floatOption, textOption } from '../../vfs/search.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
-import type { PathSpec } from '../../types.ts'
+import type { PathSpec, SearchQuery } from '../../types.ts'
 import { rowsOf } from '../hierarchy/probe.ts'
 import { readdir } from './readdir.ts'
 import { makeResolveGlob } from '../../utils/glob_walk.ts'

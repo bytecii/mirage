@@ -40,6 +40,7 @@ import {
   DryRun,
   Outcome,
   VALIDITY,
+  policyCaller,
   type Ask,
   type Claimant,
   type CommandContext,
@@ -272,6 +273,7 @@ export async function preVfsGate(
     sessionId,
     ...(issuer !== undefined ? { issuer } : {}),
     ...context,
+    caller: policyCaller((caller ?? currentCaller()).session),
   }
   const trace = caller === undefined ? explaining() : caller.explaining
   const line = caller === undefined ? lineRunning() : caller.refusals !== null
@@ -281,7 +283,7 @@ export async function preVfsGate(
         ? null
         : explainedOp(policies, ctx, decisions, line)
     // Without task isolation the binding would reach other tasks' ops; there
-    // a deciding method gets no files and a session it cannot write.
+    // the mark rides a deciding method's own files and program instead.
     const noted = await (asyncContextIsolatesTasks
       ? runExplaining(DryRun.DECIDING, decide)
       : decide())
@@ -358,6 +360,7 @@ export async function postVfsGate(
     sessionId,
     ...(issuer !== undefined ? { issuer } : {}),
     ...context,
+    caller: policyCaller((caller ?? currentCaller()).session),
     result,
   }
   await refuseOp(ctx, await policies.postVfs(ctx), decisions, caller)
@@ -483,7 +486,7 @@ export class Policies {
     | ((
         sessionId: string,
         session?: SessionState,
-      ) => (Required<Pick<RouteContext, 'session'>> & Pick<RouteContext, 'vfs'>) | null)
+      ) => (Required<Pick<RouteContext, 'session' | 'caller'>> & Pick<RouteContext, 'vfs'>) | null)
     | null = null
 
   constructor(policies?: readonly Policy[]) {
@@ -616,7 +619,7 @@ export class Policies {
       const name = policy.constructor.name || 'policy'
       const handles =
         !rulesOnly && this.views !== null && seen.session === undefined
-          ? this.views(seen.sessionId ?? '')
+          ? this.views(seen.sessionId ?? '', undefined)
           : null
       if (handles !== null) seen = { ...seen, ...handles }
       const asked = seen
@@ -632,7 +635,7 @@ export class Policies {
               SessionResultContext,
           )
         // Without task isolation the binding would reach other tasks' ops,
-        // so there a method runs as it did before: it may write.
+        // so there the mark rides the method's own files and program alone.
         answered = await (asyncContextIsolatesTasks ? runExplaining(DryRun.DECIDING, ask) : ask())
       } catch (err) {
         if (policy === this.placement) throw err

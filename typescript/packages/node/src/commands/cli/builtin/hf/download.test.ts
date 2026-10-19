@@ -13,9 +13,27 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { FileType, PathSpec } from '@struktoai/mirage-core/types'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Files } from '@struktoai/mirage-core/workspace/files'
-import { ensureDir } from './download.ts'
+import { materialize } from '@struktoai/mirage-core/io/types'
+import { HfAccountAccessor } from '../../../../accessor/hf_hub.ts'
+import type * as ClientModule from '../../../../core/hf_hub/client.ts'
+import { parseEntry } from '../../../../core/hf_hub/tree.ts'
+import type * as TreeModule from '../../../../core/hf_hub/tree.ts'
+import { downloadCmd, ensureDir } from './download.ts'
+
+const hubBytesMock = vi.hoisted(() => vi.fn())
+const fetchTreeMock = vi.hoisted(() => vi.fn())
+
+vi.mock('../../../../core/hf_hub/client.ts', async (orig) => ({
+  ...(await orig<typeof ClientModule>()),
+  hubBytes: hubBytesMock,
+}))
+
+vi.mock('../../../../core/hf_hub/tree.ts', async (orig) => ({
+  ...(await orig<typeof TreeModule>()),
+  fetchTree: fetchTreeMock,
+}))
 
 function exists(code: string, path: string): Error {
   return Object.assign(new Error(path), { code })
@@ -59,5 +77,48 @@ describe('ensureDir', () => {
     await expect(
       ensureDir(new Files(dispatch as never), PathSpec.fromStrPath('/work/out')),
     ).rejects.toThrow(/work/)
+  })
+})
+
+describe('downloadCmd', () => {
+  it('hands back the files it wrote as records with their paths', async () => {
+    const written = new Map<string, Uint8Array>()
+    const dirs = new Set(['/work'])
+    const dispatch = (op: string, spec: PathSpec, kwargs: { data?: Uint8Array } = {}) => {
+      const path = spec.virtual
+      if (op === 'stat') {
+        if (dirs.has(path)) return Promise.resolve([{ name: path, type: FileType.DIRECTORY }, null])
+        return Promise.reject(exists('ENOENT', path))
+      }
+      if (op === 'mkdir') {
+        dirs.add(path)
+        return Promise.resolve([null, null])
+      }
+      if (op === 'write') {
+        written.set(path, kwargs.data ?? new Uint8Array())
+        return Promise.resolve([null, null])
+      }
+      return Promise.reject(new Error(`unexpected op ${op}`))
+    }
+    fetchTreeMock.mockResolvedValue(
+      new Map([['a.txt', parseEntry({ type: 'file', oid: 'oid-a', size: 7, path: 'a.txt' })]]),
+    )
+    hubBytesMock.mockResolvedValue(new TextEncoder().encode('payload'))
+    const [out, io] = (await downloadCmd(
+      new HfAccountAccessor({ token: 'hf_test', endpoint: 'https://huggingface.co' }),
+      [],
+      ['acme/widget', 'a.txt'],
+      {
+        argv: ['acme/widget', 'a.txt'],
+        flags: { local_dir: PathSpec.fromStrPath('/work/out') },
+        stdin: null,
+        cwd: PathSpec.fromStrPath('/'),
+        env: {},
+        vfs: new Files(dispatch as never),
+      },
+    )) ?? [null, null]
+    expect([...written.keys()]).toEqual(['/work/out/a.txt'])
+    expect(io?.records?.map((r) => r.path.virtual)).toEqual(['/work/out/a.txt'])
+    expect(new TextDecoder().decode(await materialize(out))).toBe('/work/out/a.txt\n/work/out\n')
   })
 })

@@ -18,10 +18,10 @@ import { IOResult } from '../../../io/types.ts'
 import type { SessionView } from '../../../view/types.ts'
 import type { PolicyDenied } from '../../../policy/errors.ts'
 import { PathSpec, wordText } from '../../../types.ts'
-import { mountKey } from '../../../utils/key_prefix.ts'
 import { resolvePath } from '../../../utils/path.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
+import type { DispatchFn } from '../../../runtime/types.ts'
+import { expandGlob } from '../../expand/globs.ts'
 import { ExecutionNode } from '../../types.ts'
 import { optionError, parseFlags } from '../command/flags.ts'
 import type { ParsedCommand } from '../command/types.ts'
@@ -194,37 +194,28 @@ export function splitValueFlags(
 }
 
 /**
- * Coerce operands to PathSpec and expand glob patterns per mount.
+ * Coerce operands to PathSpec and expand glob patterns per mount, through the
+ * dispatcher's listings.
  *
  * A pattern spec only exists for a mounted word (classification gates it), so
- * the lookup propagates on a miss; a backend with no glob keeps the literal
- * spec.
+ * the lookup propagates on a miss; a backend that lists nothing keeps the
+ * literal spec.
  *
  * @param namespace - addressing authority (mount lookup).
+ * @param dispatch - op dispatcher the patterns list through.
  * @param operands - positional operands.
  */
 export async function expandOperands(
   namespace: Namespace,
+  dispatch: DispatchFn,
   operands: readonly (string | PathSpec)[],
 ): Promise<PathSpec[]> {
   const out: PathSpec[] = []
   for (const item of operands) {
     const spec = item instanceof PathSpec ? item : PathSpec.fromStrPath(item)
     if (spec.pattern !== null) {
-      const mount = namespace.mountFor(spec.virtual)
-      if (mount.answers('glob')) {
-        const prefix = rstripSlash(mount.prefix)
-        const withPrefix = new PathSpec({
-          virtual: spec.virtual,
-          directory: spec.directory,
-          pattern: spec.pattern,
-          resolved: spec.resolved,
-          vfsPath: mountKey(spec.virtual, prefix),
-        })
-        const expanded = await mount.expandGlob([withPrefix], prefix)
-        for (const p of expanded) if (p instanceof PathSpec) out.push(p)
-        continue
-      }
+      out.push(...(await expandGlob(dispatch, namespace.mountFor(spec.virtual), [spec])))
+      continue
     }
     out.push(spec)
   }

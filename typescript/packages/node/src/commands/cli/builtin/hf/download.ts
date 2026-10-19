@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { CommandFnResult, Context } from '@struktoai/mirage-core/commands/config'
+import type { PathRecord } from '@struktoai/mirage-core/io/types'
 import { UsageError } from '@struktoai/mirage-core/commands/errors'
 import { FlagView } from '@struktoai/mirage-core/commands/spec/index'
 import type { Files } from '@struktoai/mirage-core/workspace/files'
@@ -104,7 +105,7 @@ async function writeFile(
   accessor: HfHubAccessor,
   repoPath: string,
   localDir: PathSpec,
-): Promise<string> {
+): Promise<PathSpec> {
   const url = resolveUrl(
     accessor.endpoint,
     accessor.repoType,
@@ -116,7 +117,7 @@ async function writeFile(
   const target = localDir.join(repoPath)
   await ensureDir(vfs, target.parent)
   await vfs.write(target, data)
-  return target.virtual
+  return target
 }
 
 /** Whether anything is at a virtual path. */
@@ -147,7 +148,7 @@ async function cacheFile(
   folder: string,
   sha: string,
   force: boolean,
-): Promise<string> {
+): Promise<PathSpec> {
   const etag = etagOf(entry)
   const blob = blobPath(cacheDir, folder, etag)
   if (force || !(await pathExists(vfs, blob))) {
@@ -172,7 +173,7 @@ async function cacheFile(
     }
     await vfs.symlink(link, linkTarget(entry.path, etag))
   }
-  return link.virtual
+  return link
 }
 
 /** Populate the cache for one revision, bounded the same way. */
@@ -184,7 +185,7 @@ async function fetchIntoCache(
   cacheDir: PathSpec,
   force: boolean,
   workers: number,
-): Promise<[string, string[]]> {
+): Promise<[string, PathSpec[]]> {
   const sha = (await headCommit(accessor)) || accessor.revision
   const folder = repoFolderName(accessor.repoId, accessor.repoType)
   // Only a SYMBOLIC revision earns a ref. Upstream's
@@ -252,7 +253,7 @@ async function fetchAll(
   paths: readonly string[],
   localDir: PathSpec,
   workers: number,
-): Promise<string[]> {
+): Promise<PathSpec[]> {
   return boundedMap(paths, (path) => writeFile(vfs, accessor, path, localDir), workers)
 }
 
@@ -367,7 +368,7 @@ export async function downloadCmd(
     workers = 1
   }
   let base: string
-  let written: string[]
+  let written: PathSpec[]
   if (localDir !== undefined) {
     // A named local directory downloads straight into it, with no cache in
     // between; that is what upstream does too, which is why --force-download
@@ -385,7 +386,11 @@ export async function downloadCmd(
       workers,
     )
   }
-  if (fl.asBool('quiet')) return textOut(`${base}\n`)
-  const body = written.map((p) => `${p}\n`).join('')
-  return textOut(`${body}${base}\n`)
+  // What the line wrote is handed back as records with their paths, and the
+  // listing is rendered from them.
+  const records = written.map((path): PathRecord => ({ path, run: 0 }))
+  const body = records.map((r) => `${r.path.virtual}\n`).join('')
+  const [out, io] = textOut(fl.asBool('quiet') ? `${base}\n` : `${body}${base}\n`)
+  io.records = records
+  return [out, io]
 }

@@ -13,14 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import io
+import shlex
 from dataclasses import dataclass
 
 import pytest
 from e2b import CommandExitException, NotFoundException
 
+from mirage import RAMVFS, MountMode, Workspace
 from mirage.commands.config import Context
 from mirage.runtime.sandbox.constants import PTY_MARK, PTY_RAW
 from mirage.runtime.sandbox.e2b import E2BConfig, E2BRuntime, sdk
+from mirage.runtime.types import RunResult, SandboxPipe
 from mirage.types import PathSpec
 
 
@@ -310,3 +314,95 @@ async def test_a_pty_whose_command_cannot_be_sent_is_killed():
     with pytest.raises(RuntimeError, match="the sandbox went away"):
         await runtime.open_pipe("exec sshfs x y")
     assert pty.handle.ended.is_set()
+
+
+class MountingE2BRuntime(E2BRuntime):
+    """A sandbox that answers its mount table, takes sshfs pipes and
+    records the lines it runs."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.table: dict[str, str] = {}
+        self.lines: list[str] = []
+
+    async def exec_line(self, line, stdin, env, cwd):
+        self.lines.append(line)
+        rows = "".join(f"src {p} {t} rw 0 0\n" for p, t in self.table.items())
+        stdout = rows if line == "cat /proc/mounts" else ""
+        return RunResult(stdout=stdout.encode(), stderr=None, exit_code=0)
+
+    async def open_pipe(self, command):
+        self.table[shlex.split(command)[6]] = "fuse.sshfs"
+        requests = asyncio.StreamReader()
+
+        async def stop() -> None:
+            requests.feed_eof()
+
+        return SandboxPipe(requests, io.BytesIO(), stop)
+
+
+RESTRICTIONS = [
+    {"paths": {"hide": ["/data/secret"]}},
+    {"commands": {"deny": [{"paths": ["/data/secret"], "reason": "sealed"}]}},
+    {"mounts": {"/data": "r"}},
+]
+
+
+def restricted(runtime, profile):
+    return Workspace(
+        {"/data": RAMVFS()},
+        mode=MountMode.EXEC,
+        profiles={"agent": profile},
+        runtimes=[runtime, "workspace"],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", RESTRICTIONS)
+async def test_a_session_restriction_refuses_a_line_with_no_mount_type(
+    profile,
+):
+    runtime = MountingE2BRuntime(config={"sandbox_id": "sb-live"})
+    ws = restricted(runtime, profile)
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert (result.exit_code, result.stderr) == (
+        127,
+        b"e2b: runtime cannot enforce this session's file restrictions\n",
+    )
+    assert FakeSandbox.connected == []
+    assert (await (await ws.session("other")).shell("tool run")).exit_code == 0
+    await ws.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", RESTRICTIONS)
+async def test_a_session_restriction_refuses_a_line_on_fuse_mounts(profile):
+    runtime = MountingE2BRuntime(
+        config={"sandbox_id": "sb-live", "mount_type": "fuse"}
+    )
+    ws = restricted(runtime, profile)
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert (result.exit_code, result.stderr) == (
+        1,
+        b"e2b: /data is not served through the dispatcher, out of reach "
+        b"of this session's rules\n",
+    )
+    assert "tool run" not in runtime.lines
+    await ws.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", RESTRICTIONS)
+async def test_ssh_mounts_serve_a_restricted_session_its_files(profile):
+    runtime = MountingE2BRuntime(
+        config={"sandbox_id": "sb-live", "mount_type": "ssh"}
+    )
+    ws = restricted(runtime, profile)
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert result.exit_code == 0
+    assert runtime.table == {"/data": "fuse.sshfs"}
+    assert "tool run" in runtime.lines
+    await ws.close()

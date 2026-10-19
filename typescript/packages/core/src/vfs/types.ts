@@ -1,6 +1,6 @@
 import type { Accessor } from '../accessor/base.ts'
 import type { IndexCacheStore } from '../cache/index/store.ts'
-import type { FileStat, PathSpec, JsonValue } from '../types.ts'
+import type { FileStat, PathSpec, SearchQuery } from '../types.ts'
 
 /**
  * The stats a VFS function may be handed, each filled from the mount's
@@ -67,12 +67,6 @@ export interface VfsCall {
   readonly creates: boolean
   /** The call reaches everything below its paths, as a rename, a tree removal or a tree copy does. */
   readonly subtree: boolean
-}
-
-/** A resource query and backend-specific arguments, validated by the backend. */
-export interface SearchQuery {
-  readonly query: string
-  readonly options?: Readonly<Record<string, JsonValue>>
 }
 
 /**

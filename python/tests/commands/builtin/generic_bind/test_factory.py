@@ -82,7 +82,7 @@ def test_a_name_no_builder_has_is_refused():
 async def test_a_builder_with_no_workspace_files_is_refused():
     stdout, io = await _run_builder(
         GenericCommand("cat", _never),
-        Reading(split=False, cached_sizes=True),
+        Reading(split=False),
         None,
         [],
         [],
@@ -94,21 +94,16 @@ async def test_a_builder_with_no_workspace_files_is_refused():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "builder,cached_sizes,split",
+    "builder,split",
     [
-        (GenericCommand("cat", None, read=True), True, True),
-        (GenericCommand("ls", None), True, True),
-        (GenericCommand("rm", None, write=True), False, True),
-        (
-            GenericCommand("head", None, read=True, pass_through=True),
-            True,
-            False,
-        ),
+        (GenericCommand("cat", None, read=True), True),
+        (GenericCommand("ls", None), True),
+        (GenericCommand("rm", None, write=True), True),
+        (GenericCommand("head", None, read=True, pass_through=True), False),
     ],
 )
-async def test_a_run_binds_what_its_kind_decides(builder, cached_sizes, split):
-    # A builder that reads or only looks fills a stat's size from the read
-    # cache; a pass-through one keeps its producer's chunks.
+async def test_a_run_binds_what_its_kind_decides(builder, split):
+    # A pass-through builder keeps its producer's chunks.
     seen: list[Reading | None] = []
 
     async def capture(accessor, paths, texts, ctx):
@@ -124,7 +119,7 @@ async def test_a_run_binds_what_its_kind_decides(builder, cached_sizes, split):
     )
     ctx = Context(vfs=Files([], _nothing, ledger=False))
     await _bind(run, None, None).fn(None, [], [], ctx)
-    assert seen == [Reading(split=split, cached_sizes=cached_sizes)]
+    assert seen == [Reading(split=split)]
     assert _READINGS.get() is None
 
 
@@ -144,7 +139,7 @@ async def test_a_stream_hook_changes_only_the_streamed_read():
     try:
         await _run_builder(
             run,
-            Reading(split=False, cached_sizes=True, stream=_hook),
+            Reading(split=False, stream=_hook),
             None,
             [PathSpec.from_str_path("/f")],
             [],

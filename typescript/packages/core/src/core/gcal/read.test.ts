@@ -88,14 +88,19 @@ describe('gcal read', () => {
     expect(parsed(await read(makeAccessor(), spec(path)))).toMatchObject(fields)
   })
 
-  it('reports a directory read as absence, the mount root as EISDIR', async () => {
-    // A probed directory shape is no proof the node exists; the mount root,
-    // which exists by construction, is the one EISDIR.
+  it('reports a directory read as EISDIR once its stat proves it', async () => {
+    // A probed directory shape is no proof the node exists, so the read
+    // reports absence; the dispatcher's stat proves a calendar that exists,
+    // and the read through the mount answers EISDIR, as the mount root does.
+    // A calendar that does not exist stays absent.
     await expect(read(makeAccessor(), spec('/primary'))).rejects.toMatchObject({
-      code: 'ENOENT',
+      code: 'EISDIR',
     })
     await expect(read(makeAccessor(), spec('/'))).rejects.toMatchObject({
       code: 'EISDIR',
+    })
+    await expect(read(makeAccessor(), spec('/nope'))).rejects.toMatchObject({
+      code: 'ENOENT',
     })
   })
 

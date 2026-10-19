@@ -21,12 +21,9 @@ import { type Caller, currentCaller } from '../../../context/session_context.ts'
 import { PathSpec } from '../../../types.ts'
 import { eloop, isEnoent, isEnotdir } from '../../../errors/fs.ts'
 import type { ByteSource } from '../../../io/types.ts'
-import { pathVisible } from '../../../utils/hidden.ts'
-import { CycleError, posixNormpath, resolvePath } from '../../../utils/path.ts'
-import { normDir, ownerPrefix, rstripSlash } from '../../../utils/slash.ts'
-import { compareCodePoints } from '../../../utils/sort.ts'
-import { namespaceNames } from '../../../view/namespace_view.ts'
-import { type Files, namespaceOf } from '../../../workspace/files.ts'
+import { CycleError, resolvePath } from '../../../utils/path.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
+import { type Files, viewOf } from '../../../workspace/files.ts'
 import { resolvePathStat } from './paths.ts'
 
 /**
@@ -186,23 +183,20 @@ export function landingRoot(mounts: MountView, links: LinkView | null, virtual: 
  * The symlink facts a walk goes by, read off the session's files, or
  * undefined outside a workspace.
  *
- * Filtered by the hides of the session the files run as, as the dispatcher's
- * own answers are: a hidden link, or one that leads where the session cannot
- * see, has no row, no listing entry and no target. Resolving a hidden path
- * leaves it as typed, for the dispatcher to refuse; a visible one resolves,
- * so a walker judges where it lands. Mirrors Python's link_view.
+ * The files apply the session's hides (`FilesView`): a hidden link, or one
+ * that leads where the session cannot see, has no row, no listing entry and
+ * no target. Resolving a hidden path leaves it as typed, for the dispatcher
+ * to refuse; a visible one resolves, so a walker judges where it lands.
+ * Mirrors Python's link_view.
  */
 export function linkView(files: Files | undefined): LinkView | undefined {
   if (files === undefined) return undefined
-  const namespace = namespaceOf(files)
-  const table = namespace.links
-  if (table === null) return undefined
+  const seen = viewOf(files)
+  if (!seen.linked) return undefined
   return {
-    statAt: (path: string) => (files.isVisible(path) ? table.linkStatAt(path) : null),
-    subtree: (directory: string) =>
-      table.linkStatsBelow(directory).filter(([path]) => files.isVisible(path)),
-    resolve: (path: string) =>
-      pathVisible(namespace.vis(), path) ? posixNormpath(table.follow(path)) : path,
+    statAt: (path: string) => seen.linkAt(path),
+    subtree: (directory: string) => seen.linksBelow(directory),
+    resolve: (path: string) => seen.resolve(path),
     exists: async (path: string) => {
       try {
         return (
@@ -217,7 +211,7 @@ export function linkView(files: Files | undefined): LinkView | undefined {
     targetStat: async (path: string) => {
       if (!files.isVisible(path)) return null
       try {
-        return await files.stat(posixNormpath(table.follow(path)))
+        return await files.stat(seen.resolve(path))
       } catch (err) {
         if (!(err instanceof CycleError) && !isEnoent(err) && !isEnotdir(err)) throw err
         console.debug(`link target of ${path} has no row: ${String(err)}`)
@@ -229,41 +223,14 @@ export function linkView(files: Files | undefined): LinkView | undefined {
 
 /**
  * Where the mount boundaries are, read off the session's files, or undefined
- * outside a workspace.
- *
- * Every mount below a path, hidden or not, is a boundary a backend's own walk
- * stops at: a mount the session cannot see still shadows the parent
- * backend's keys under its prefix. Only the visible ones are ever named. A
- * walk through the dispatcher (`crossing`) descends into each mount itself,
- * so it has no boundary to stop at: no mount below a path, and no mount
- * root. Mirrors Python's mount_view.
+ * outside a workspace. Every mount below a path, hidden or not, is a boundary
+ * a backend's own walk stops at; only the visible ones are ever named. A walk
+ * through the dispatcher (`crossing`) has no boundary to stop at
+ * (`FilesView.mounts`). Mirrors Python's mount_view.
  */
 export function mountView(files: Files | undefined, crossing = false): MountView | undefined {
   if (files === undefined) return undefined
-  const namespace = namespaceOf(files)
-  const below = (path: string): string[] => {
-    if (crossing) return []
-    const base = normDir(path)
-    return [...namespace.prefixes()]
-      .filter((prefix) => prefix !== base && prefix.startsWith(base))
-      .sort(compareCodePoints)
-      .map((prefix) => rstripSlash(prefix) || '/')
-  }
-  return {
-    descendants: below,
-    visibleDescendants: (path: string) => {
-      const vis = namespace.vis()
-      return below(path).filter((root) => pathVisible(vis, root))
-    },
-    isRoot: (path: string) => !crossing && namespace.prefixes().includes(normDir(path)),
-    rootOf: (path: string) => ownerPrefix(namespace.prefixes(), path) ?? '/',
-    maxDuEntries: (path: string) => namespace.ownerOf(path)?.maxDuEntries ?? null,
-    answers: (path: string, name: string) =>
-      !crossing && (namespace.ownerOf(path)?.calls?.has(name) ?? false),
-    maxGlobMatches: (path: string) =>
-      crossing ? null : (namespace.ownerOf(path)?.maxGlobMatches ?? null),
-    searchable: (path: string) => (crossing ? null : (namespace.ownerOf(path)?.searchable ?? null)),
-  }
+  return viewOf(files).mounts(crossing)
 }
 
 /**
@@ -278,8 +245,7 @@ export function mountView(files: Files | undefined, crossing = false): MountView
  */
 export function owedNames(files: Files | undefined, directory: string): string[] {
   if (files === undefined) return []
-  const namespace = namespaceOf(files)
-  return namespaceNames(namespace.vis(), namespace.prefixes(), namespace.links, directory)
+  return viewOf(files).owed(directory)
 }
 
 /** The workspace's links as the command's session sees them, read off its
@@ -332,7 +298,7 @@ export function mountsOf(ctx: Context): MountView | undefined {
 /** The visibility of the session the files run as, null for none. Mirrors
  * Python's visibility_of. */
 export function visibilityOf(files: Files | undefined): Visibility | null {
-  return files === undefined ? null : namespaceOf(files).vis()
+  return files === undefined ? null : viewOf(files).vis()
 }
 
 /** The link resolver an invocation carries: null outside a workspace.
@@ -350,5 +316,5 @@ export function dispatchOf(ctx: Context): DispatchFn | undefined {
 
 /** The line's operand resolution its files carry. Mirrors Python's follow_of. */
 export function followOf(ctx: Context): FollowOperands | undefined {
-  return ctx.vfs === undefined ? undefined : (namespaceOf(ctx.vfs).follow ?? undefined)
+  return ctx.vfs === undefined ? undefined : (viewOf(ctx.vfs).follow ?? undefined)
 }

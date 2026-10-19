@@ -78,7 +78,6 @@ from mirage.types import (
 )
 from mirage.utils.dates import iso_timestamp
 from mirage.utils.hidden import path_visible
-from mirage.utils.key_prefix import mounted_path, rekey
 from mirage.utils.path import CycleError, parent, resolve_path
 from mirage.utils.quote import shell_quote_always
 from mirage.view.namespace_view import followed_stat
@@ -445,7 +444,7 @@ def link_name(copies: TransferLinks, target: PathSpec) -> PathSpec | None:
     return PathSpec(
         virtual=where,
         directory=where[: where.rfind("/") + 1] or "/",
-        vfs_path=rekey(target.virtual, target.vfs_path, where),
+        vfs_path=where.strip("/"),
         raw_path=target.raw_path,
     )
 
@@ -1377,16 +1376,16 @@ async def _tree_lines(
         stat (StatFn): Stats a destination directory.
         src (PathSpec): Source root.
         target (PathSpec): Destination root.
-        src_base (str): Source root's mount path, no trailing slash.
-        dst_base (str): Destination root's mount path, no trailing slash.
+        src_base (str): Source root's virtual path, no trailing slash.
+        dst_base (str): Destination root's virtual path, no trailing slash.
     """
     dirs = {src_base, *await strategy.find(src, type="d")}
     files = await strategy.find(src, type="f")
     lines: list[str] = []
     for entry_mount in sorted({*dirs, *files}):
-        entry = spelled_from(mounted_path(src, entry_mount), src)
+        entry = spelled_from(PathSpec.from_str_path(entry_mount), src)
         entry_dst = spelled_from(
-            mounted_path(target, dst_base + entry_mount[len(src_base) :]),
+            PathSpec.from_str_path(dst_base + entry_mount[len(src_base) :]),
             target,
         )
         if entry_mount in dirs and await is_directory(stat, entry_dst):
@@ -1553,8 +1552,8 @@ async def _mirror_dirs(
         stat (StatFn): Stats a path; raises when missing.
         src (PathSpec): Source root.
         target (PathSpec): Destination root.
-        src_base (str): Source root's mount path, no trailing slash.
-        dst_base (str): Destination root's mount path, no trailing slash.
+        src_base (str): Source root's virtual path, no trailing slash.
+        dst_base (str): Destination root's virtual path, no trailing slash.
         errors (list[str]): Collected stderr lines, appended in place.
         policy (TransferPolicy): The copy's overwrite policy, whose
             backup moves a non-directory out of a directory's way.
@@ -1595,8 +1594,8 @@ async def _mirror_dirs(
         if any(within(entry_mount, root) for root in blocked):
             continue
         dst_mount = dst_base + entry_mount[len(src_base) :]
-        entry_dst = spelled_from(mounted_path(target, dst_mount), target)
-        entry = spelled_from(mounted_path(src, entry_mount), src)
+        entry_dst = spelled_from(PathSpec.from_str_path(dst_mount), target)
+        entry = spelled_from(PathSpec.from_str_path(entry_mount), src)
         try:
             # A directory meets a link at its name as the link itself,
             # where a file writes through it (GNU's lstat for a directory
@@ -1900,7 +1899,7 @@ async def cp_generic(
         flags (CpFlags): Parsed cp flags.
         backend_key (Callable | None): Maps a path to its backend storage key
             for the same-file and into-own-subtree guards; defaults to the
-            normalized mount-relative path.
+            normalized virtual path.
         readdir (ReaddirFn | None): Directory lister for backup version
             scans; the primitive strategy's own lister is used when None.
         link_at (Callable | None): The link standing at the name a
@@ -2158,8 +2157,8 @@ async def cp_generic(
                 if freed is None:
                     continue
                 target = freed
-            src_base = src.mount_path.rstrip("/")
-            dst_base = target.mount_path.rstrip("/")
+            src_base = src.virtual.rstrip("/")
+            dst_base = target.virtual.rstrip("/")
             if isinstance(strategy, PrimitiveCopy):
                 entries = await walk(
                     strategy.readdir,
@@ -2268,7 +2267,7 @@ async def cp_generic(
             files = await strategy.find(src, type="f", unreadable=unreadable)
             errors.extend(
                 "cp: cannot access "
-                f"'{spelled_from(mounted_path(src, root), src).raw_path}': "
+                f"'{spelled_from(PathSpec.from_str_path(root), src).raw_path}': "
                 f"{posix_phrase(FsCondition.EACCES)}"
                 for root in dict.fromkeys(unreadable)
             )
@@ -2278,9 +2277,9 @@ async def cp_generic(
                 if any(within(entry_mount, root) for root in blocked):
                     continue
                 dst_mount = dst_base + entry_mount[len(src_base) :]
-                entry = spelled_from(mounted_path(src, entry_mount), src)
+                entry = spelled_from(PathSpec.from_str_path(entry_mount), src)
                 entry_dst = spelled_from(
-                    mounted_path(target, dst_mount), target
+                    PathSpec.from_str_path(dst_mount), target
                 )
                 if not await overwrite_gate(
                     policy, stat, entry, entry_dst, errors, copies
@@ -2326,7 +2325,8 @@ async def cp_generic(
                     lines if flags.verbose else None,
                     policy,
                     blocked=[
-                        mounted_path(src, root).virtual for root in blocked
+                        PathSpec.from_str_path(root).virtual
+                        for root in blocked
                     ],
                 )
             continue

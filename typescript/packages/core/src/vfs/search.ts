@@ -1,5 +1,5 @@
 import { compareCodePoints } from '../utils/sort.ts'
-import type { SearchQuery } from './types.ts'
+import type { SearchQuery } from '../types.ts'
 
 export function validateOptions(query: SearchQuery, allowed: readonly string[]): void {
   const unknown = Object.keys(query.options ?? {})

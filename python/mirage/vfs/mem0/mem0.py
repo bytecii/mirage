@@ -21,12 +21,11 @@ from mirage.core.mem0.read import read_stream as _read_stream
 from mirage.core.mem0.readdir import readdir as _readdir
 from mirage.core.mem0.search import search_many, search_resource
 from mirage.core.mem0.stat import stat as _stat
-from mirage.types import DirListing, FileStat, PathSpec, VFSName
+from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.utils.ranges import slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.mem0.config import Mem0Config
 from mirage.vfs.mem0.prompt import PROMPT
-from mirage.vfs.types import SearchQuery
 
 
 class Mem0VFS(BaseVFS):

@@ -26,7 +26,7 @@ from mirage.commands.builtin.generic.crossmount.types import (
     CrossResult,
     RunSingle,
 )
-from mirage.commands.builtin.generic.du import du, parse_flags
+from mirage.commands.builtin.generic.du import du, leaves_of, parse_flags
 from mirage.commands.builtin.generic_bind.dispatch import run_dispatch
 from mirage.commands.builtin.utils.links import mount_view
 from mirage.commands.config import Context
@@ -36,7 +36,7 @@ from mirage.commands.spec.types import FlagValue
 from mirage.concurrency.limiter import bounded_map
 from mirage.io import IOResult
 from mirage.io.stream import materialize
-from mirage.io.types import ByteSource, SizedRun
+from mirage.io.types import ByteSource, PathRecord
 from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 from mirage.view.types import FollowOperands
@@ -62,7 +62,7 @@ async def run_du(
     """Render du over operands spanning mounts from each mount's own du.
 
     Every start point is measured by the du its mount registered, a few
-    at a time, and the measurements (``IOResult.sized_runs``) render as
+    at a time, and the measurements (``IOResult.records``) render as
     one tree: a directory's row counts the mounts inside it, and ``-c``
     totals the line. No mount's output text is read back. A mount whose
     du fails adds its diagnostic and status, and the mounts below it
@@ -107,7 +107,7 @@ async def run_du(
     ios = await bounded_map(plan, measure, OPERAND_CONCURRENCY)
     # A run that failed measured nothing and says why; one that succeeded
     # without a measurement is a du this line cannot compose.
-    if any(io.sized_runs is None and io.exit_code == 0 for io in ios):
+    if any(io.records is None and io.exit_code == 0 for io in ios):
         return await run_dispatch(
             DISPATCH_BUILDERS["du"],
             paths,
@@ -123,45 +123,47 @@ async def run_du(
         paths, plan, [io.exit_code != 0 for io in ios], dispatch
     )
     done = [(step, io) for step, io, keep in zip(plan, ios, kept) if keep]
-    leaves: list[list[tuple[str, int]]] = [[] for _ in paths]
-    below: list[list[str]] = [[] for _ in paths]
+    found: list[list[PathRecord]] = [[] for _ in paths]
     present = [False] * len(paths)
     merged = IOResult()
     for (index, start), io in done:
         owner = mounts.root_of(start.virtual) if mounts else None
-        found = [
-            leaf
-            for run in io.sized_runs or []
-            for leaf in run.leaves
-            if mounts is None or mounts.root_of(leaf[0]) == owner
+        owned = [
+            r
+            for r in io.records or []
+            if mounts is None or mounts.root_of(r.path.virtual) == owner
         ]
         if start is paths[index]:
-            present[index] = bool(io.sized_runs)
+            present[index] = bool(io.records)
         elif all(
-            leaf.rstrip("/") != start.virtual.rstrip("/") for leaf, _ in found
+            leaf.rstrip("/") != start.virtual.rstrip("/")
+            for leaf, _ in leaves_of(owned)
         ):
             # A mount root holding nothing still gets its row, unless
             # the mount is one file (/.bash_history).
-            below[index].append(start.virtual)
-        leaves[index].extend(found)
-        for run in io.sized_runs or []:
-            below[index].extend(
-                d
-                for d in run.directories
-                if mounts is None or mounts.root_of(d) == owner
-            )
+            found[index].append(PathRecord(start, index))
+        # A run's record of its own start is left out: the line renders
+        # the operand's row from the operand, and a mount root's as above.
+        found[index].extend(
+            replace(r, run=index)
+            for r in owned
+            if r.size is not None
+            or r.path.virtual.rstrip("/") != start.virtual.rstrip("/")
+        )
         merged = await merged.merge(io)
     targets: list[PathSpec] = []
-    measured: dict[PathSpec, tuple[list[tuple[str, int]], list[str]]] = {}
+    measured: dict[PathSpec, list[PathRecord]] = {}
+    records: list[PathRecord] = []
     for index, path in enumerate(paths):
         if present[index]:
             target = replace(path, vfs_path=path.virtual.strip("/"))
             targets.append(target)
-            measured[target] = (leaves[index], below[index])
+            measured[target] = found[index]
+            records += [PathRecord(target, index), *found[index]]
 
     async def entries(path: PathSpec) -> tuple[list[tuple[str, int]], int]:
-        found = measured[path][0]
-        return found, sum(size for _, size in found)
+        counted = leaves_of(measured[path])
+        return counted, sum(size for _, size in counted)
 
     async def size(path: PathSpec) -> int:
         return (await entries(path))[1]
@@ -171,11 +173,14 @@ async def run_du(
         compute_size=size,
         compute_entries=entries,
         flags=rendering,
-        directories=lambda: [d for _, dirs in measured.values() for d in dirs],
+        directories=lambda: [
+            r.path.virtual
+            for rows in measured.values()
+            for r in rows
+            if r.size is None
+        ],
     )
     merged.stderr = out.stderr + await materialize(merged.stderr)
     merged.exit_code = max([out.exit_code, *(io.exit_code for _, io in done)])
-    merged.sized_runs = [
-        SizedRun(tuple(measured[t][0]), tuple(measured[t][1])) for t in targets
-    ]
+    merged.records = records
     return out.stdout, merged

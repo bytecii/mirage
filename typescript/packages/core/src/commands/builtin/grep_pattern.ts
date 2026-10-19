@@ -20,7 +20,6 @@ import { PcreError, hostFlags, translatePcre } from './utils/pcre.ts'
 import { wholeLine } from './utils/rust_regex.ts'
 import type { HostRegex } from './utils/types.ts'
 import { UsageError } from '../errors.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import { materialize } from '../../io/types.ts'
 import { PathSpec } from '../../types.ts'
 import type { FlagView } from '../spec/flag_view.ts'
@@ -66,8 +65,6 @@ export async function resolvePattern(
   name: string,
   texts: readonly string[],
   flags: FlagView,
-  paths: readonly PathSpec[],
-  mountPrefix: string | null | undefined,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<PatternResolution> {
   let pattern = patternArg(texts, flags)
@@ -77,14 +74,8 @@ export async function resolvePattern(
   // NEVER_MATCH sentinel below.
   const patternFiles = flags.raw('file')
   if (Array.isArray(patternFiles)) {
-    const first = paths[0]
-    const prefix =
-      (first === undefined ? undefined : mountPrefixOf(first.virtual, first.vfsPath)) ??
-      mountPrefix ??
-      ''
     for (const file of patternFiles) {
-      const filePath = file instanceof PathSpec ? file.virtual : file
-      const patternSpec = PathSpec.fromStrPath(filePath, mountKey(filePath, prefix))
+      const patternSpec = PathSpec.fromStrPath(file instanceof PathSpec ? file.virtual : file)
       let fileData: Uint8Array
       try {
         fileData = await materialize(stream(patternSpec))

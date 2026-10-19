@@ -9,8 +9,7 @@ from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.runtime.types import DispatchFn
-from mirage.types import JsonValue, PathSpec
-from mirage.vfs.types import SearchQuery
+from mirage.types import JsonValue, PathSpec, SearchQuery
 
 
 def semantic_options(fl: FlagView) -> dict[str, JsonValue]:

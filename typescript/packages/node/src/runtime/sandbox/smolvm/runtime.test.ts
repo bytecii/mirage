@@ -15,7 +15,10 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PathSpec } from '@struktoai/mirage-core/types'
+import { MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
+import { Workspace } from '../../../workspace.ts'
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
 import type { RuntimeOptions } from '@struktoai/mirage-core/runtime/config'
 import { describe, expect, it } from 'vitest'
@@ -204,3 +207,34 @@ it('refuses empty argv and a stopped VM before executing', async () => {
   await expect(runtime.execute([], ['node'], ctx, opts)).rejects.toThrow('not running')
   expect(runtime.calls).toHaveLength(1)
 })
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'x' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
+
+it.each(RESTRICTIONS)(
+  'refuses a line with no mount type under a session restriction',
+  async (profile) => {
+    const runtime = makeRuntime({ config: { machine: 'vm' } })
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+    )
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+        127,
+        '',
+        "smolvm: runtime cannot enforce this session's file restrictions\n",
+      ])
+      expect(runtime.calls).toEqual([])
+      const other = await ws.session('other')
+      expect((await other.shell('tool run')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  },
+)

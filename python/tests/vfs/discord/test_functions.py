@@ -21,4 +21,4 @@ from tests.fixtures.vfs_io import DISPATCH_OPS, vfs_over
 def test_the_dispatcher_serves_reads_only():
     mount = MountEntry("/", vfs_over(DiscordVFS, Accessor()))
     served = {op for op in DISPATCH_OPS if mount.answers(op)}
-    assert served == {"glob", "read", "readdir", "stat"}
+    assert served == {"read", "readdir", "stat"}

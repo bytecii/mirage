@@ -51,4 +51,4 @@ def test_vfs_commands_registered(config):
 
 def test_vfs_ops_registered(config):
     vfs = EmailVFS(config=config)
-    assert served(vfs) == {"glob", "read", "readdir", "stat"}
+    assert served(vfs) == {"read", "readdir", "stat"}

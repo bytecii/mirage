@@ -17,6 +17,7 @@ import pytest
 
 from mirage.cache.index import IndexConfig
 from mirage.types import DEFAULT_READ_TTL, MountMode, ReadPolicy, ReadSpec
+from mirage.utils.loader import load_attr
 from mirage.vfs.aliyun.aliyun import AliyunVFS
 from mirage.vfs.backblaze.backblaze import BackblazeVFS
 from mirage.vfs.base import BaseVFS
@@ -33,7 +34,6 @@ from mirage.vfs.gsheets import GSheetsConfig, GSheetsVFS
 from mirage.vfs.gslides import GSlidesConfig, GSlidesVFS
 from mirage.vfs.hf_buckets import HfBucketsConfig, HfBucketsVFS
 from mirage.vfs.lancedb import LanceDBConfig, LanceDBVFS
-from mirage.vfs.loader import load_attr
 from mirage.vfs.minio.config import MinIOConfig
 from mirage.vfs.minio.minio import MinIOVFS
 from mirage.vfs.nextcloud.config import NextcloudConfig

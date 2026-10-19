@@ -180,10 +180,12 @@ async def test_a_reader_arriving_mid_refill_waits_for_it(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_glob_arriving_mid_refill_still_answers(monkeypatch):
+async def test_a_glob_waits_on_a_refill_in_progress_as_a_listing_does(
+    monkeypatch,
+):
     with serve(_hub()) as hub:
         ws = _ws(_vfs(hub), ttl=600)
-        first = None
+        first = globbed = None
         release = asyncio.Event()
         try:
             _sessions(ws, 2)
@@ -193,19 +195,23 @@ async def test_a_glob_arriving_mid_refill_still_answers(monkeypatch):
             wiped, release = _gate(monkeypatch)
             first = asyncio.ensure_future(_out(ws, "ls /gh/docs", "s0"))
             await asyncio.wait_for(wiped.wait(), 5)
-            globbed = await asyncio.wait_for(
-                _out(ws, "echo /gh/docs/*", "s1"), 5
-            )
-            assert globbed == b"/gh/docs/a.txt /gh/docs/b.txt\n"
+            globbed = asyncio.ensure_future(_out(ws, "echo /gh/docs/*", "s1"))
+            done, _ = await asyncio.wait({globbed}, timeout=0.02)
             release.set()
             assert await asyncio.wait_for(first, 5) == LISTED
-            # The first ls kept its listing before the wipe it waits in, so
-            # the glob answers from it.
+            assert (
+                await asyncio.wait_for(globbed, 5)
+                == b"/gh/docs/a.txt /gh/docs/b.txt\n"
+            )
+            # The glob lists through the dispatcher, so it waits on the
+            # refill the first ls holds and answers from what that one kept.
+            assert not done
             assert hub.counts() == (0, 1, 0)
         finally:
             release.set()
             await asyncio.gather(
-                *([first] if first else []), return_exceptions=True
+                *[task for task in (first, globbed) if task],
+                return_exceptions=True,
             )
             await ws.close()
 

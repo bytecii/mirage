@@ -21,6 +21,8 @@ import { E2BRuntime } from '@struktoai/mirage-core/runtime/sandbox/e2b/runtime'
 import type { E2bSdk } from '@struktoai/mirage-core/runtime/sandbox/e2b/sdk'
 import { PTY_MARK, PTY_RAW } from '@struktoai/mirage-core/runtime/sandbox/constants'
 import type { Context } from '@struktoai/mirage-core/commands/config'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import type { RunResult, SandboxPipe } from '@struktoai/mirage-core/runtime/types'
 
 const DEC = new TextDecoder()
 
@@ -454,4 +456,103 @@ describe('E2B cancellation and validation', () => {
       await workspace.close()
     }
   })
+})
+
+// A sandbox that answers its mount table, takes sshfs pipes and records the
+// lines it runs.
+class MountingE2BRuntime extends FakedE2BRuntime {
+  readonly table = new Map<string, string>()
+  readonly lines: string[] = []
+
+  override execLine(line: string): Promise<RunResult> {
+    this.lines.push(line)
+    const rows = [...this.table].map(([p, t]) => `src ${p} ${t} rw 0 0\n`).join('')
+    const stdout = line === 'cat /proc/mounts' ? rows : ''
+    return Promise.resolve({ stdout: new TextEncoder().encode(stdout), stderr: null, exitCode: 0 })
+  }
+
+  override openPipe(command: string): Promise<SandboxPipe> {
+    this.table.set([...command.matchAll(/'([^']*)'|(\S+)/g)][6]?.[1] ?? '', 'fuse.sshfs')
+    let end: () => void = () => undefined
+    const reader = new ReadableStream<Uint8Array>({
+      start(controller) {
+        end = () => {
+          controller.close()
+        }
+      },
+    })
+    return Promise.resolve({
+      reader,
+      writer: { write: () => undefined, end: () => undefined },
+      stop: () => {
+        end()
+        return Promise.resolve()
+      },
+    })
+  }
+}
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'sealed' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
+
+function restricted(runtime: E2BRuntime, profile: SessionProfile): Workspace {
+  return new Workspace(
+    { '/data': new RAMVFS() },
+    { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+  )
+}
+
+describe('E2BRuntime under session restrictions', () => {
+  it.each(RESTRICTIONS)('refuses a line with no mount type', async (profile) => {
+    const runtime = new MountingE2BRuntime({ config: { sandboxId: 'sb-live' } })
+    const ws = restricted(runtime, profile)
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stderr)]).toEqual([
+        127,
+        "e2b: runtime cannot enforce this session's file restrictions\n",
+      ])
+      expect(FakeSandbox.connected).toEqual([])
+      expect((await (await ws.session('other')).shell('tool run')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it.each(RESTRICTIONS)('refuses a line on fuse mounts', async (profile) => {
+    const runtime = new MountingE2BRuntime({ config: { sandboxId: 'sb-live', mountType: 'fuse' } })
+    const ws = restricted(runtime, profile)
+    try {
+      const agent = await ws.session('agent', { profile: 'agent' })
+      const result = await agent.shell('tool run')
+      expect([result.exitCode, DEC.decode(result.stderr)]).toEqual([
+        1,
+        "e2b: /data is not served through the dispatcher, out of reach of this session's rules\n",
+      ])
+      expect(runtime.lines).not.toContain('tool run')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it.each(RESTRICTIONS)(
+    'serves a restricted session its files over ssh mounts',
+    async (profile) => {
+      const runtime = new MountingE2BRuntime({ config: { sandboxId: 'sb-live', mountType: 'ssh' } })
+      const ws = restricted(runtime, profile)
+      try {
+        const agent = await ws.session('agent', { profile: 'agent' })
+        const result = await agent.shell('tool run')
+        expect(result.exitCode).toBe(0)
+        expect(Object.fromEntries(runtime.table)).toEqual({ '/data': 'fuse.sshfs' })
+        expect(runtime.lines).toContain('tool run')
+      } finally {
+        await ws.close()
+      }
+    },
+  )
 })

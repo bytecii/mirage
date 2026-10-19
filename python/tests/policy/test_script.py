@@ -28,12 +28,14 @@ from mirage.policy.types import (
     CommandWord,
     Deny,
     ExecuteResultContext,
+    PolicyCaller,
     ProfileScript,
     Route,
     RouteContext,
     SessionContext,
     VfsContext,
     VfsResultContext,
+    policy_caller,
 )
 from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.language import LanguageRuntime
@@ -58,6 +60,7 @@ from mirage.utils.hidden import classify_paths
 from mirage.view.types import SessionView
 from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.files import Files
+from mirage.workspace.session import SessionState
 from mirage.workspace.types import MountRow
 
 
@@ -199,6 +202,7 @@ def _ctx(
     session_id: str = "s",
     session: SessionView | None = None,
     vfs: Files | None = None,
+    caller: PolicyCaller | None = None,
 ) -> CommandContext:
     return CommandContext(
         command=command,
@@ -219,6 +223,7 @@ def _ctx(
         program=(command,),
         session=session,
         vfs=vfs,
+        caller=caller,
     )
 
 
@@ -328,6 +333,17 @@ def test_a_context_reads_as_its_fields_with_the_session_as_data():
     assert data["profile"] == "reviewer"
     assert data["mounts"] == ["/data"]
     assert not {"session", "ns", "vfs"} & set(data)
+    json.dumps(data)
+
+
+def test_a_caller_reads_as_its_sessions_id_and_working_directory():
+    state = SessionState(session_id="s", cwd="/data")
+    data = script_context(_ctx(caller=policy_caller(state)))
+    assert data["caller"] == {"session": {"session_id": "s", "cwd": "/data"}}
+    assert script_context(_ctx(caller=PolicyCaller()))["caller"] == {
+        "session": None
+    }
+    assert script_context(_ctx())["caller"] is None
     json.dumps(data)
 
 

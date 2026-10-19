@@ -15,7 +15,6 @@
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { fsStrerror, isFsError } from '../../../errors/fs.ts'
-import { mountKey } from '../../../utils/key_prefix.ts'
 import { resolvePath } from '../../../utils/path.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
@@ -40,7 +39,6 @@ import {
   SPLIT_HEX_DIGITS,
   UINTMAX,
 } from '../constants.ts'
-import { mountRoot } from '../utils/links.ts'
 
 const ENC = new TextEncoder()
 // The three -n modes: byte chunks, line-preserving chunks, round robin.
@@ -357,7 +355,6 @@ export async function splitGeneric(
   const prefixVirtual =
     prefixOperand !== undefined ? prefixVirtualOf(prefixOperand) : resolvePath('x', ctx.cwd.virtual)
   const typedPrefix = prefixOperand?.rawPath ?? 'x'
-  const mountPrefix = mountRoot(ctx)
   const linesValue = fl.asStr('lines')
   const bytesValue = fl.asStr('bytes')
   const numberValue = fl.asStr('number')
@@ -410,8 +407,7 @@ export async function splitGeneric(
 
   let fileIdx = 0
   const emit = async (name: string, data: ByteSource): Promise<void> => {
-    const virtual = prefixVirtual + name
-    const spec = PathSpec.fromStrPath(virtual, mountKey(virtual, mountPrefix))
+    const spec = PathSpec.fromStrPath(prefixVirtual + name)
     try {
       await write(spec, data)
     } catch (err) {

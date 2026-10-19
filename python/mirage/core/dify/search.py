@@ -11,7 +11,7 @@ from mirage.core.slug_tree.search import (
     target_entries,
     validate_query,
 )
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.score import format_score
 from mirage.vfs.search import (
@@ -20,7 +20,6 @@ from mirage.vfs.search import (
     text_option,
     validate_options,
 )
-from mirage.vfs.types import SearchQuery
 
 logger = logging.getLogger(__name__)
 

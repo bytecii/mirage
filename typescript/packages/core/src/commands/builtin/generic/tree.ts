@@ -15,17 +15,16 @@
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { LINK_TARGET_KEY, FileType, PathSpec, type FileStat } from '../../../types.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import { enoent, isMissError, isWalkError } from '../../../errors/fs.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
 import type { MountView } from '../../../view/types.ts'
 import { fnmatch } from '../../../utils/fnmatch.ts'
 import { formatRecords } from '../utils/output.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
-import { linksOf, mountsOf, mountRoot } from '../utils/links.ts'
+import { linksOf, mountsOf } from '../utils/links.ts'
 import { vfsReaddirPath, vfsStatPath } from '../utils/paths.ts'
 import { cInt, strtoul } from '../utils/strtol.ts'
 
@@ -169,7 +168,7 @@ async function walkTree(
       virtual: childPath,
       directory: childPath,
       resolved: false,
-      vfsPath: mountKey(childPath, mountPrefixOf(path.virtual, path.vfsPath)),
+      vfsPath: stripSlash(childPath),
     })
     const crossing = nested.includes(childPath) && treeOpts.crossReaddir !== null
     let isDir: boolean
@@ -291,7 +290,7 @@ export async function treeGeneric(
             virtual: ctx.cwd.virtual,
             directory: ctx.cwd.virtual,
             resolved: false,
-            vfsPath: mountKey(ctx.cwd.virtual, mountRoot(ctx)),
+            vfsPath: ctx.cwd.vfsPath,
           }),
         ]
   const readdirPath = vfsReaddirPath(ctx.vfs)

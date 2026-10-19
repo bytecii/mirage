@@ -117,40 +117,28 @@ async def materialize(stream: ByteSource | None) -> bytes:
 
 
 @dataclass(frozen=True, slots=True)
-class SizedRun:
-    """One ``du`` operand as measured, before its rows are rendered.
+class PathRecord:
+    """One path a command reports, before its output is rendered.
 
-    du derives every row from the files it counted, so a line spanning
-    mounts renders each mount's own measurement as one tree, the way
-    find's actions run over every mount's ``matched_runs``.
-
-    Args:
-        leaves (tuple[tuple[str, int], ...]): every file counted, as
-            (virtual path, bytes).
-        directories (tuple[str, ...]): directories the walk met, which
-            keep a row though no counted file lies under them.
-    """
-
-    leaves: tuple[tuple[str, int], ...] = ()
-    directories: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class CountedRun:
-    """One ``wc`` operand as counted, before its row is rendered.
-
-    A line spanning mounts lays every mount's own counts out as one
-    report, with one column width and one total, the way du renders
-    every mount's ``sized_runs`` as one tree.
+    A line spanning mounts renders every mount's records as one output:
+    find's actions run over every match, du's rows derive from every
+    file counted, wc lays every row out with one width and one total.
 
     Args:
-        values (tuple[int, ...]): the counts the row shows, in GNU's
+        path (PathSpec): the path the record names.
+        run (int): the start point or operand it belongs to, in operand
+            order, so a nested or repeated start point stays its own
+            traversal (GNU walks each to completion before the next).
+        size (int | None): du's bytes for a file it counted; None for
+            a directory its walk met, the operand's own included.
+        values (tuple[int, ...]): wc's counts for the row, in GNU's
             column order.
-        label (str | None): the name the row prints, None for none.
     """
 
+    path: PathSpec
+    run: int = 0
+    size: int | None = None
     values: tuple[int, ...] = ()
-    label: str | None = None
 
 
 @dataclass
@@ -223,18 +211,12 @@ class IOResult:
     before treating the status as final.
 
     Args:
-        matched_runs (list[list[PathSpec]] | None): Structured selection
-            before display rendering, for commands whose matches feed
-            later actions: one list of rows per start point, in operand
-            order, so a nested or repeated start point stays its own
-            traversal (GNU walks each to completion before the next).
-            None means the command supplied no structured selection.
-        sized_runs (list[SizedRun] | None): ``du``'s measurement before
-            rendering, one run per operand it could read, in operand
-            order. None means the command supplied none.
-        counted_runs (list[CountedRun] | None): ``wc``'s counts before
-            rendering, one run per row it prints, in operand order and
-            without the total. None means the command supplied none.
+        records (list[PathRecord] | None): what the command found
+            before it is rendered, for commands whose output a later
+            step renders again (find's actions, a line spanning mounts):
+            find's matches, du's files and directories, wc's rows
+            without the total, in operand order. None means the command
+            supplied none.
         stdout (ByteSource | None): Standard output stream.
         stderr (ByteSource | None): Standard error stream.
         exit_code (int): Process exit code.
@@ -263,16 +245,12 @@ class IOResult:
         exit_code: int = 0,
         producer: Producer | None = None,
         refusal: Refusal | None = None,
-        matched_runs: list[list[PathSpec]] | None = None,
-        sized_runs: list[SizedRun] | None = None,
-        counted_runs: list[CountedRun] | None = None,
+        records: list[PathRecord] | None = None,
         closed_stdout: ClosedPipe | None = None,
     ) -> None:
         self.stdout = stdout
         self.closed_stdout = closed_stdout
-        self.matched_runs = matched_runs
-        self.sized_runs = sized_runs
-        self.counted_runs = counted_runs
+        self.records = records
         self.stderr = stderr
         self._exit_code = exit_code
         self.output: OutputState | None = None
@@ -324,9 +302,7 @@ class IOResult:
         # (grep's, at drain time) is still visible.
         result = IOResult(
             stdout=other.stdout,
-            matched_runs=other.matched_runs,
-            sized_runs=other.sized_runs,
-            counted_runs=other.counted_runs,
+            records=other.records,
             stderr=merged_stderr,
             producer=other.producer,
             refusal=(

@@ -54,7 +54,7 @@ def test_reads_are_never_served_from_the_file_cache():
 def test_the_file_surface_is_read_only():
     names = {c.name for c in mount_commands(_vfs())}
     assert {"cat", "ls", "find", "grep", "head", "jq", "wc"} <= names
-    assert served(_vfs()) == {"glob", "read", "readdir", "stat"}
+    assert served(_vfs()) == {"read", "readdir", "stat"}
 
 
 def test_state_redacts_the_token():

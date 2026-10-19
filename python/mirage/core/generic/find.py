@@ -11,7 +11,6 @@ from mirage.errors.classify import is_entry_error
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.dates import iso_timestamp
 from mirage.utils.hidden import path_visible
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.stat_view import DIR_SIZE
 from mirage.view.namespace_view import followed_stat
 from mirage.view.types import LinkView
@@ -26,7 +25,6 @@ def modified_ts(modified: str | None) -> float | None:
 async def _stat_entry(
     stat: Callable[[PathSpec], Awaitable[FileStat]],
     path: str,
-    prefix: str,
     unstatted: dict[str, Exception] | None = None,
 ) -> FileStat | None:
     if unstatted is not None and path in unstatted:
@@ -35,7 +33,7 @@ async def _stat_entry(
         virtual=path,
         directory=path,
         resolved=False,
-        vfs_path=mount_key(path, prefix),
+        vfs_path=path.strip("/"),
     )
     try:
         row = await stat(spec)
@@ -65,7 +63,6 @@ async def _is_empty_entry(
     stat: Callable[[PathSpec], Awaitable[FileStat]],
     path: str,
     is_dir: bool,
-    prefix: str,
     unstatted: dict[str, Exception] | None = None,
     unreadable: list[str] | None = None,
 ) -> bool:
@@ -74,7 +71,7 @@ async def _is_empty_entry(
             virtual=path,
             directory=path,
             resolved=False,
-            vfs_path=mount_key(path, prefix),
+            vfs_path=path.strip("/"),
         )
         try:
             return len(await readdir(spec)) == 0
@@ -86,7 +83,7 @@ async def _is_empty_entry(
             if path not in unreadable:
                 unreadable.append(path)
             return False
-    st = await _stat_entry(stat, path, prefix, unstatted)
+    st = await _stat_entry(stat, path, unstatted)
     return st is not None and st.type is FileType.FILE and st.size == 0
 
 
@@ -120,7 +117,6 @@ async def _walk_collect(
             raise
         unreadable.append(spec.virtual)
         return
-    prefix = mount_prefix_of(spec.virtual, spec.vfs_path)
     for child in children:
         # Classification is stat's job (an index lookup right after the
         # readdir that populated it). The one in-band proof is a trailing
@@ -133,7 +129,7 @@ async def _walk_collect(
             kind = "d"
         else:
             trimmed = child
-            st = await _stat_entry(stat, trimmed, prefix, unstatted)
+            st = await _stat_entry(stat, trimmed, unstatted)
             is_dir = st is not None and st.type == FileType.DIRECTORY
             kind = printf_kind(st)
         below = chain
@@ -155,7 +151,7 @@ async def _walk_collect(
             virtual=trimmed,
             directory=trimmed,
             resolved=False,
-            vfs_path=mount_key(trimmed, prefix),
+            vfs_path=trimmed.strip("/"),
         )
         await _walk_collect(
             readdir,
@@ -223,14 +219,13 @@ async def walk_find(
     """
     stat = partial(followed_stat, stat, follow)
     collected: list[tuple[str, str]] = []
-    prefix = mount_prefix_of(search_path.virtual, search_path.vfs_path)
-    search_key = search_path.mount_path.strip("/")
+    search_key = search_path.virtual.strip("/")
     root_path = (
         search_path.virtual.rstrip("/") if search_path.virtual != "/" else "/"
     )
     prune_tree = find_eval.bind_tree(
         find_eval.args_to_tree(args),
-        prefix,
+        "",
         search_path.virtual,
         search_path.raw_path,
     )
@@ -239,18 +234,17 @@ async def walk_find(
         if enters is not None and not enters(spec.virtual):
             return []
         if find_eval.tree_has_prune(prune_tree):
-            key = spec.mount_path.rstrip("/") or "/"
+            key = spec.virtual.rstrip("/") or "/"
             depth = len(spec.virtual.rstrip("/").split("/")) - len(
                 root_path.rstrip("/").split("/")
             )
-            info = await _stat_entry(stat, spec.virtual, prefix, unstatted)
+            info = await _stat_entry(stat, spec.virtual, unstatted)
             empty = (
                 await _is_empty_entry(
                     readdir,
                     stat,
                     spec.virtual,
                     True,
-                    prefix,
                     unstatted,
                     unreadable,
                 )
@@ -274,9 +268,7 @@ async def walk_find(
         return await readdir(spec)
 
     root_stat = (
-        root
-        if root is not None
-        else await _stat_entry(stat, root_path, prefix)
+        root if root is not None else await _stat_entry(stat, root_path)
     )
     if root_stat is not None:
         collected.append((root_path, printf_kind(root_stat)))
@@ -301,7 +293,7 @@ async def walk_find(
         )
     tree = find_eval.bind_tree(
         find_eval.args_to_tree(args),
-        prefix,
+        "",
         search_path.virtual,
         search_path.raw_path,
     )
@@ -316,7 +308,7 @@ async def walk_find(
             continue
         is_dir = kind == "d"
         entry_name = p.rsplit("/", 1)[-1]
-        key = p[len(prefix) :] if prefix and p.startswith(prefix) else p
+        key = p
         rel = key.strip("/")
         if search_key:
             depth = (
@@ -333,7 +325,6 @@ async def walk_find(
                 stat,
                 p,
                 is_dir,
-                prefix,
                 unstatted,
                 unreadable,
             )
@@ -343,7 +334,7 @@ async def walk_find(
         # the tree kept.
         st = None
         if need_mtime:
-            st = await _stat_entry(stat, p, prefix, unstatted)
+            st = await _stat_entry(stat, p, unstatted)
             if st is None:
                 continue
             learned[key] = modified_ts(st.modified)
@@ -358,7 +349,7 @@ async def walk_find(
         if not find_eval.keep(entry, tree, args.mindepth):
             continue
         if need_size and not is_dir and st is None:
-            st = await _stat_entry(stat, p, prefix, unstatted)
+            st = await _stat_entry(stat, p, unstatted)
             if st is None:
                 continue
         if need_size:
@@ -379,4 +370,4 @@ async def walk_find(
                 continue
         results.append(p)
     find_eval.settle_prunes(tree, learned)
-    return sorted(find_eval.drop_pruned(results, tree, prefix))
+    return sorted(find_eval.drop_pruned(results, tree, ""))

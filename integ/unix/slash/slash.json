@@ -1194,6 +1194,40 @@
       }
     },
     {
+      "id": "slash_writes_behind_a_dot_walk_it_first",
+      "seq": 94111,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/slashw/d && printf 'x\n' > /data/slashw/d/f && printf 'hi\n' > /data/slashw/a.txt; for n in missing/ missing/./ a.txt/ a.txt/./ d/ d/./; do p=/data/slashw/$n; printf x | tee $p 2>&1 >/dev/null; truncate -s 0 $p 2>&1; { printf x > $p; } 2>&1; done; cat /data/slashw/a.txt; ls /data/slashw",
+      "expect": {
+        "exit": 0,
+        "stdout": "tee: /data/slashw/missing/: Is a directory\ntruncate: cannot open '/data/slashw/missing/' for writing: Is a directory\n/data/slashw/missing/: Is a directory\ntee: /data/slashw/missing/./: No such file or directory\ntruncate: cannot open '/data/slashw/missing/./' for writing: No such file or directory\n/data/slashw/missing/./: No such file or directory\ntee: /data/slashw/a.txt/: Is a directory\ntruncate: cannot open '/data/slashw/a.txt/' for writing: Is a directory\n/data/slashw/a.txt/: Is a directory\ntee: /data/slashw/a.txt/./: Not a directory\ntruncate: cannot open '/data/slashw/a.txt/./' for writing: Not a directory\n/data/slashw/a.txt/./: Not a directory\ntee: /data/slashw/d/: Is a directory\ntruncate: cannot open '/data/slashw/d/' for writing: Is a directory\n/data/slashw/d/: Is a directory\ntee: /data/slashw/d/./: Is a directory\ntruncate: cannot open '/data/slashw/d/./' for writing: Is a directory\n/data/slashw/d/./: Is a directory\nhi\na.txt\nd\n",
+        "stderr": ""
+      }
+    },
+    {
       "id": "slash_reg_cleanup",
       "seq": 94110,
       "targets": [

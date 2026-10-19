@@ -21,7 +21,7 @@ import { readdir as ramReaddir } from '../core/ram/readdir.ts'
 import { stat as ramStat } from '../core/ram/stat.ts'
 import { write } from '../core/ram/write.ts'
 import { eacces } from '../errors/fs.ts'
-import { type FileStat, MountMode, PathSpec } from '../types.ts'
+import { type FileStat, MountMode, PathSpec, type SearchQuery } from '../types.ts'
 import { sliceWindow } from '../utils/ranges.ts'
 import {
   getTestParser,
@@ -32,7 +32,7 @@ import { Workspace } from '../workspace/workspace/workspace.ts'
 import { BaseVFS } from './base.ts'
 import { RAMVFS } from './ram/ram.ts'
 import { RAMStore } from './ram/store.ts'
-import type { Handed, SearchQuery } from './types.ts'
+import type { Handed } from './types.ts'
 
 const ENC = new TextEncoder()
 const PATH = new PathSpec({

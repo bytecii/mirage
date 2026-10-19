@@ -27,7 +27,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, cast
 
-from mirage.cache.context import active_cache_manager
 from mirage.commands.builtin.generic_bind.dispatch import caller_stream
 from mirage.commands.builtin.utils.links import (
     crosses_mounts,
@@ -37,10 +36,10 @@ from mirage.commands.builtin.utils.links import (
     mounts_of,
     owed_names,
 )
+from mirage.commands.builtin.utils.paths import is_implicit_dir
 from mirage.commands.config import Context
 from mirage.context import session_visibility
 from mirage.context.session_context import current_caller
-from mirage.errors.constants import MISS_ERRORS
 from mirage.errors.fs import eacces, eisdir, enoent
 from mirage.errors.types import DotWalkError
 from mirage.io.cooperative import chunks
@@ -63,7 +62,6 @@ from mirage.utils.glob_walk import (
     make_resolve_glob,
 )
 from mirage.utils.hidden import move_reveals
-from mirage.utils.path import norm, parent
 from mirage.view.types import SessionAccess
 
 logger = logging.getLogger(__name__)
@@ -75,7 +73,10 @@ class CommandFiles:
     through the session's files (``ctx.vfs``).
 
     The dispatcher checks hides, the command's path rule, the mount's
-    mode and policy, serves a warm copy and fills a cold one, settles a
+    mode and policy, refuses a read of a directory and a write to a
+    slash-terminated name, serves a warm copy and fills a cold one, fills
+    a stat's unknown size from the read cache, gives way to the read for
+    a file the read cache holds where a call stands in for one, settles a
     write's caches and receipt under its name's hold, and declines a
     one-call walk (a subtree read, search, a tree copy or removal) whose
     subtree the caller's view restricts, so a command's call answers
@@ -91,6 +92,9 @@ class CommandFiles:
         read_range (ReadBytesFn): ``read_range(path, offset, size)``.
         read_stream (ReadStreamFn): the stored bytes, opened at the
             first pull.
+        is_warm (Callable): whether the read cache holds a copy a read
+            would be served from; it fetches neither the copy nor
+            anything from the backend.
         write (Callable): ``write(path, data)``.
         append (Callable): ``append(path, data)``.
         pwrite (Callable): ``pwrite(path, data, offset)``.
@@ -137,6 +141,7 @@ class CommandFiles:
     read_bytes: ReadBytesFn
     read_range: ReadBytesFn
     read_stream: ReadStreamFn
+    is_warm: Callable[[PathSpec], Awaitable[bool]]
     write: Callable[[PathSpec, ByteSource], Awaitable[None]]
     append: Callable[[PathSpec, ByteSource], Awaitable[None]]
     pwrite: Callable[[PathSpec, bytes, int], Awaitable[None]]
@@ -173,15 +178,12 @@ class Reading:
     Args:
         split (bool): an operand's read is cut into pieces; a
             pass-through builder (cat, head) keeps the producer's chunks.
-        cached_sizes (bool): a stat's unknown size is filled from the
-            read cache; a builder that only writes takes the backend's.
         stream (Callable | None): what streams an operand in place of the
             dispatched read, given the invocation's context and the
             path; None, or an answer of None, keeps the dispatched read.
     """
 
     split: bool
-    cached_sizes: bool
     stream: (
         Callable[[Context, PathSpec], AsyncIterator[bytes] | None] | None
     ) = None
@@ -195,8 +197,7 @@ _READINGS: ContextVar[Reading | None] = ContextVar(
 @contextmanager
 def with_reading(ctx: Context, reading: Reading) -> Iterator[Context]:
     """``ctx`` as the factory hands it to a builder, its files read as
-    ``reading`` says and under the command tier's guards, for the run
-    inside the block.
+    ``reading`` says, for the run inside the block.
 
     Args:
         ctx (Context): the invocation's context.
@@ -388,125 +389,6 @@ async def _dispatched_exists(dispatch: DispatchFn, path: PathSpec) -> bool:
     return True
 
 
-def _cached_stat(stat: StatFn) -> StatFn:
-    """The stat a command lists by, with the size the backend does not
-    know read out of the read cache where it holds the file.
-
-    Metadata commands (ls, stat, du) read no content, and for a
-    render-dependent backend the cached rendering is the only place that
-    size exists. The length alone, ungated: this runs only where the
-    backend named no size, the API mounts, so revalidating here would
-    turn a stat into a backend stat.
-
-    Args:
-        stat (StatFn): the command's stat.
-    """
-
-    async def cached(path: PathSpec) -> FileStat:
-        result: FileStat = await stat(path)
-        if result.type is not FileType.FILE or result.size is not None:
-            return result
-        manager = active_cache_manager()
-        if manager is None:
-            return result
-        size = await manager.cached_size(path)
-        if size is None:
-            return result
-        return result.model_copy(update={"size": size})
-
-    return cached
-
-
-def _slash_checked(
-    write: Callable[..., Awaitable[None]],
-) -> Callable[..., Awaitable[None]]:
-    """``write``, refused for a slash-terminated name.
-
-    open(2) with O_CREAT refuses a slash-terminated name outright, before
-    looking anything up: ``x/`` can only ever be a directory, so there is
-    nothing to create and nothing to truncate. GNU tee and truncate both
-    answer ``missing/`` with "Is a directory" and touch nothing, and a
-    plain file behind the slash gets the same answer. Deliberate
-    divergence: under a parent that is itself absent GNU reports the
-    parent first (ENOENT); the spelling is refused here without a round
-    trip, so that corner reads EISDIR too. The read side is the walk
-    guard's: a slashed operand carries a ``dotted`` spelling, so its
-    refusal proves the name a directory there.
-
-    Args:
-        write (Callable[..., Awaitable[None]]): the dispatched write.
-    """
-
-    async def checked(path: PathSpec, /, *args: Any, **kwargs: Any) -> None:
-        if path.raw_path.endswith("/"):
-            raise eisdir(path)
-        await write(path, *args, **kwargs)
-
-    return checked
-
-
-def _uncached(
-    fn: Callable[..., Awaitable[Any]],
-) -> Callable[..., Awaitable[Any]]:
-    """``fn``, answering None for a file the read cache holds.
-
-    A call that stands in for a read (``first_lines``, ``last_lines``,
-    ``line_count``, ``checksum``) leaves a cached file to be read from
-    there, so a warm run sends nothing and prints what the cached copy
-    holds, as the read it replaces would.
-
-    Args:
-        fn (Callable[..., Awaitable[Any]]): the dispatched call.
-    """
-
-    async def uncached(path: PathSpec, /, *args: Any) -> Any:
-        manager = active_cache_manager()
-        if manager is not None and await manager.is_cached(path):
-            return None
-        return await fn(path, *args)
-
-    return uncached
-
-
-async def _is_implicit_dir(readdir: ReaddirFn, path: PathSpec) -> bool:
-    """Whether a path that failed stat with ENOENT is an implicit directory.
-
-    Keyed backends (RAM/Redis/S3) have no directory entries: stat of a
-    prefix that only exists through deeper keys raises ENOENT. The operand's
-    own readdir cannot serve as the probe: synthetic hierarchies fabricate
-    children for any name (postgres answers ``tables/views`` for a missing
-    schema) and database backends raise driver errors for missing tables.
-    The parent listing is authoritative instead: the operand is an implicit
-    directory only if its parent's readdir lists it. When the operand is
-    the mount root there is no parent to list, so its own readdir decides
-    (root listings are real in every backend). A listing that misses is a
-    negative probe (the original ENOENT stands); any other failure
-    propagates.
-
-    Args:
-        readdir (ReaddirFn): the command's listing.
-        path (PathSpec): The operand whose stat raised ENOENT.
-    """
-    target = norm(path.virtual)
-    key = path.vfs_path.strip("/")
-    if not key:
-        try:
-            entries = await readdir(path)
-        except MISS_ERRORS:
-            return False
-        return bool(entries)
-    parent_key = key.rsplit("/", 1)[0] if "/" in key else ""
-    parent_virtual = parent(target)
-    parent_path = PathSpec(
-        virtual=parent_virtual, directory=parent_virtual, vfs_path=parent_key
-    )
-    try:
-        entries = await readdir(parent_path)
-    except MISS_ERRORS:
-        return False
-    return any(norm(entry) == target for entry in entries)
-
-
 def _is_namespace_dir(ctx: Context, path: PathSpec) -> bool:
     """Whether a path no backend knows is a directory the namespace owns.
 
@@ -555,7 +437,7 @@ async def _stat_refusing_dirs(
     except DotWalkError:
         raise
     except FileNotFoundError:
-        if await _is_implicit_dir(files.readdir, path):
+        if await is_implicit_dir(files.readdir, path):
             raise eisdir(path) from None
         if _is_namespace_dir(ctx, path):
             raise eisdir(path) from None
@@ -613,10 +495,9 @@ def file_size(
     """
 
     async def size(path: PathSpec) -> int | None:
-        manager = active_cache_manager()
-        if manager is not None and await manager.is_cached(path):
-            return None
         if revision_for(path.virtual) is not None:
+            return None
+        if await files.is_warm(path):
             return None
         st = await _stat_refusing_dirs(files, ctx, path)
         if st.type != FileType.FILE or st.mode is not None:
@@ -629,114 +510,6 @@ def file_size(
         return st.size
 
     return size
-
-
-async def _read_hit_a_dir(
-    stat: StatFn,
-    readdir: ReaddirFn,
-    path: PathSpec,
-    exc: BaseException | None,
-) -> bool:
-    """Whether a failed or empty read was a read of a directory.
-
-    Asked after a failure or EOF without bytes: some drivers report an
-    empty stream for directories. Nonempty reads need no extra probe.
-    One that knows says so (gdrive, box, dropbox and disk raise
-    IsADirectoryError), a keyed store answers ENOENT because a directory
-    there is a set of keys rather than an object, and sftp answers with
-    an opaque non-OSError.
-
-    Three ways the answer can be yes, in probe-cost order. The errno
-    itself costs nothing. The stat is one call, and a stat that ANSWERS
-    ends the cascade either way: a file is a file, and the later probe
-    only makes sense for a path stat could not see. Reaching past a
-    successful stat read a rule-refused file as a directory, because its
-    parent's listing names it. The parent listing is one call and is the
-    only thing that can tell a missing key from a prefix that exists only
-    through deeper keys.
-
-    A no leaves the original error untouched, so nothing is swallowed:
-    the caller re-raises what the backend said. Both probes are broad for
-    that same reason: a probe that fails is a negative probe, never an
-    error to surface. Surfacing one would replace the read's error with
-    one from a call the user never made, and it is the read that failed.
-    ``_is_implicit_dir`` narrows to MISS_ERRORS because for its other
-    caller the stat IS the operation; here it is a probe, so the wider
-    catch belongs on this side of the call, and each failure it absorbs
-    is logged.
-
-    Args:
-        stat (StatFn): the command's stat.
-        readdir (ReaddirFn): the command's listing.
-        path (PathSpec): the operand whose read failed.
-        exc (BaseException | None): the failure, or None for an empty read.
-    """
-    if isinstance(exc, IsADirectoryError):
-        return True
-    if isinstance(exc, DotWalkError):
-        # The path did not resolve at all, which no reading turns into a
-        # directory; its parent may well list the name it simplifies to.
-        return False
-    try:
-        st: FileStat | None = await stat(path)
-    except Exception as probe:
-        logger.debug("read probe: stat %s failed: %s", path.virtual, probe)
-        st = None
-    if st is not None:
-        return st.type == FileType.DIRECTORY
-    try:
-        if await _is_implicit_dir(readdir, path):
-            return True
-    except Exception as probe:
-        logger.debug("read probe: listing %s failed: %s", path.virtual, probe)
-    return False
-
-
-def _bytes_refusing_dirs(
-    read: ReadBytesFn, stat: StatFn, readdir: ReaddirFn
-) -> ReadBytesFn:
-    """A whole or ranged read that refuses a directory with GNU's EISDIR,
-    refined after a failure or an empty read.
-
-    Args:
-        read (ReadBytesFn): the dispatched read.
-        stat (StatFn): the command's stat.
-        readdir (ReaddirFn): the command's listing.
-    """
-
-    async def refusing(path: PathSpec, /, *args: Any, **kwargs: Any) -> bytes:
-        try:
-            data: bytes = await read(path, *args, **kwargs)
-        except Exception as exc:
-            if await _read_hit_a_dir(stat, readdir, path, exc):
-                raise eisdir(path) from None
-            raise
-        if not data and await _read_hit_a_dir(stat, readdir, path, None):
-            raise eisdir(path)
-        return data
-
-    return refusing
-
-
-async def _drain_refusing_dirs(
-    stat: StatFn,
-    readdir: ReaddirFn,
-    path: PathSpec,
-    source: AsyncIterator[bytes],
-) -> AsyncIterator[bytes]:
-    empty = True
-    try:
-        async for chunk in source:
-            empty = empty and not chunk
-            yield chunk
-    except Exception as exc:
-        if await _read_hit_a_dir(stat, readdir, path, exc):
-            raise eisdir(path) from None
-        raise
-    finally:
-        await close_quietly(source)
-    if empty and await _read_hit_a_dir(stat, readdir, path, None):
-        raise eisdir(path)
 
 
 async def _stream_refusing_dirs(
@@ -814,16 +587,15 @@ def command_files(
 ) -> CommandFiles:
     """The files of the command ``ctx`` runs, its operands ``paths``.
 
-    Every call goes to the dispatcher through ``ctx.vfs``. A command on
-    one mount reads the stored bytes (``filetype=None``), its whole reads
+    Every call goes to the dispatcher through ``ctx.vfs``, which refuses
+    a read of a directory and a write to a slash-terminated name and
+    fills a stat's unknown size from the read cache. A command on one
+    mount reads the stored bytes (``filetype=None``), its whole reads
     warmed ahead of themselves (``read_ahead``), and, as the factory
-    hands it on (``with_reading``), under the command tier's guards: a
-    read of a directory refused with EISDIR, a write to a
-    slash-terminated name refused, a stat's unknown size filled from the
-    read cache, each operand's read cut into pieces. A run across mounts
-    (``crosses_mounts``) reads each operand as the command that asked for
-    it, through the path's renderer, after a stat that refuses a
-    directory, and lists with no boundary to stop at.
+    hands it on (``with_reading``), each operand's read cut into pieces.
+    A run across mounts (``crosses_mounts``) reads each operand as the
+    command that asked for it, through the path's renderer, after a stat
+    that refuses a directory, and lists with no boundary to stop at.
 
     Args:
         ctx (Context): the invocation's context.
@@ -843,17 +615,13 @@ def command_files(
     # What the mount can do is the serving mount's to say: an option can
     # route the command to it with no operand there (`shuf -i 1-1
     # -o /ram/out` typed on another mount).
-    anchor = mount_root(ctx) + "/"
+    home = mount_root(ctx)
+    anchor = home + "/"
     mounts = mounts_of(ctx)
     ahead, noted = read_ahead(dispatch, paths)
 
     async def call(name: str, path: PathSpec, /, **kwargs: Any) -> Any:
         return await dispatched_call(dispatch, name, path, **kwargs)
-
-    def writing(
-        fn: Callable[..., Awaitable[None]],
-    ) -> Callable[..., Awaitable[None]]:
-        return fn if reading is None else _slash_checked(fn)
 
     raw_stat: StatFn
     raw_readdir: ReaddirFn
@@ -922,34 +690,21 @@ def command_files(
     ) -> bytes:
         return await _dispatched_bytes(dispatch, path, offset, size)
 
-    listed = (
-        _cached_stat(raw_stat)
-        if reading is not None and reading.cached_sizes
-        else raw_stat
-    )
-    read_bytes = (
-        raw_bytes
-        if reading is None
-        else _bytes_refusing_dirs(raw_bytes, listed, raw_readdir)
-    )
-    read_range = (
-        raw_range
-        if reading is None
-        else _bytes_refusing_dirs(raw_range, listed, raw_readdir)
-    )
+    async def is_warm(path: PathSpec) -> bool:
+        # A run across mounts runs in no mount's cache scope: it takes an
+        # operand's size from its stat, warm or not.
+        if crossing:
+            return False
+        held, _ = await dispatch("read", path, filetype=None, warm=True)
+        return held is True
+
     read_stream: ReadStreamFn = raw_stream
-    if reading is not None:
-        split = reading.split
+    if reading is not None and reading.split:
 
-        def guarded_stream(path: PathSpec) -> AsyncIterator[bytes]:
-            # The wrapped stream is asked for HERE, not inside the drain:
-            # it is the read the drain refines.
-            drained = _drain_refusing_dirs(
-                listed, raw_readdir, path, raw_stream(path)
-            )
-            return chunks(drained) if split else drained
+        def split_stream(path: PathSpec) -> AsyncIterator[bytes]:
+            return chunks(raw_stream(path))
 
-        read_stream = guarded_stream
+        read_stream = split_stream
     links = None if crossing else links_of(ctx)
     access = None if crossing or ctx.session is None else ctx.session.access()
 
@@ -1068,15 +823,16 @@ def command_files(
         else mounts.max_glob_matches(anchor)
     )
     return CommandFiles(
-        stat=listed,
+        stat=raw_stat,
         exists=exists,
         readdir=raw_readdir,
-        read_bytes=read_bytes,
-        read_range=read_range,
+        read_bytes=raw_bytes,
+        read_range=raw_range,
         read_stream=read_stream,
-        write=writing(write),
-        append=writing(append),
-        pwrite=writing(pwrite),
+        is_warm=is_warm,
+        write=write,
+        append=append,
+        pwrite=pwrite,
         create=create,
         mkdir=mkdir,
         unlink=unlink,
@@ -1085,12 +841,12 @@ def command_files(
         rename=rename,
         copy=copy,
         dir_copy=dir_copy,
-        truncate=writing(truncate),
+        truncate=truncate,
         set_attrs=set_attrs,
-        first_lines=_uncached(first_lines),
-        last_lines=_uncached(last_lines),
-        line_count=_uncached(line_count),
-        checksum=_uncached(checksum),
+        first_lines=first_lines,
+        last_lines=last_lines,
+        line_count=line_count,
+        checksum=checksum,
         follow=follow,
         read_tree=read_tree,
         files_containing=files_containing,
@@ -1098,7 +854,7 @@ def command_files(
         resolve_glob=make_resolve_glob(
             raw_readdir,
             cap,
-            listed,
+            raw_stat,
             links.target_stat if links is not None else None,
             access,
             follow_of(ctx),

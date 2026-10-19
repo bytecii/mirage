@@ -74,6 +74,15 @@ pub(super) struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// The syntax error input ends on inside a statement. bc has moved past
+    /// its last file by then, and blames standard input's first line.
+    pub(super) fn end_of_input(sources: usize) -> Self {
+        Self {
+            line: (sources.saturating_sub(1) as u64) << LINE_BITS | 1,
+            reason: "syntax error".to_owned(),
+        }
+    }
+
     /// The message, naming the line's source from `names` (one per file,
     /// then standard input) and its line within that source. A name is
     /// written as its bytes.
@@ -197,12 +206,26 @@ enum Task {
     End,
 }
 
+#[derive(Clone, Copy)]
 struct Statement {
     start: usize,
     end: usize,
     incomplete_line: u64,
     /// Where the `;` or the end of the line that ends it sits.
     boundary: usize,
+    /// Read only to recover from a syntax error, as bc's parser does: it
+    /// reports nothing.
+    silent: bool,
+}
+
+/// What bc has said about a line it scanned to an end that may not be the
+/// line's: the diagnostics found from `reported` on, where the line stands,
+/// whether it read `quit`, and whether it leaves a statement open.
+pub(super) struct Scan {
+    pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) end: usize,
+    pub(super) quits: bool,
+    pub(super) open: bool,
 }
 
 pub(super) struct Compiler {
@@ -225,6 +248,10 @@ pub(super) struct Compiler {
     /// illegal character as it scans, and a syntax error at the token it
     /// could not take.
     diagnostics: Vec<(usize, Diagnostic)>,
+    /// How many tokens stood before each `;`.
+    separators: Vec<usize>,
+    /// The token bc's parser went on from after the last syntax error.
+    resumed: Option<usize>,
 }
 
 impl Compiler {
@@ -245,6 +272,8 @@ impl Compiler {
             tasks: Vec::new(),
             instructions: Vec::new(),
             diagnostics: Vec::new(),
+            separators: Vec::new(),
+            resumed: None,
         }
     }
 
@@ -302,7 +331,11 @@ impl Compiler {
                         end: self.tokens.len(),
                         incomplete_line: line,
                         boundary: at,
+                        silent: false,
                     });
+                }
+                if !final_line {
+                    self.separators.push(self.tokens.len());
                 }
                 self.token_start = self.tokens.len();
                 self.lexed = final_line;
@@ -485,9 +518,10 @@ impl Compiler {
     }
 
     fn fail(&mut self, at: Option<(u64, bool)>) {
-        let incomplete = self.pos >= self.end();
+        let statement = self.statements[self.statement];
+        let incomplete = self.pos >= statement.end;
         let mut line = if incomplete {
-            self.statements[self.statement].incomplete_line
+            statement.incomplete_line
         } else {
             self.line()
         };
@@ -497,17 +531,39 @@ impl Compiler {
             }
         }
         let found = if incomplete {
-            self.statements[self.statement].boundary
+            statement.boundary
         } else {
             self.tokens[self.pos].offset
         };
-        self.diagnostics.push((
-            found,
-            Diagnostic {
-                line,
-                reason: "syntax error".to_owned(),
-            },
-        ));
+        if !statement.silent {
+            self.diagnostics.push((
+                found,
+                Diagnostic {
+                    line,
+                    reason: "syntax error".to_owned(),
+                },
+            ));
+        }
+        // At a token, `;` included, bc's parser goes on from the token as a
+        // new statement, and drops it if that fails before taking anything.
+        if found < self.source.chars.len() {
+            let resumed = if statement.silent && self.pos == statement.start {
+                self.pos + 1
+            } else {
+                self.pos.min(statement.end)
+            };
+            self.resumed = Some(resumed);
+            if resumed < statement.end {
+                self.statements.insert(
+                    self.statement + 1,
+                    Statement {
+                        start: resumed,
+                        silent: true,
+                        ..statement
+                    },
+                );
+            }
+        }
         self.tasks.clear();
         self.statement += 1;
     }
@@ -752,7 +808,10 @@ impl Compiler {
         false
     }
 
-    pub(super) fn finish(mut self) -> CompileResult {
+    /// The line compiled. A diagnostic found before `reported` was written
+    /// when its file ended (`scanned`), so it is left out, though it still
+    /// refuses the line.
+    pub(super) fn finish(mut self, reported: usize) -> CompileResult {
         if self.diagnostics.is_empty() {
             CompileResult::Program(Program {
                 instructions: self.instructions,
@@ -764,10 +823,41 @@ impl Compiler {
                 diagnostics: self
                     .diagnostics
                     .into_iter()
+                    .filter(|(found, _)| *found >= reported)
                     .map(|(_, diagnostic)| diagnostic)
                     .collect(),
                 quits: self.quits,
             }
+        }
+    }
+
+    /// The line scanned to the end of a file, which the next input may
+    /// still continue, or to the end of input. A statement the end leaves
+    /// open is no error here, and nothing runs.
+    pub(super) fn scanned(mut self, reported: usize) -> Scan {
+        let end = self.source.chars.len();
+        self.diagnostics.sort_by_key(|(found, _)| *found);
+        // After a syntax error bc's parser says nothing more until it has
+        // taken three tokens.
+        let open = !self.quits
+            && self.resumed.map_or(
+                !self.tokens.is_empty() || !self.separators.is_empty(),
+                |resumed| {
+                    let taken = self.tokens.len().saturating_sub(resumed)
+                        + self.separators.iter().filter(|at| **at > resumed).count();
+                    taken >= 3
+                },
+            );
+        Scan {
+            diagnostics: self
+                .diagnostics
+                .into_iter()
+                .filter(|(found, _)| (reported..end).contains(found))
+                .map(|(_, diagnostic)| diagnostic)
+                .collect(),
+            end,
+            quits: self.quits,
+            open,
         }
     }
 }
@@ -811,7 +901,7 @@ mod tests {
         };
         let mut compiler = Compiler::new(line);
         while !compiler.advance(&mut Budget::new(3)) {}
-        compiler.finish()
+        compiler.finish(0)
     }
 
     #[test]

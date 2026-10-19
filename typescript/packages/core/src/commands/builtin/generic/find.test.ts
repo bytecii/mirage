@@ -190,7 +190,7 @@ describe('generic command find', () => {
         resolved: false,
       })
       const result = await findGeneric([root], [], optsWith(dirStat), () =>
-        Promise.resolve(['/logs/child.txt']),
+        Promise.resolve(['/mnt/logs/child.txt']),
       )
       expect(result?.[1].exitCode).toBe(0)
       // GNU lists the start point before descending, and this op reports
@@ -207,7 +207,7 @@ describe('generic command find', () => {
         resolved: false,
       })
       const result = await findGeneric([root], [], optsWith(dirStat), () =>
-        Promise.resolve(['/a.txt']),
+        Promise.resolve(['/mnt/a.txt']),
       )
       expect(DEC.decode(result?.[0] ?? undefined)).toBe('/mnt\n/mnt/a.txt\n')
     })

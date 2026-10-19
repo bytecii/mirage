@@ -198,15 +198,15 @@ describe('bc stream lifecycle', () => {
     }
   })
 
-  it('executes the final line without a newline at EOF', async () => {
+  it('runs no line that input ends without a newline, as GNU bc', async () => {
     async function* source() {
       await Promise.resolve()
       yield encoder.encode('scale=3;')
       yield encoder.encode('1/2')
     }
     const { output, io } = await invoke(source())
-    expect(decoder.decode(await materialize(output))).toBe('.500\n')
-    expect(await io.stderrStr()).toBe('')
+    expect(decoder.decode(await materialize(output))).toBe('')
+    expect(await io.stderrStr()).toBe('(standard_in) 1: syntax error\n')
   })
 
   it('preserves prior diagnostics and closes input when a read fails', async () => {

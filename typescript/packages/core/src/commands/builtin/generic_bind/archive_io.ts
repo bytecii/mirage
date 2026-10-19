@@ -17,7 +17,6 @@ import type { ChildMounts } from '../../../view/types.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
 import { FileType, type PathSpec, type StatFn } from '../../../types.ts'
 import { isEnotdir, isMissingPath } from '../../../errors/fs.ts'
-import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { readdirOp, statOp } from '../generic/crossmount/utils.ts'
 import type { DirProbe, WalkFn } from '../generic/archive/walk.ts'
@@ -32,10 +31,8 @@ function walkWith(
 ): WalkFn {
   return async (p, findType) => {
     if (findType === 'f') await beforeFullScan(dispatch, p, command)
-    const prefix = mountPrefixOf(p.virtual, p.vfsPath)
     const unreadable: string[] = []
-    const keys = await walkFind(p, { unreadable, readdir, stat }, { type: findType })
-    const paths = prefix === '' ? keys : keys.map((key) => (key === '/' ? prefix : prefix + key))
+    const paths = await walkFind(p, { unreadable, readdir, stat }, { type: findType })
     return { paths, unreadable }
   }
 }

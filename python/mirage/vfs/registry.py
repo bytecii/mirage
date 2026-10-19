@@ -21,9 +21,9 @@ from typing import Any, NamedTuple
 from pydantic import ValidationError
 
 from mirage.secrets.summary import error_summary
+from mirage.utils.loader import load_backend_class
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.errors import VFSConfigError
-from mirage.vfs.loader import load_backend_class
 
 logger = logging.getLogger(__name__)
 

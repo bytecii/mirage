@@ -18,7 +18,7 @@ from mirage.commands.builtin.generic.crossmount.relay.wc import run_wc
 from mirage.commands.config import command
 from mirage.commands.spec import SPECS
 from mirage.errors.fs import enoent
-from mirage.io.types import CountedRun, IOResult, materialize
+from mirage.io.types import IOResult, PathRecord, materialize
 from mirage.types import FileStat, FileType, MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
@@ -47,7 +47,7 @@ class Mounts:
         return b"9 9 9 rendered\n", IOResult(
             exit_code=1 if err else 0,
             stderr=err,
-            counted_runs=[CountedRun(values, paths[0].raw_path)],
+            records=[PathRecord(paths[0], values=values)],
         )
 
     async def dispatch(self, op, path, **kwargs):
@@ -151,7 +151,7 @@ async def _uncounted(accessor, paths, texts, opts):
 
 @command("wc", vfs="ram", spec=SPECS["wc"])
 async def _row_count(accessor, paths, texts, opts):
-    return b"", IOResult(counted_runs=[CountedRun((42,), paths[0].raw_path)])
+    return b"", IOResult(records=[PathRecord(paths[0], values=(42,))])
 
 
 @pytest.mark.asyncio

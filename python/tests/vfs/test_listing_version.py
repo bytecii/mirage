@@ -25,9 +25,9 @@ import pytest
 
 from mirage.cache.index.ram import ListingCheckStore
 from mirage.types import ListingVersion, MountMode, ReadPolicy, ReadSpec
+from mirage.utils.loader import load_attr
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.disk import DiskVFS
-from mirage.vfs.loader import load_attr
 from mirage.vfs.registry import REGISTRY, build_vfs, known_vfs_names
 from mirage.workspace import Workspace
 from mirage.workspace.mount import Mount

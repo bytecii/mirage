@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from mirage import RAMVFS, Workspace
+from mirage import RAMVFS, DiskVFS, MountMode, Workspace
 from mirage.commands.config import Context
 from mirage.runtime.sandbox.sandlock import SandlockRuntime
 from mirage.runtime.table import build_runtime
@@ -142,3 +142,31 @@ async def test_close_reaps_an_active_cli(cli):
         result = await task
     assert result.exit_code != 0
     assert not runtime._children
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"paths": {"hide": ["/data/secret"]}},
+        {"commands": {"deny": [{"paths": ["/data/secret"], "reason": "x"}]}},
+        {"mounts": {"/data": "r"}},
+    ],
+)
+async def test_a_session_restriction_refuses_every_line(cli, profile):
+    runtime = SandlockRuntime(captures=("tool",))
+    ws = Workspace(
+        {"/data": DiskVFS(str(cli))},
+        mode=MountMode.EXEC,
+        profiles={"agent": profile},
+        runtimes=[runtime, "workspace"],
+    )
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert (result.exit_code, result.stdout, result.stderr) == (
+        127,
+        b"",
+        b"sandlock: runtime cannot enforce this session's file restrictions\n",
+    )
+    assert (await (await ws.session("other")).shell("tool run")).exit_code == 0
+    await ws.close()

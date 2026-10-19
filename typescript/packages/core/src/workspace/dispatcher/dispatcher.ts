@@ -26,6 +26,7 @@ import {
   dispatchStat,
   dotRefusal,
   hiddenWalk,
+  readHitADir,
   walkSpelling,
 } from '../../commands/builtin/utils/paths.ts'
 import { getExtension } from '../../utils/filetype.ts'
@@ -59,7 +60,7 @@ import { METADATA_OPS } from '../../policy/constants.ts'
 import { PolicyError } from '../../policy/errors.ts'
 import { mountKey, underPath } from '../../utils/key_prefix.ts'
 import { normDir, ownerPrefix, rstripSlash } from '../../utils/slash.ts'
-import { CycleError, norm, parent, posixNormpath } from '../../utils/path.ts'
+import { CycleError, endsAtDot, norm, parent, posixNormpath } from '../../utils/path.ts'
 import type { Visibility } from '../../types.ts'
 import type { DryRun, EntryGate, VfsExplanation } from '../../policy/types.ts'
 import {
@@ -81,7 +82,7 @@ import { ebusy, isMissingPath } from '../../errors/fs.ts'
 import type { BaseVFS } from '../../vfs/base.ts'
 import { declared } from '../../vfs/call.ts'
 import { WRITE_EFFECTS } from '../../vfs/constants.ts'
-import { Effect, type SearchQuery, Target, type VfsCall } from '../../vfs/types.ts'
+import { Effect, Target, type VfsCall } from '../../vfs/types.ts'
 import {
   type CacheFacts,
   type CapacityResult,
@@ -91,6 +92,7 @@ import {
   FileType,
   MountMode,
   PathSpec,
+  type SearchQuery,
   VFSName,
   WritePolicy,
 } from '../../types.ts'
@@ -121,6 +123,7 @@ import {
   NO_FOLLOW_OPS,
   POLICY_WRITE_OPS,
   READ_AHEAD_BYTES,
+  READ_STAND_IN_OPS,
   SERIAL_WRITE_OPS,
   SETATTR_KEYS,
   STAMP_WRITE_OPS,
@@ -409,10 +412,10 @@ function wholeRead(kwargs: OpKwargs): OpKwargs {
 /**
  * A stat row with the length the file cache holds, when the backend named
  * none. An API mount cannot size a file without fetching it, so once a read
- * kept its bytes, their length is the size. The backfill command stats
- * already make (`generic_bind`), here once for every caller of the
- * dispatcher (`ws.vfs`, FUSE, a runtime's `fs.stat`). The length alone, read
- * without revalidating: it serves no content. Mirrors Python's `_sized`.
+ * kept its bytes, their length is the size, for every caller of the
+ * dispatcher (a command, `ws.vfs`, FUSE, a runtime's `fs.stat`). The length
+ * alone, read without revalidating: it serves no content. Mirrors Python's
+ * `_sized`.
  */
 async function sized(mount: MountEntry, path: PathSpec, row: unknown): Promise<unknown> {
   const manager = mount.cacheManager
@@ -476,6 +479,12 @@ interface Call {
   stream: boolean
   /** Whether a read skips the file cache, neither served from it nor kept in it. */
   direct: boolean
+  /**
+   * Whether a read only asks whether the file cache holds a copy: true once the
+   * caller's rule lets the read through, else null; never the bytes, never the
+   * backend.
+   */
+  warm: boolean
   /**
    * Whether a stat asks the backend past the mount's index, through a
    * throwaway store as a `read: fresh` probe does, with the index's rows only
@@ -705,7 +714,9 @@ export class Dispatcher {
       // borrow the newest binding, which can belong to a wider concurrent
       // session.
       const run = (): ReturnType<DispatchFn> =>
-        this.dispatchAdmitted(name, path, args, kwargs, report)
+        name === 'read' && kwargs?.warm !== true
+          ? this.readRefusingDirs(path, args, kwargs, report)
+          : this.dispatchAdmitted(name, path, args, kwargs, report)
       if (this.admitWrite === null || !POLICY_WRITE_OPS.has(name)) return await run()
       return await this.admitWrite(run)
     } finally {
@@ -727,19 +738,22 @@ export class Dispatcher {
     const [issuer, stripped] = takeIssuer(kwargs)
     kwargs = stripped
     // The dispatcher's own keywords: a read answered as it is pulled, a read of
-    // what the backend holds now, past the file cache, and a stat of what it
-    // holds now, past the mount's index.
+    // what the backend holds now, past the file cache, a read of what the file
+    // cache alone holds, and a stat of what the backend holds now, past the
+    // mount's index.
     const admitOnly = (name === 'write' || name === 'stat') && kwargs?.admit_only === true
     if (admitOnly) {
       kwargs = { ...kwargs }
       delete kwargs.admit_only
     }
-    const { stream, direct, fresh, ...own } = (kwargs ?? {}) as {
+    const { stream, direct, warm, fresh, ...own } = (kwargs ?? {}) as {
       stream?: unknown
       direct?: unknown
+      warm?: unknown
       fresh?: unknown
     }
-    if (name === 'read' && (stream !== undefined || direct !== undefined)) kwargs = own
+    if (name === 'read' && (stream !== undefined || direct !== undefined || warm !== undefined))
+      kwargs = own
     if (name === 'stat' && fresh !== undefined) kwargs = own
     if (name === 'read_many') {
       const { paths } = (kwargs ?? {}) as { paths?: PathSpec[] }
@@ -764,9 +778,11 @@ export class Dispatcher {
     }
     // The command's gate judges its own calls; a metadata call passes, as
     // its guards let stat pass, unless it only asks admission, and a scan
-    // guard reads nothing: the rule judges each read it guards.
+    // guard reads nothing: the rule judges each read it guards. A warm read
+    // is judged once the file cache is found to hold a copy.
+    const isWarm = name === 'read' && warm === true
     const gate =
-      (METADATA_OPS.has(name) && !admitOnly) || name === 'before_full_scan'
+      (METADATA_OPS.has(name) && !admitOnly) || name === 'before_full_scan' || isWarm
         ? null
         : (this.caller?.ruleGate ?? null)
     const call = await this.walk(
@@ -781,6 +797,7 @@ export class Dispatcher {
     )
     call.stream = name === 'read' && stream === true
     call.direct = name === 'read' && direct === true
+    call.warm = isWarm
     call.fresh = name === 'stat' && fresh === true
     await this.refuseRename(call)
     if (report) report.path = call.path.virtual
@@ -823,6 +840,21 @@ export class Dispatcher {
     // every mount it walks and only a guard costs a call.
     if (name === 'before_full_scan' && !owner?.vfs.supports(name)) {
       return [null, new IOResult()]
+    }
+    // The cache stage answers first where the file cache decides: a call
+    // standing in for a read gives way to the read for a file it holds, and a
+    // warm read of a file it holds no copy of answers null. Neither has
+    // anything to judge; the read is judged.
+    if (READ_STAND_IN_OPS.has(name) && (await this.held(call, owner))) {
+      memoryAnswered(report)
+      return [null, new IOResult()]
+    }
+    if (call.warm) {
+      const held = await this.held(call, owner)
+      const ruleGate = this.caller?.ruleGate ?? null
+      if (held && ruleGate !== null) judge(ruleGate, call.typed, call.walked, call.path)
+      memoryAnswered(report)
+      return [held ? true : null, new IOResult()]
     }
     // mkdir(2) looks its name up first, so on a read-only region that lookup
     // answers for the mode, after every other policy has spoken. A dry run
@@ -943,6 +975,137 @@ export class Dispatcher {
       await boundary.complete(mark, call.path, call.write, result, call.issuer),
       new IOResult(),
     ]
+  }
+
+  /**
+   * A read that refuses a directory with GNU's EISDIR, at the path it was
+   * handed.
+   *
+   * A store answers a read of a directory in its own voice: ENOENT from a
+   * keyed store, whose directory is a set of keys rather than an object, an
+   * opaque error from sftp, no bytes from some drivers. So a read that fails
+   * or answers no bytes asks whether its path is a directory (`readHitADir`),
+   * and any other answer stands. A stream is judged as it is pulled; a live
+   * pipe is no directory. Mirrors Python's Dispatcher._read_refusing_dirs.
+   */
+  private async readRefusingDirs(
+    path: PathSpec,
+    args: readonly unknown[] | undefined,
+    kwargs: Record<string, unknown> | undefined,
+    report: OpReport | undefined,
+  ): Promise<[unknown, IOResult]> {
+    let answer: [unknown, IOResult]
+    try {
+      answer = await this.dispatchAdmitted('read', path, args, kwargs, report)
+    } catch (err) {
+      if (await this.readHitADir(path, err)) throw eisdir(path)
+      throw err
+    }
+    const [data, io] = answer
+    if (data instanceof PipeStream) return answer
+    if (data !== null && typeof data === 'object' && Symbol.asyncIterator in data) {
+      const drained = this.drainRefusingDirs(path, data as AsyncIterable<Uint8Array>)
+      await drained.next()
+      return [drained, io]
+    }
+    if (
+      ((data as Uint8Array | null)?.byteLength ?? 0) === 0 &&
+      (await this.readHitADir(path, null))
+    ) {
+      throw eisdir(path)
+    }
+    return answer
+  }
+
+  /**
+   * A streamed read that refuses a directory once it fails or ends with no
+   * bytes. Run to its empty first step before it is handed on, as `primed`
+   * runs a stream, so a caller that closes it before pulling still closes the
+   * read. Mirrors Python's Dispatcher._drain_refusing_dirs.
+   */
+  private async *drainRefusingDirs(
+    path: PathSpec,
+    source: AsyncIterable<Uint8Array>,
+  ): AsyncGenerator<Uint8Array> {
+    let empty = true
+    try {
+      yield new Uint8Array()
+      for await (const chunk of source) {
+        empty = empty && chunk.byteLength === 0
+        yield chunk
+      }
+    } catch (err) {
+      if (await this.readHitADir(path, err)) throw eisdir(path)
+      throw err
+    } finally {
+      await closeQuietly(source)
+    }
+    if (empty && (await this.readHitADir(path, null))) throw eisdir(path)
+  }
+
+  /**
+   * Whether a read of `path` that failed or answered no bytes reached a
+   * directory, probed as this dispatcher's caller. The probes are the
+   * dispatcher's own, no call of the command's, so its path rules do not
+   * judge them; the caller's hides do. A policy's refusal is the dispatcher's
+   * own answer rather than a store's, so it stands, and a dry run asks the
+   * gates only, so it probes nothing. Mirrors Python's
+   * Dispatcher._read_hit_a_dir.
+   */
+  private async readHitADir(path: PathSpec, err: unknown): Promise<boolean> {
+    if (this.explaining() !== null || err instanceof PolicyDenied || err instanceof PolicyError) {
+      return false
+    }
+    // A name the caller cannot see, or one whose walk crosses hidden space,
+    // stays missing: probing past it, to its link's target, would tell that
+    // it is there.
+    const vis = sessionVisibility(this.access)
+    if (
+      !pathVisible(vis, path.virtual) ||
+      leadsHidden(vis, path.virtual, this.namespace.symlinkTargets())
+    ) {
+      return false
+    }
+    const prober = this.caller === null ? undefined : { ...this.caller, ruleGate: null }
+    // A read follows a final link, so the kind is its target's, as GNU's cat
+    // calls a link to a directory one; the error keeps the name as typed.
+    let followed: string
+    try {
+      followed = this.namespace.follow(path.virtual)
+    } catch (e) {
+      if (e instanceof CycleError) return false
+      throw e
+    }
+    return readHitADir(
+      (p) => this.lstat(prober, p),
+      (p) => this.listing(prober, p),
+      followed === path.virtual ? path : PathSpec.fromStrPath(followed),
+      err,
+    )
+  }
+
+  /** The entry at `path` itself, as lstat answers; throws when nothing is there. */
+  private async lstat(caller: Caller | undefined, path: PathSpec): Promise<FileStat> {
+    const [row] = await this.dispatch('stat', path, [], { nofollow: true }, undefined, caller)
+    if (!(row instanceof FileStat)) throw enoent(path)
+    return row
+  }
+
+  /** The entries of the directory at `path`. */
+  private async listing(caller: Caller | undefined, path: PathSpec): Promise<string[]> {
+    const [entries] = await this.dispatch('readdir', path, [], {}, undefined, caller)
+    return [...(entries as string[])]
+  }
+
+  /**
+   * Whether the file cache holds a copy of the call's path, asked of the store
+   * without fetching the bytes or checking the copy against the backend: a
+   * read of a held file is checked as it is served. Mirrors Python's
+   * Dispatcher._held.
+   */
+  private async held(call: Call, mount: MountEntry | null): Promise<boolean> {
+    const manager = mount?.cacheManager ?? null
+    return manager !== null && (await manager.isCached(call.path))
   }
 
   /**
@@ -1205,9 +1368,18 @@ export class Dispatcher {
     // name in front of one has to be a directory: `virtual` simplified the
     // dots away and reaches `f` through a missing `nope/..`, the typed
     // spelling (`dotted`) does not. A trailing slash is part of that
-    // spelling: `x/` must be a directory, so a create of one is EISDIR
-    // before anything is looked up.
-    if (FILE_CREATE_OPS.has(name) && path.dotted?.endsWith('/') === true) throw eisdir(path)
+    // spelling: `x/` must be a directory, so a create of one is EISDIR before
+    // anything is looked up, as GNU tee and truncate answer `missing/` and
+    // `f/`. Behind a dot (`x/./`) the walk through the dot answers first,
+    // ENOENT or ENOTDIR, as GNU does. Deliberate divergence: under a parent
+    // that is itself absent GNU reports the parent first (ENOENT); the
+    // spelling is refused here without a round trip, so that corner reads
+    // EISDIR.
+    const slashed =
+      FILE_CREATE_OPS.has(name) &&
+      (path.dotted?.endsWith('/') === true || path.rawPath.endsWith('/'))
+    if (slashed && !endsAtDot(path.rawPath === '' ? (path.dotted ?? '') : path.rawPath))
+      throw eisdir(path)
     const renamed = dstArg instanceof PathSpec ? dstArg : null
     if (path.dotted !== null || (renamed !== null && renamed.dotted !== null)) {
       const walkStat = dispatchStat(
@@ -1224,6 +1396,7 @@ export class Dispatcher {
         (renamed !== null ? await dotRefusal(walkStat, renamed, follow) : null)
       if (refusal !== null) throw refusal
     }
+    if (slashed) throw eisdir(path)
     const [typed, typedDst] = [path, dstArg]
     path = this.walked(path, HIDDEN_CREATE_OPS.has(name))
     if (dstArg instanceof PathSpec) {
@@ -1258,6 +1431,7 @@ export class Dispatcher {
       write: POLICY_WRITE_OPS.has(name),
       stream: false,
       direct: false,
+      warm: false,
       fresh: false,
       walked: null,
     }
@@ -2641,29 +2815,6 @@ export class Dispatcher {
         )
       }
     }
-  }
-
-  /**
-   * The stat this dispatcher runs for one mount's VFS, behind the same
-   * fence as its own probes (mode, revision pins, index kwargs), with no
-   * namespace follow or visibility filter: the caller has resolved the
-   * path already. The path's filetype is stamped as dispatch stamps it,
-   * so an op registered for one filetype answers here too. A
-   * trailing-slash glob classifies a match with it, the twin of Python's
-   * `owner.call("stat")`, so a trailing-slash glob and `stat` read
-   * the same op table.
-   */
-  opStat(mount: MountEntry, path: PathSpec): Promise<unknown> {
-    const filetype = getExtension(path.virtual)
-    return this.fencedCall(
-      mount.vfs,
-      mount.prefix,
-      mount.mode,
-      'stat',
-      path,
-      undefined,
-      filetype !== null ? { filetype } : {},
-    )
   }
 
   /**

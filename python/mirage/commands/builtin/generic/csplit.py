@@ -1,8 +1,7 @@
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.links import mount_root
 from mirage.commands.builtin.utils.operands import normalized_read
 from mirage.commands.builtin.utils.strtol import (
     EOVERFLOW_REASON,
@@ -20,7 +19,6 @@ from mirage.errors.fs import fs_strerror
 from mirage.io.record_spool import RecordSpool, delimited
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn
-from mirage.utils.key_prefix import mount_key
 
 
 def digits_refusal(text: str, value: int | None) -> str:
@@ -213,7 +211,6 @@ async def csplit_generic(
         )
         sizes: list[str] = []
         created: list[tuple[str, PathSpec]] = []
-        root = mount_root(ctx)
         for first, last in parts:
             if parsed.elide_empty and first == last:
                 continue
@@ -231,7 +228,6 @@ async def csplit_generic(
             )
             data = records.data.stream(start, end - start)
             spec = PathSpec.from_str_path(name, cwd=ctx.cwd.virtual)
-            spec = replace(spec, vfs_path=mount_key(spec.virtual, root))
             try:
                 await write_bytes(spec, data)
             except FS_ERRORS as exc:

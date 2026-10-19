@@ -12,8 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { activeCacheManager } from '../../../cache/context.ts'
-
 import { closeQuietly, ensureStream } from '../../../io/stream.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { byteView, utf8Locale } from '../../../shell/bytes.ts'
@@ -21,6 +19,7 @@ import { concat } from '../../../utils/bytes.ts'
 import { bomOf } from '../../../utils/encoding.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../utils/filetype.ts'
 import { CycleError, globPrefixMatch } from '../../../utils/path.ts'
+import { mountKey } from '../../../utils/key_prefix.ts'
 import { isFsError } from '../../../errors/fs.ts'
 import { revisionFor } from '../../../observe/context.ts'
 import { FileType, type FileStat, type PathSpec } from '../../../types.ts'
@@ -37,7 +36,7 @@ import { openRg, requiredTerms } from '../rg_stream.ts'
 import { compilePattern, patternArg } from '../grep_pattern.ts'
 import type { SearchTerms } from '../types.ts'
 import { beforeFullScan } from '../utils/tree.ts'
-import { linksOf, dispatchOf, mountsOf } from '../utils/links.ts'
+import { linksOf, dispatchOf, mountRoot, mountsOf } from '../utils/links.ts'
 import type { CommandFiles } from './files.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
 
@@ -296,8 +295,9 @@ async function fullScan(
  * is worth reading. An operand
  * named on the line is never ruled out by a search asked about directories,
  * nor is a path pinned to a revision, since a search sees the current content,
- * nor a file the read cache holds, which a read serves as it was cached, nor a
- * path a link leads elsewhere, which the mount's search never sees.
+ * nor a file the read cache holds (`isWarm`), which a read serves as it was
+ * cached, nor a path a link leads elsewhere, which the mount's search never
+ * sees.
  * Both are asked through the dispatcher, which drops what the session hides
  * from a `filesContaining` answer, judges `linesContaining` as a read of its
  * file, and answers null where a path rule or a preVfs policy reaches below a
@@ -318,6 +318,7 @@ export async function searchReads(
   const searchable = mountsOf(ctx)?.searchable((paths[0] ?? ctx.cwd).virtual) ?? null
   const lines = files.answers('lines_containing') ? files.linesContaining : undefined
   const links = linksOf(ctx)
+  const home = mountRoot(ctx)
   const fl = new FlagView(ctx.flags, specOf(name))
   if (paths.length === 0 || (name === 'rg' && (fl.asBool('files') || fl.asBool('type_list')))) {
     return stream
@@ -379,20 +380,19 @@ export async function searchReads(
     return scan
   }
   const narrowed = async (path: PathSpec): Promise<ByteSource | null> => {
-    const manager = activeCacheManager()
-    if (manager !== null && (await manager.isCached(path))) return null
+    // A hit and a searchable glob are keyed below the mount, as its backend
+    // answers them.
+    const key = mountKey(path.virtual, home)
     if (linked(links, path.virtual)) return null
-    if (
+    const ruledOut =
       found !== null &&
       !named.has(path.virtual) &&
       revisionFor(path.virtual) === null &&
       !(asked.readsBinary && BINARY_EXTENSIONS.has(getExtension(path.virtual) ?? '')) &&
-      !found.has(path.vfsPath.toLowerCase()) &&
-      (searchable === null || searchable.some((glob) => globPrefixMatch(path.vfsPath, glob)))
-    ) {
-      return new Uint8Array(0)
-    }
-    if (lines === undefined) return null
+      !found.has(key.toLowerCase()) &&
+      (searchable === null || searchable.some((glob) => globPrefixMatch(key, glob)))
+    if (ruledOut) return (await files.isWarm(path)) ? null : new Uint8Array(0)
+    if (lines === undefined || (await files.isWarm(path))) return null
     const ignoreCase = { ignoreCase: asked.ignoreCase }
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {

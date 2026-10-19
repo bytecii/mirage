@@ -17,7 +17,7 @@ import { command, type CommandFn } from '../../../config.ts'
 import { SPECS } from '../../../spec/index.ts'
 import { duGeneric } from '../du.ts'
 import { IOResult } from '../../../../io/types.ts'
-import { FileStat, FileType, MountMode } from '../../../../types.ts'
+import { FileStat, FileType, MountMode, PathSpec } from '../../../../types.ts'
 import { eacces } from '../../../../errors/fs.ts'
 import { RAMVFS } from '../../../../vfs/ram/ram.ts'
 import { Workspace } from '../../../../workspace/workspace/workspace.ts'
@@ -41,12 +41,16 @@ const unmeasured: CommandFn = (_accessor, paths) => [
   new IOResult(),
 ]
 
-const partlyMeasured: CommandFn = () => [
+const partlyMeasured: CommandFn = (_accessor, paths) => [
   new Uint8Array(),
   new IOResult({
     stderr: ENC.encode("du: cannot read directory '/a/d': Permission denied\n"),
     exitCode: 1,
-    sizedRuns: [{ leaves: [['/a/d/f', 5]], directories: ['/a/d'] }],
+    records: [
+      ...paths.map((path) => ({ path, run: 0 })),
+      { path: PathSpec.fromStrPath('/a/d/f'), run: 0, size: 5 },
+      { path: PathSpec.fromStrPath('/a/d'), run: 0 },
+    ],
   }),
 ]
 

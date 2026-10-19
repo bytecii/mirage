@@ -124,9 +124,7 @@ async def run_stream(
             merged = await merged.merge(io)
         if final is not None:
             merged = await merged.merge(final)
-        result.matched_runs = merged.matched_runs
-        result.sized_runs = merged.sized_runs
-        result.counted_runs = merged.counted_runs
+        result.records = merged.records
         result.refusal = result.refusal or merged.refusal
         result.stderr = (
             await materialize(merged.stderr) + await materialize(result.stderr)

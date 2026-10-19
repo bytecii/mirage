@@ -15,7 +15,6 @@
 import { activeCacheManager } from '../../cache/context.ts'
 import { isEacces, isEnoent } from '../../errors/fs.ts'
 import { isEntryError } from '../../errors/classify.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import {
   bindTree,
   dropPruned,
@@ -31,7 +30,7 @@ import {
 import { FileType, PathSpec, type FileStat } from '../../types.ts'
 import type { LinkView } from '../../view/types.ts'
 import { followedStat } from '../../view/namespace_view.ts'
-import { rstripSlash } from '../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { DIR_SIZE } from '../../utils/stat_view.ts'
 import { type PrintfKind, printfKind } from './find_eval.ts'
@@ -102,16 +101,12 @@ export function modifiedTs(modified: string | null): number | null {
   return Number.isNaN(ts) ? null : ts
 }
 
-async function statEntry(
-  deps: WalkFindDeps,
-  path: string,
-  prefix: string,
-): Promise<FileStat | null> {
+async function statEntry(deps: WalkFindDeps, path: string): Promise<FileStat | null> {
   const spec = new PathSpec({
     virtual: path,
     directory: path,
     resolved: false,
-    vfsPath: mountKey(path, prefix),
+    vfsPath: stripSlash(path),
   })
   if (deps.unstatted?.has(path) === true) return null
   try {
@@ -132,18 +127,13 @@ async function statEntry(
   }
 }
 
-async function isEmptyEntry(
-  deps: WalkFindDeps,
-  path: string,
-  isDir: boolean,
-  prefix: string,
-): Promise<boolean> {
+async function isEmptyEntry(deps: WalkFindDeps, path: string, isDir: boolean): Promise<boolean> {
   if (isDir) {
     const spec = new PathSpec({
       virtual: path,
       directory: path,
       resolved: false,
-      vfsPath: mountKey(path, prefix),
+      vfsPath: stripSlash(path),
     })
     try {
       return (await deps.readdir(spec)).length === 0
@@ -156,7 +146,7 @@ async function isEmptyEntry(
       throw err
     }
   }
-  const st = await statEntry(deps, path, prefix)
+  const st = await statEntry(deps, path)
   return st !== null && st.type === FileType.FILE && st.size === 0
 }
 
@@ -189,7 +179,7 @@ async function walk(
     const trimmed = child.endsWith('/') ? rstripSlash(child) : child
     let kind: PrintfKind = 'd'
     if (!child.endsWith('/')) {
-      const s = await statEntry(deps, trimmed, mountPrefixOf(spec.virtual, spec.vfsPath))
+      const s = await statEntry(deps, trimmed)
       kind = s === null ? 'f' : printfKind(s)
     }
     const isFolder = kind === 'd'
@@ -211,7 +201,7 @@ async function walk(
       virtual: trimmed,
       directory: trimmed,
       resolved: false,
-      vfsPath: mountKey(trimmed, mountPrefixOf(spec.virtual, spec.vfsPath)),
+      vfsPath: stripSlash(trimmed),
     })
     await walk(deps, childSpec, maxDepth, depth + 1, out, below)
   }
@@ -228,22 +218,19 @@ export async function walkFind(
     stat: (spec) => followedStat((p: PathSpec) => found.stat(p), links, spec),
   }
   const collected: WalkEntry[] = []
-  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   // GNU lists the search root itself at depth 0 (even for the mount
   // root), so `-maxdepth 0` prints just the root and `-name` can match
   // the root's own basename.
   const rootPath = path.virtual !== '/' ? rstripSlash(path.virtual) : '/'
-  const pruneTree = bindTree(optionsTree(options), prefix, path.virtual, path.rawPath)
+  const pruneTree = bindTree(optionsTree(options), '', path.virtual, path.rawPath)
   const readDirectory = async (spec: PathSpec): Promise<string[]> => {
     if (deps.enters !== undefined && !deps.enters(spec.virtual)) return []
     if (treeHasPrune(pruneTree)) {
-      const key = rstripSlash(spec.mountPath) || '/'
+      const key = rstripSlash(spec.virtual) || '/'
       const depth =
         rstripSlash(spec.virtual).split('/').length - rstripSlash(rootPath).split('/').length
-      const info = await statEntry(deps, spec.virtual, prefix)
-      const isEmpty = treeHasEmpty(pruneTree)
-        ? await isEmptyEntry(deps, spec.virtual, true, prefix)
-        : null
+      const info = await statEntry(deps, spec.virtual)
+      const isEmpty = treeHasEmpty(pruneTree) ? await isEmptyEntry(deps, spec.virtual, true) : null
       keep(
         {
           key,
@@ -290,7 +277,7 @@ export async function walkFind(
     )
   }
   const results: string[] = []
-  const tree = bindTree(optionsTree(options), prefix, path.virtual, path.rawPath)
+  const tree = bindTree(optionsTree(options), '', path.virtual, path.rawPath)
   const needEmpty = treeHasEmpty(tree)
   const needSize = options.minSize != null || options.maxSize != null
   const needMtime = options.mtimeMin != null || options.mtimeMax != null
@@ -298,13 +285,10 @@ export async function walkFind(
   collected.sort((a, b) => compareCodePoints(a.path, b.path))
   for (const entry of collected) {
     const name = entry.path.split('/').pop() ?? ''
-    const stripped =
-      prefix !== '' && entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path
-    // The mount root strips to ''; its mount-relative key is '/'.
-    const key = stripped === '' ? '/' : stripped
+    const key = entry.path === '' ? '/' : entry.path
     let isEmpty: boolean | null = null
     if (needEmpty) {
-      isEmpty = await isEmptyEntry(deps, entry.path, !entry.file, prefix)
+      isEmpty = await isEmptyEntry(deps, entry.path, !entry.file)
     }
     // With a time test in the tree the stat comes first, so the entry
     // answers the test itself and a -prune after it fires only where GNU's
@@ -312,7 +296,7 @@ export async function walkFind(
     // kept.
     let st: FileStat | null = null
     if (needMtime) {
-      st = await statEntry(deps, entry.path, prefix)
+      st = await statEntry(deps, entry.path)
       if (st === null) continue
       learned.set(key, modifiedTs(st.modified))
     }
@@ -326,7 +310,7 @@ export async function walkFind(
     }
     if (!keep(findEntry, tree, options.minDepth)) continue
     if (needSize && entry.file && st === null) {
-      st = await statEntry(deps, entry.path, prefix)
+      st = await statEntry(deps, entry.path)
       if (st === null) continue
     }
     if (needSize) {

@@ -6,7 +6,7 @@ from mirage.types import PathSpec
 from mirage.vfs.mem0.config import Mem0Config
 from mirage.vfs.mem0.mem0 import Mem0VFS
 from mirage.workspace import Workspace
-from mirage.workspace.mount import MountEntry
+from mirage.workspace.expand.globs import expand_glob
 from tests.fixtures.vfs_io import vfs_over
 
 
@@ -29,9 +29,9 @@ def _accessor():
     return acc
 
 
-def _mount(acc: Mem0Accessor) -> MountEntry:
+async def _expanded(acc: Mem0Accessor, p: PathSpec) -> list[PathSpec]:
     ws = Workspace({"/mem/": vfs_over(Mem0VFS, acc)})
-    return ws._registry.mount_for("/mem/")
+    return await expand_glob(ws.dispatch, ws._registry.mount_for("/mem/"), [p])
 
 
 @pytest.mark.asyncio
@@ -43,7 +43,7 @@ async def test_passthrough_non_pattern():
         vfs_path="aaa.json",
         resolved=True,
     )
-    out = await _mount(acc).expand_glob([p], "/mem")
+    out = await _expanded(acc, p)
     assert out == [p]
 
 
@@ -57,5 +57,5 @@ async def test_expands_star():
         pattern="*.json",
         resolved=False,
     )
-    out = await _mount(acc).expand_glob([p], "/mem")
+    out = await _expanded(acc, p)
     assert sorted(x.virtual for x in out) == ["/mem/aaa.json", "/mem/bbb.json"]

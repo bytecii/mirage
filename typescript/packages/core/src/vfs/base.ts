@@ -17,13 +17,20 @@ import type { Command } from '../commands/config.ts'
 import type { CLI } from '../commands/cli/types.ts'
 import { enotsup } from '../errors/fs.ts'
 import type { ByteSource } from '../io/types.ts'
-import type { CapacityResult, DirListing, FileStat, PathSpec, SetAttrFields } from '../types.ts'
+import type {
+  CapacityResult,
+  DirListing,
+  FileStat,
+  PathSpec,
+  SearchQuery,
+  SetAttrFields,
+} from '../types.ts'
 import { CapacityState, ListingVersion } from '../types.ts'
 import { DEFAULT_MAX_GLOB_MATCHES } from '../utils/glob_walk.ts'
 import type { DeltaHook } from '../events/base.ts'
 import { methodName, vfsCall } from './call.ts'
 import { DEFAULT_MAX_DU_ENTRIES } from './constants.ts'
-import { Effect, type Handed, type SearchQuery, Target } from './types.ts'
+import { Effect, type Handed, Target } from './types.ts'
 
 /**
  * The two keys the snapshot machinery reads out of a VFS's state.

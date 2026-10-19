@@ -137,21 +137,17 @@ export function captureBinding(
       ? undefined
       : (views.ctx?.vfs?.over(dispatch) ??
         new Files(dispatch, null, null, () => null, { ledger: false }))
+  // A read of the session reads the session it is bound to; only a write
+  // passes the gates, which read the caller, so only a write replays it.
   const session = views.ctx?.session
   const wrapped =
     session === undefined
       ? undefined
       : {
-          get: scope.wrap(session.get.bind(session)),
-          snapshot: scope.wrap(session.snapshot.bind(session)),
+          ...session,
           set: scope.wrap(session.set.bind(session)),
           unset: scope.wrap(session.unset.bind(session)),
           mark: scope.wrap(session.mark.bind(session)),
-          isReadonly: scope.wrap(session.isReadonly.bind(session)),
-          profile: scope.wrap(session.profile.bind(session)),
-          cwd: scope.wrap(session.cwd.bind(session)),
-          sessionId: session.sessionId,
-          access: scope.wrap(session.access.bind(session)),
         }
   const rest: Partial<Context> = { ...views.ctx }
   delete rest.vfs

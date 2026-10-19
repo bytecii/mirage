@@ -31,15 +31,10 @@ import { type Reading, withReading } from './files.ts'
 
 function bind(b: GenericCommand, vfs: string | null, stream: Reading['stream']): Command[] {
   // The builder reads its files under the command tier's guards: what it
-  // reads, cut into pieces unless it passes its input through, and a stat's
-  // unknown size filled from the read cache unless it only writes. Every
-  // call it makes is the dispatcher's, which judges each itself. Stdin is cut
-  // the same way, under the invocation's abort and deadline.
-  const reading: Reading = {
-    split: b.passThrough !== true,
-    cachedSizes: b.write !== true || b.read === true,
-    stream,
-  }
+  // reads, cut into pieces unless it passes its input through. Every call it
+  // makes is the dispatcher's, which judges each itself. Stdin is cut the
+  // same way, under the invocation's abort and deadline.
+  const reading: Reading = { split: b.passThrough !== true, stream }
   const fn: CommandFn = (accessor, paths, texts, ctx) => {
     if (ctx.vfs === undefined) {
       return [

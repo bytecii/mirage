@@ -9,7 +9,7 @@ from mirage.commands.builtin.generic.wc import (
     wc,
 )
 from mirage.commands.errors import UsageError
-from mirage.io.types import CountedRun
+from mirage.io.types import PathRecord
 from mirage.types import PathSpec
 
 
@@ -112,7 +112,7 @@ async def test_format_multi_accepts_a_sync_or_async_iterator_read(read):
     assert await format_multi(paths, read=read, lines=True) == (
         b"1 /a.txt\n",
         b"",
-        [CountedRun((1,), "/a.txt")],
+        [PathRecord(paths[0], values=(1,))],
     )
 
 

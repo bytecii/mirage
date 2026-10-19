@@ -19,12 +19,11 @@ import type { Argument } from '../../spec/types.ts'
 import { compileSpec } from '../../spec/compile.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { concat } from '../../../utils/bytes.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileType, type FileStat, PathSpec } from '../../../types.ts'
 import { gnuBasename } from '../../../utils/path.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import type { Context } from '../../config.ts'
 import type { StatPath } from '../../../view/types.ts'
 import { formatFsError } from '../../../errors/render.ts'
@@ -180,7 +179,7 @@ function childSpec(parent: PathSpec, name: string): PathSpec {
     virtual: childPath,
     directory: childPath,
     resolved: false,
-    vfsPath: mountKey(childPath, mountPrefixOf(parent.virtual, parent.vfsPath)),
+    vfsPath: stripSlash(childPath),
     rawPath: `${rstripSlash(parent.rawPath)}/${name}`,
   })
 }

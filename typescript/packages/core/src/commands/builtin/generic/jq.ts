@@ -50,13 +50,11 @@ import { yieldBytes } from '../../../io/stream.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { isFsError } from '../../../errors/fs.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { type CommandFnResult, type Context } from '../../config.ts'
 import { helpPage, versionLine } from '../../spec/standard.ts'
 import { UsageError } from '../../errors.ts'
 import { isStdin, stdinStream } from '../utils/stream.ts'
 import { programFileRefusal, readProgramFile } from './program.ts'
-import { mountRoot } from '../utils/links.ts'
 
 type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
 
@@ -167,11 +165,7 @@ export async function positionalValue(mode: Mode, word: string): Promise<string>
  * A path pair option's [name, file] pairs, each file the PathSpec of the
  * word that spelled it, or one built from its resolved path.
  */
-function pathPairs(
-  fl: FlagView,
-  option: string,
-  toSpec: (value: string) => PathSpec,
-): [string, PathSpec][] {
+function pathPairs(fl: FlagView, option: string): [string, PathSpec][] {
   const raw = fl.raw(option)
   if (!Array.isArray(raw)) return []
   const items: readonly (string | PathSpec)[] = raw
@@ -180,7 +174,7 @@ function pathPairs(
     const name = items[i]
     const file = items[i + 1]
     if (typeof name !== 'string' || file === undefined) continue
-    pairs.push([name, file instanceof PathSpec ? file : toSpec(file)])
+    pairs.push([name, file instanceof PathSpec ? file : PathSpec.fromStrPath(file)])
   }
   return pairs
 }
@@ -314,7 +308,6 @@ export async function readOptions(
   fl: FlagView,
   texts: readonly string[],
   hasProgramFile: boolean,
-  toSpec: (value: string) => PathSpec,
   read: (path: PathSpec) => Promise<Uint8Array>,
 ): Promise<JqOptions | Uint8Array> {
   let compact = false
@@ -328,8 +321,8 @@ export async function readOptions(
   const pairs = {
     arg: pairArgs(fl.asList('arg')).values(),
     argjson: pairArgs(fl.asList('argjson')).values(),
-    rawfile: pathPairs(fl, 'rawfile', toSpec).values(),
-    slurpfile: pathPairs(fl, 'slurpfile', toSpec).values(),
+    rawfile: pathPairs(fl, 'rawfile').values(),
+    slurpfile: pathPairs(fl, 'slurpfile').values(),
   }
   const tape = fl
     .occurrences(...LAYOUT, ...BINDINGS, ...MODES, ...STANDARD, OPERAND, REFUSED)
@@ -589,20 +582,14 @@ export class MainLoop {
   }
 }
 
-// Path flags arrive as resolved virtual-path strings, so a flag that
-// names a file builds its own PathSpec against the operands' mount.
-function pathSpecFactory(paths: readonly PathSpec[], ctx: Context): (value: string) => PathSpec {
-  const first = paths[0]
-  const mountPrefix =
-    first === undefined ? mountRoot(ctx) : mountPrefixOf(first.virtual, first.vfsPath)
-  return (value) => PathSpec.fromStrPath(value, mountKey(value, mountPrefix))
-}
-
-/** The file -f names, as the word typed when the bag kept it. */
-function programFileOf(fl: FlagView, toSpec: (value: string) => PathSpec): PathSpec | null {
+/**
+ * The file -f names, as the word typed when the bag kept it, else built from
+ * the resolved virtual path the flag arrived as.
+ */
+function programFileOf(fl: FlagView): PathSpec | null {
   const raw = fl.raw('from_file')
   if (raw instanceof PathSpec) return raw
-  return typeof raw === 'string' ? toSpec(raw) : null
+  return typeof raw === 'string' ? PathSpec.fromStrPath(raw) : null
 }
 
 export async function jqGeneric(
@@ -613,8 +600,7 @@ export async function jqGeneric(
 ): Promise<CommandFnResult> {
   const readInput = stdinStream(stream, ctx.stdin)
   const fl = new FlagView(ctx.flags, specOf('jq'))
-  const toSpec = pathSpecFactory(paths, ctx)
-  const programFile = programFileOf(fl, toSpec)
+  const programFile = programFileOf(fl)
   // -f, --rawfile and --slurpfile route nothing (the executor's FILE_KEYS and
   // DISPATCH_FLAG_KEYS), so a file may sit on another mount than the operands: it
   // is read through the dispatcher. jq opens it by name, so /dev/stdin is the
@@ -626,7 +612,7 @@ export async function jqGeneric(
   }
   // jq reads its options before its program, so a refused option is reported
   // before an -f file is read.
-  const jq = await readOptions(fl, texts, programFile !== null, toSpec, readFlagFile)
+  const jq = await readOptions(fl, texts, programFile !== null, readFlagFile)
   if (jq instanceof Uint8Array) return [jq, new IOResult()]
   // jq defaults the filter to "." when no expression is given.
   let expression = texts[0] ?? '.'

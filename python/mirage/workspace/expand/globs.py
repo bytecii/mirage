@@ -13,10 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
+import functools
 import posixpath
 
 from mirage.context import session_visibility
 from mirage.errors.constants import WALK_ERRORS
+from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import encode_text
 from mirage.shell.constants import SHOPT_DEFAULTS
 from mirage.shell.errors import DiscardSignal
@@ -27,6 +29,7 @@ from mirage.utils.glob_walk import (
     glob_pattern,
     has_glob,
     literal_word,
+    make_resolve_glob,
     mark_globs,
     spell_match,
     unmark_globs,
@@ -86,6 +89,65 @@ def glob_options(session: SessionState) -> GlobOptions:
         globstar=session.shopts.get("globstar", SHOPT_DEFAULTS["globstar"]),
         extglob=session.shopts.get("extglob", SHOPT_DEFAULTS["extglob"]),
     )
+
+
+async def _listing(dispatch: DispatchFn, path: PathSpec) -> list[str]:
+    """A directory's entries as the dispatcher lists them, the listing a
+    glob walks: the session's hides, the links and the nested mount roots
+    are the dispatcher's to apply.
+
+    Args:
+        dispatch (DispatchFn): the workspace's dispatcher.
+        path (PathSpec): the directory, carrying the segment as its
+            pattern.
+    """
+    entries, _ = await dispatch("readdir", path)
+    return list(entries)
+
+
+async def _stat_of(dispatch: DispatchFn, path: PathSpec) -> FileStat:
+    """A path's row as the dispatcher answers it.
+
+    Args:
+        dispatch (DispatchFn): the workspace's dispatcher.
+        path (PathSpec): the path.
+    """
+    row: FileStat
+    row, _ = await dispatch("stat", path)
+    return row
+
+
+async def expand_glob(
+    dispatch: DispatchFn | None, mount: MountEntry, paths: list[PathSpec]
+) -> list[PathSpec]:
+    """Expand pattern specs on one mount, one at a time, through the
+    dispatcher's listing and stat, capped at the mount's match limit.
+
+    A mount that lists nothing, or no dispatcher (a registry no workspace
+    wired one into), leaves every word as typed. Each word is keyed below
+    the mount before the walk reads it.
+
+    Args:
+        dispatch (DispatchFn | None): the workspace's dispatcher.
+        mount (MountEntry): the mount owning the words.
+        paths (list[PathSpec]): the words, pattern specs among them.
+    """
+    if dispatch is None or not mount.answers("readdir"):
+        return list(paths)
+    prefix = mount.prefix.rstrip("/")
+    resolve = make_resolve_glob(
+        functools.partial(_listing, dispatch),
+        mount.vfs.max_glob_matches,
+        functools.partial(_stat_of, dispatch),
+    )
+    out: list[PathSpec] = []
+    for p in paths:
+        out.extend(
+            await resolve(
+                [dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))]
+            )
+        )
+    return out
 
 
 def _namespace_children(
@@ -250,10 +312,11 @@ async def _level_matches(
     dir_virtual: str,
     seg: str,
 ) -> list[str]:
-    """One descent step: the owning backend's matches plus the namespace's.
+    """One descent step: the dispatcher's listing of the parent's mount,
+    matched, plus the namespace's.
 
     The walk can cross into a nested mount, because a mid-path segment
-    may match a mount root, so the backend asked is the one owning that
+    may match a mount root, so the mount listed is the one owning that
     parent rather than the one owning the typed word. It can equally
     descend through a symlinked directory, so the parent is resolved
     through the namespace first and the matches are spelled back under
@@ -279,7 +342,7 @@ async def _level_matches(
         resolved=False,
     )
     try:
-        matches = await owner.expand_glob([spec], prefix)
+        matches = await expand_glob(registry.dispatch, owner, [spec])
     except OSError:
         # This parent is not a listable directory; bash skips it during
         # descent. A nested mount root or a link under it is still real.
@@ -523,11 +586,12 @@ async def _is_directory(
 
     bash keeps a directory or a symlink to one and drops a regular file
     or a broken link (bash 5.2, ``*/``). A nested mount root is a
-    directory by construction; anything else is asked of the mount that
-    owns the link-resolved path, one stat per match.
+    directory by construction; anything else is the dispatcher's stat of
+    the link-resolved path, one per match.
 
     Args:
-        registry (MountRegistry): registry holding the mount table.
+        registry (MountRegistry): registry holding the mount table and
+            the dispatcher.
         mount (MountEntry): the mount owning the typed word.
         links (NamespaceLinks | None): the namespace symlink table.
         virtual (str): one match's absolute virtual path.
@@ -541,8 +605,10 @@ async def _is_directory(
     owner = _mount_of(registry, real, mount)
     if real.rstrip("/") == owner.prefix.rstrip("/"):
         return True
+    if registry.dispatch is None:
+        return False
     try:
-        row = await owner.call("stat", real)
+        row = await _stat_of(registry.dispatch, PathSpec.from_str_path(real))
     except WALK_ERRORS:
         return False
     return isinstance(row, FileStat) and row.type == FileType.DIRECTORY
@@ -566,7 +632,7 @@ async def resolve_globs(
 ) -> list[str | PathSpec]:
     """Resolve glob patterns in PathSpec args, preserving PathSpec type.
 
-    Globs are resolved via VFS.resolve_glob. Non-glob PathSpec
+    Globs are resolved over the dispatcher's listings. Non-glob PathSpec
     and plain str items pass through unchanged. Spec-TEXT words arrive
     here as PathSpec only from a native program's line, which bash
     globs whatever the slot: everywhere else per-position kinds keep
@@ -659,7 +725,11 @@ async def resolve_globs(
                     # spec has no literal to reinstate, so an empty list
                     # means no match and every spec returned is one.
                     resolved = _merge_namespace(
-                        list(await mount.expand_glob([item.dir], prefix)),
+                        list(
+                            await expand_glob(
+                                registry.dispatch, mount, [item.dir]
+                            )
+                        ),
                         _namespace_children(
                             registry, links, directory, pattern
                         ),

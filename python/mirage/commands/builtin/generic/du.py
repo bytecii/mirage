@@ -20,9 +20,9 @@ from mirage.errors.fs import fs_strerror
 from mirage.errors.posix import posix_phrase
 from mirage.errors.render import ZERO_LENGTH_NAME
 from mirage.errors.types import DotWalkError, FsCondition
-from mirage.io.types import IOResult, SizedRun
+from mirage.io.types import IOResult, PathRecord
 from mirage.types import FileStat, PathSpec, Visibility
-from mirage.utils.hidden import path_visible
+from mirage.utils.hidden import path_visible, visible_records
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.path import respell_raw
 from mirage.view.namespace_view import paths_scoped
@@ -75,7 +75,7 @@ class DuOutput:
         exit_code (int): 0, or 1 when an operand could not be read or a
             walk was cut short (GNU exits 1 when it could not fully
             account for every operand).
-        runs (list[SizedRun] | None): each readable operand's
+        records (list[PathRecord] | None): each readable operand's
             measurement, None when one was only summed (``-s``, or a
             backend that can only produce a size).
     """
@@ -83,7 +83,7 @@ class DuOutput:
     stdout: bytes
     stderr: bytes
     exit_code: int
-    runs: list[SizedRun] | None = None
+    records: list[PathRecord] | None = None
 
 
 def parse_depth(text: str) -> int | None:
@@ -500,9 +500,9 @@ def rollup(
 
 
 def drop_shadowed(
-    entries: Sequence[tuple[str, int]], roots: Sequence[str]
-) -> list[tuple[str, int]]:
-    """Drop leaves that fall under a descendant mount's root.
+    records: Sequence[PathRecord], roots: Sequence[str]
+) -> list[PathRecord]:
+    """Drop what falls under a descendant mount's root.
 
     The parent backend's keys under a nested mount are shadowed: no read
     can reach them, so no size may count them. GNU agrees (coreutils 9.7,
@@ -513,26 +513,38 @@ def drop_shadowed(
     block instead, so the parent's own report is GNU's ``du -x``.
 
     Args:
-        entries (Sequence[tuple[str, int]]): leaf (virtual path, size).
+        records (Sequence[PathRecord]): files and directories measured.
         roots (Sequence[str]): descendant mount roots, no trailing slash.
     """
-    kept: list[tuple[str, int]] = []
-    for leaf, size in entries:
-        node = _norm(leaf)
-        if any(node == root or node.startswith(root + "/") for root in roots):
-            continue
-        kept.append((leaf, size))
-    return kept
+    return [
+        r
+        for r in records
+        if not any(
+            _norm(r.path.virtual) == root
+            or _norm(r.path.virtual).startswith(root + "/")
+            for root in roots
+        )
+    ]
+
+
+def leaves_of(records: Sequence[PathRecord]) -> list[tuple[str, int]]:
+    """Each file a measurement counted, as (virtual path, bytes).
+
+    Args:
+        records (Sequence[PathRecord]): one operand's measurement.
+    """
+    return [(r.path.virtual, r.size) for r in records if r.size is not None]
 
 
 async def _du_one(
     path: PathSpec,
+    run: int,
     compute_size: ComputeSize,
     compute_entries: ComputeEntries,
     flags: DuFlags,
     mounts: MountView | None = None,
     directories: Callable[[], Sequence[str]] | None = None,
-) -> tuple[list[str], int, SizedRun | None]:
+) -> tuple[list[str], int, list[PathRecord] | None]:
     label = path.raw_path
     vis = session_visibility()
     roots = mounts.descendants(path.virtual) if mounts is not None else []
@@ -550,19 +562,21 @@ async def _du_one(
     entries, total = await compute_entries(path)
     root_key = _norm(path.virtual)
     under = root_key.rstrip("/") + "/"
-    dirs = [
-        d
-        for d in (directories() if directories is not None else ())
-        if _norm(d).startswith(under)
-        and path_visible(vis, d)
-        and not any(
-            _norm(d) == r or _norm(d).startswith(r + "/") for r in roots
-        )
-    ]
+    met = drop_shadowed(
+        visible_records(
+            vis,
+            [
+                PathRecord(PathSpec.from_str_path(d), run)
+                for d in (directories() if directories is not None else ())
+                if _norm(d).startswith(under)
+            ],
+        ),
+        roots,
+    )
     walked = directories is not None and any(
         _norm(d) == root_key for d in directories()
     )
-    if not entries and not dirs and not walked:
+    if not entries and not met and not walked:
         # A backend that can only produce a size degrades to one total;
         # it cannot enumerate, so shadowed keys cannot be excluded either.
         # A walk that opened the operand already said all it can: an
@@ -572,36 +586,33 @@ async def _du_one(
         return (
             [_line(total, flags.h, label)],
             total,
-            SizedRun() if total == 0 else None,
+            [PathRecord(path, run)] if total == 0 else None,
         )
 
-    virtual = to_virtual(entries, path)
-    visible = [
-        (leaf, size) for leaf, size in virtual if path_visible(vis, leaf)
+    counted = [
+        PathRecord(PathSpec.from_str_path(leaf), run, size)
+        for leaf, size in to_virtual(entries, path)
     ]
-    if len(visible) != len(virtual):
-        # Same honesty rule as shadowed leaves: the total is the sum of
-        # what the session may see, never the backend's own number.
-        virtual = visible
+    # Same honesty rule for hidden and shadowed leaves: the total is the
+    # sum of what survived, never the backend's own number.
+    kept = drop_shadowed(visible_records(vis, counted), roots)
+    virtual = leaves_of(kept)
+    if len(kept) != len(counted) or roots:
         total = sum(size for _, size in virtual)
-    if roots:
-        # The backend's own total counted the shadowed leaves, so the
-        # honest number is the sum of what survived.
-        virtual = drop_shadowed(virtual, roots)
-        total = sum(size for _, size in virtual)
-    run = SizedRun(tuple(virtual), tuple(dirs))
+    dirs = [r.path.virtual for r in met]
+    records = [PathRecord(path, run), *kept, *met]
     # A file operand walks to itself. GNU prints it once, with or
     # without -a, never as a leaf line plus a roll-up line. GNU scopes
     # -S to directories, so a file operand keeps its own size in both
     # its row and the grand total.
     if len(virtual) == 1 and _norm(virtual[0][0]) == root_key:
-        return [_line(virtual[0][1], flags.h, label)], total, run
+        return [_line(virtual[0][1], flags.h, label)], total, records
     # -S changes what the operand's own row counts, not what the operand
     # contributes to -c: GNU's grand total stays recursive (coreutils
     # 9.7, `du -bSc dir` prints `3 dir` then `6 total`).
     own = separate_total(virtual, path.virtual) if flags.S else total
     if flags.s:
-        return [_line(own, flags.h, label)], total, run
+        return [_line(own, flags.h, label)], total, records
 
     rows = rollup(
         virtual,
@@ -616,7 +627,7 @@ async def _du_one(
         _line(size, flags.h, name) for name, (_, size) in zip(shown, rows)
     ]
     lines.append(_line(own, flags.h, label))
-    return lines, total, run
+    return lines, total, records
 
 
 async def du(
@@ -670,12 +681,13 @@ async def du(
     """
     lines: list[str] = []
     totals: list[int] = []
-    runs: list[SizedRun] | None = []
-    for path in paths:
+    records: list[PathRecord] | None = []
+    for run, path in enumerate(paths):
         if repeated is not None and repeated(path):
             continue
-        block, total, run = await _du_one(
+        block, total, measured = await _du_one(
             path,
+            run,
             compute_size,
             compute_entries,
             flags,
@@ -684,10 +696,10 @@ async def du(
         )
         lines.extend(block)
         totals.append(total)
-        if run is None:
-            runs = None
-        elif runs is not None:
-            runs.append(run)
+        if measured is None:
+            records = None
+        elif records is not None:
+            records.extend(measured)
     # GNU still prints the grand total when every operand failed ("0
     # total"), so this stays outside the loop guard.
     if flags.c:
@@ -719,7 +731,7 @@ async def du(
         notes.append(TRUNCATED_NOTE)
         exit_code = 1
     stderr = ("\n".join(notes) + "\n").encode() if notes else b""
-    return DuOutput(format_records(lines), stderr, exit_code, runs)
+    return DuOutput(format_records(lines), stderr, exit_code, records)
 
 
 def _respell_under(virtual: str, paths: Sequence[PathSpec]) -> str:
@@ -814,5 +826,5 @@ async def du_generic(
         repeated=repeated,
     )
     return out.stdout, IOResult(
-        stderr=out.stderr, exit_code=out.exit_code, sized_runs=out.runs
+        stderr=out.stderr, exit_code=out.exit_code, records=out.records
     )

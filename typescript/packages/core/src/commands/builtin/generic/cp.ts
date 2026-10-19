@@ -15,7 +15,7 @@
 import { closeQuietly, primeStream } from '../../../io/stream.ts'
 
 import { pathVisible } from '../../../utils/hidden.ts'
-import { mountedPath, rekey, respelled } from '../../../utils/key_prefix.ts'
+import { respelled } from '../../../utils/key_prefix.ts'
 import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import {
@@ -69,7 +69,7 @@ import {
   nearestAncestor,
   spelledFrom,
 } from '../utils/paths.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
 import type { LinkView } from '../../../view/types.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
@@ -345,7 +345,7 @@ export function linkName(copies: TransferLinks, target: PathSpec): PathSpec | nu
   return new PathSpec({
     virtual: where,
     directory: where.slice(0, where.lastIndexOf('/') + 1) || '/',
-    vfsPath: rekey(target.virtual, target.vfsPath, where),
+    vfsPath: stripSlash(where),
     rawPath: target.rawPath,
   })
 }
@@ -1008,9 +1008,9 @@ async function treeLines(
   const unique = [...new Set([...dirs, ...files])].sort(compareCodePoints)
   const lines: string[] = []
   for (const entryMount of unique) {
-    const entry = spelledFrom(mountedPath(src, entryMount), src)
+    const entry = spelledFrom(PathSpec.fromStrPath(entryMount), src)
     const entryDst = spelledFrom(
-      mountedPath(target, dstBase + entryMount.slice(srcBase.length)),
+      PathSpec.fromStrPath(dstBase + entryMount.slice(srcBase.length)),
       target,
     )
     if (dirs.has(entryMount) && (await isDirectory(stat, entryDst))) continue
@@ -1095,8 +1095,8 @@ async function mirrorDirs(
   for (const entryMount of unique) {
     if (blocked.some((root) => within(entryMount, root))) continue
     const dstMount = dstBase + entryMount.slice(srcBase.length)
-    const entryDst = spelledFrom(mountedPath(target, dstMount), target)
-    const entry = spelledFrom(mountedPath(src, entryMount), src)
+    const entryDst = spelledFrom(PathSpec.fromStrPath(dstMount), target)
+    const entry = spelledFrom(PathSpec.fromStrPath(entryMount), src)
     try {
       // A directory meets a link at its name as the link itself, where a file
       // writes through it (GNU's lstat for a directory source, coreutils 9.7).
@@ -1617,8 +1617,8 @@ export async function cpGeneric(
         if (freed === null) continue
         target = freed
       }
-      const srcBase = rstripSlash(src.mountPath)
-      const dstBase = rstripSlash(target.mountPath)
+      const srcBase = rstripSlash(src.virtual)
+      const dstBase = rstripSlash(target.virtual)
       if (isPrimitiveCopy(strategy)) {
         const walked = await walk(strategy.readdir, stat, src, 'cp', errors, copies?.links)
         const entries = intoItself
@@ -1710,15 +1710,15 @@ export async function cpGeneric(
       const files = await strategy.find(src, { type: 'f', unreadable })
       for (const root of new Set(unreadable)) {
         errors.push(
-          `cp: cannot access '${spelledFrom(mountedPath(src, root), src).rawPath}': ${posixPhrase('EACCES')}`,
+          `cp: cannot access '${spelledFrom(PathSpec.fromStrPath(root), src).rawPath}': ${posixPhrase('EACCES')}`,
         )
       }
       for (const entryMount of files) {
         if (intoItself && within(entryMount, dstBase)) continue
         if (mirrored.blocked.some((root) => within(entryMount, root))) continue
         const dstMount = dstBase + entryMount.slice(srcBase.length)
-        const entry = spelledFrom(mountedPath(src, entryMount), src)
-        const entryDst = spelledFrom(mountedPath(target, dstMount), target)
+        const entry = spelledFrom(PathSpec.fromStrPath(entryMount), src)
+        const entryDst = spelledFrom(PathSpec.fromStrPath(dstMount), target)
         if (!(await overwriteGate(policy, stat, entry, entryDst, errors, copies))) continue
         if (
           mirrored.made !== null &&
@@ -1759,7 +1759,7 @@ export async function cpGeneric(
           flags.verbose ? lines : undefined,
           policy,
           [],
-          mirrored.blocked.map((root) => mountedPath(src, root).virtual),
+          mirrored.blocked.map((root) => PathSpec.fromStrPath(root).virtual),
         )
       }
       continue

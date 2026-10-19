@@ -48,7 +48,7 @@ export { DifyVFS } from './vfs/dify/dify.ts'
 export { AirtableVFS } from './vfs/airtable/airtable.ts'
 export { checkReadContract, type ReadFixture } from './vfs/testing.ts'
 export { vfsCall } from './vfs/call.ts'
-export { Effect, type SearchQuery, Target } from './vfs/types.ts'
+export { Effect, Target } from './vfs/types.ts'
 export { Mem0VFS } from './vfs/mem0/mem0.ts'
 export { OneDriveVFS } from './vfs/onedrive/onedrive.ts'
 export { QdrantVFS } from './vfs/qdrant/qdrant.ts'
@@ -83,7 +83,7 @@ export {
   VFSName,
   WritePolicy,
 } from './types.ts'
-export type { ReadSpec } from './types.ts'
+export type { ReadSpec, SearchQuery } from './types.ts'
 export { eisdir, enoent, enotdir } from './errors/fs.ts'
 export { snakeToCamel } from './utils/normalize.ts'
 export { RAMEventQueue, EventHub } from './events/index.ts'

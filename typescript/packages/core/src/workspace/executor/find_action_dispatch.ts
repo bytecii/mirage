@@ -29,7 +29,7 @@ import { modifiedTs } from '../../core/generic/find.ts'
 import type { Identity } from '../../commands/builtin/utils/identity.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { shellJoin } from '../../shell/join.ts'
-import { type ByteSource, materialize } from '../../io/types.ts'
+import { type ByteSource, materialize, type PathRecord } from '../../io/types.ts'
 import { getCurrentSession, runAsProgram } from '../../context/session_context.ts'
 import { type FileStat, type PathSpec, FileType } from '../../types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
@@ -405,15 +405,14 @@ function hasActions(expr: FindExpr): boolean {
  * order one start point's walk at a time: GNU walks each start point to
  * completion before the next, so `find b a -depth` prints `b/x b a/y a`
  * and `find d d/sub -depth` finishes `d` before it begins `d/sub` again,
- * which is why the rows arrive as one run per start point rather than
- * one list; `-printf`'s %P and %d measure a row from its run's start
- * point. Returns the rows to print, the stderr to append, and the
+ * which is why each row names the start point it was found under;
+ * `-printf`'s %P and %d measure a row from that start point. Returns the rows to print, the stderr to append, and the
  * exit status the actions impose (0 when they impose none, even with
  * stderr).
  */
 export async function applyFindActions(
   stdout: ByteSource | null,
-  matchedRuns: readonly (readonly PathSpec[])[] | null,
+  records: readonly PathRecord[] | null,
   texts: readonly string[],
   registry: MountRegistry,
   cwd: string,
@@ -437,16 +436,18 @@ export async function applyFindActions(
   const once =
     options.stdin === undefined || options.stdin === null ? null : new SharedStdin(options.stdin)
   await materialize(stdout)
-  if (matchedRuns === null)
-    return [null, encodeText('find: actions require structured matches\n'), 1]
-  // The runs arrive one per start point, in operand order, so each row
-  // carries the spelling of the start point it was found under.
-  const matches = matchedRuns.flatMap((run, i) =>
-    (reorders
-      ? [...run].sort((a, b) => compareDepthFirst(a.rawPath || a.virtual, b.rawPath || b.virtual))
-      : run
-    ).map((match): [PathSpec, string] => [match, startBase(starts[i])]),
-  )
+  if (records === null) return [null, encodeText('find: actions require structured matches\n'), 1]
+  // The rows arrive in operand order, each naming the start point it was
+  // found under, whose spelling it carries.
+  const matches = (
+    reorders
+      ? [...records].sort(
+          (a, b) =>
+            a.run - b.run ||
+            compareDepthFirst(a.path.rawPath || a.path.virtual, b.path.rawPath || b.path.virtual),
+        )
+      : records
+  ).map((record): [PathSpec, string] => [record.path, startBase(starts[record.run])])
   // An expression with no action of its own prints, which is the one
   // implicit action -depth reorders.
   const actions: FindAction[] = expr.actions.length > 0 ? expr.actions : [{ kind: 'print' }]

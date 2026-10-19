@@ -56,6 +56,7 @@ from mirage.policy.types import (
     Hide,
     Outcome,
     Pending,
+    PolicyCaller,
     Route,
     RouteContext,
     SessionContext,
@@ -63,6 +64,7 @@ from mirage.policy.types import (
     VfsContext,
     VfsExplanation,
     VfsResultContext,
+    policy_caller,
 )
 from mirage.types import Limit, MountMode, PathSpec, Refusal
 from mirage.utils.abort import MirageAbortError
@@ -236,6 +238,8 @@ async def pre_vfs_gate(
             run's op, which the dry run may not let change anything (an
             ask its read meets reads the ledger and records nothing).
     """
+    if caller is None:
+        caller = current_caller()
     ctx = VfsContext(
         call=call,
         path=path,
@@ -243,9 +247,8 @@ async def pre_vfs_gate(
         prefix=prefix,
         session_id=session_id,
         mode=mode,
+        caller=policy_caller(caller.session),
     )
-    if caller is None:
-        caller = current_caller()
     trace = caller.explaining
     line = caller.refusals is not None
     if isinstance(trace, list):
@@ -408,6 +411,7 @@ async def post_vfs_gate(
         prefix=prefix,
         session_id=session_id,
         mode=mode,
+        caller=policy_caller(caller.session),
         result=result,
     )
     await _refuse_op(ctx, await policies.post_vfs(ctx), decisions, caller)
@@ -626,7 +630,7 @@ class Policies:
         self.views: (
             Callable[
                 [str, "SessionState | None"],
-                tuple[SessionView, "Files"] | None,
+                tuple[SessionView, "Files", PolicyCaller] | None,
             ]
             | None
         ) = None
@@ -805,8 +809,8 @@ class Policies:
                 else None
             )
             if handles is not None:
-                session, vfs = handles
-                ctx = replace(ctx, session=session, vfs=vfs)
+                session, vfs, caller = handles
+                ctx = replace(ctx, session=session, vfs=vfs, caller=caller)
             token = set_explaining(DryRun.DECIDING)
             try:
                 answered = getattr(policy, method)(ctx)

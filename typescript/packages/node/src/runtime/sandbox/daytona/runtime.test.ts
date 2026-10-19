@@ -14,6 +14,10 @@
 
 import { stdinRedirect } from '@struktoai/mirage-core/runtime/sandbox/constants'
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { MountMode } from '@struktoai/mirage-core/types'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
+import { Workspace } from '../../../workspace.ts'
 import type { RuntimeOptions } from '@struktoai/mirage-core/runtime/config'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { DaytonaConfig } from './config.ts'
@@ -148,4 +152,32 @@ describe('DaytonaRuntime', () => {
     expect(runtime).toBeInstanceOf(DaytonaRuntime)
     expect(runtime.captures).toEqual(['@external'])
   })
+})
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'x' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
+
+it.each(RESTRICTIONS)('refuses every line under a session restriction', async (profile) => {
+  const runtime = makeRuntime({ config: { sandboxId: 'sb-77' } })
+  const ws = new Workspace(
+    { '/data': new RAMVFS() },
+    { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+  )
+  try {
+    const agent = await ws.session('agent', { profile: 'agent' })
+    const result = await agent.shell('tool run')
+    expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+      127,
+      '',
+      "daytona: runtime cannot enforce this session's file restrictions\n",
+    ])
+    expect(FakeClient.fetched).toEqual([])
+    const other = await ws.session('other')
+    expect((await other.shell('tool run')).exitCode).toBe(0)
+  } finally {
+    await ws.close()
+  }
 })

@@ -156,20 +156,18 @@ def capture_binding(
             else Files([], dispatch, ledger=False)
         ),
     )
+    # A read of the session reads the session it is bound to; only a
+    # write passes the gates, which read the caller, so only a write
+    # replays it.
     session = ctx.session
     if session is not None:
         ctx = replace(
             ctx,
             session=replace(
                 session,
-                get=scope.wrap(session.get),
-                snapshot=scope.wrap(session.snapshot),
                 set=scope.wrap_async(session.set),
                 unset=scope.wrap_async(session.unset),
                 mark=scope.wrap_async(session.mark),
-                is_readonly=scope.wrap(session.is_readonly),
-                profile=scope.wrap(session.profile),
-                cwd=scope.wrap(session.cwd),
             ),
         )
     resolver = ScopedResolver(binding.resolver, scope)

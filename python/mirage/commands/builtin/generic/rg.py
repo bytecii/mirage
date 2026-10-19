@@ -57,6 +57,7 @@ from mirage.commands.builtin.utils.links import (
     LinkResolver,
     dispatch_of,
     link_resolver,
+    mount_root,
     mounts_of,
 )
 from mirage.commands.builtin.utils.output import format_records
@@ -91,7 +92,6 @@ from mirage.shell.join import shell_join
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.compress import GzipDataError, gunzip_stream
 from mirage.utils.encoding import encoding_for
-from mirage.utils.key_prefix import mount_prefix_of
 from mirage.view.types import MountView
 
 logger = logging.getLogger(__name__)
@@ -1195,15 +1195,10 @@ async def rg_generic(
         paths = [STDIN_OPERAND]
 
     mounts = mounts_of(ctx)
-    mount_prefix = mount_prefix_of(paths[0].virtual, paths[0].vfs_path)
     rd = mount_parent_readdir(
-        partial(call_readdir, readdir, prefix=mount_prefix),
-        mounts,
-        mount_prefix,
+        partial(call_readdir, readdir), mounts, mount_root(ctx)
     )
-    st = mount_parent_stat(
-        partial(call_stat, stat, prefix=mount_prefix), mounts
-    )
+    st = mount_parent_stat(partial(call_stat, stat), mounts)
 
     if (
         pat is not None
@@ -1250,7 +1245,6 @@ async def rg_generic(
             pat,
             f,
             operand_stream,
-            mount_prefix,
             warnings,
             implicit,
             cwd,
@@ -1672,7 +1666,6 @@ async def _search_all(
     pat: RgPattern,
     f: RgFlags,
     operand_stream: Callable[[PathSpec], AsyncIterator[bytes]],
-    prefix: str,
     warnings: list[str],
     implicit: bool,
     cwd: str,
@@ -1693,8 +1686,6 @@ async def _search_all(
         pat (re.Pattern[str]): the compiled pattern.
         f (RgFlags): the parsed flags.
         operand_stream (Callable): each file's reader, stdin's for `-`.
-        prefix (str): the operands' mount prefix, which a walked file's
-            key is spelled under.
         warnings (list[str]): collects what could not be read.
         implicit (bool): the line named no path, so ripgrep reports a
             search that found nothing to search.
@@ -1738,9 +1729,7 @@ async def _search_all(
                     h.resolver.read(h.virtual)
                     if h.resolver is not None
                     else operand_stream(
-                        to_pathspec(h.virtual, prefix)
-                        if h.spec is None
-                        else h.spec
+                        to_pathspec(h.virtual) if h.spec is None else h.spec
                     )
                 )
                 if (

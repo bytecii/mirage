@@ -119,6 +119,10 @@ export interface Caller {
   readonly commandSink: readonly [OpRecord[] | null, OpRecord[]] | null
   // When the running command started.
   readonly started: number | null
+  // The recorder of the innermost level running a command, for a level whose
+  // output is a value (a substitution's) to send another level's stream
+  // bytes toward it.
+  readonly enclosing: JobConsole | null
 }
 
 /**
@@ -161,6 +165,7 @@ const UNBOUND: Caller = {
   write: null,
   ownVersion: null,
   started: null,
+  enclosing: null,
 }
 
 const callerStorage = createAsyncContext<Caller>()

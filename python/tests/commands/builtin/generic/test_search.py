@@ -22,8 +22,7 @@ from mirage.commands.builtin.generic.search import (
 )
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.flag_view import FlagView
-from mirage.types import PathSpec
-from mirage.vfs.types import SearchQuery
+from mirage.types import PathSpec, SearchQuery
 
 PATH = PathSpec(virtual="/data", directory="/", vfs_path="")
 

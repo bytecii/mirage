@@ -7,11 +7,10 @@ from mirage.core.dify.read import read_stream as _read_stream
 from mirage.core.dify.search import search_many, search_resource
 from mirage.core.dify.stat import stat as _stat
 from mirage.core.dify.tree import DIFY_TREE
-from mirage.types import DirListing, FileStat, PathSpec, VFSName
+from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.dify.config import DifyConfig
 from mirage.vfs.dify.prompt import PROMPT
-from mirage.vfs.types import SearchQuery
 
 _readdir = DIFY_TREE.readdir
 

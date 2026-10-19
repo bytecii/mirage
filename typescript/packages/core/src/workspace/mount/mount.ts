@@ -18,7 +18,6 @@ import { RAMAccessor } from '../../accessor/ram.ts'
 import { activePipe, pipeBelow } from '../../core/dev/device.ts'
 import type { DevicePipe } from '../../core/dev/pipe.ts'
 import { norm } from '../../utils/path.ts'
-import { restrictedMountsFor } from '../../runtime/binding.ts'
 import { ContextScope } from '../../utils/context_scope.ts'
 import {
   captureSessionContext,
@@ -43,7 +42,6 @@ import { STDIN_DASH_COMMANDS, STDIN_DASH_LEADING } from '../../commands/spec/con
 import { hasInjectedHelp, hasInjectedVersion } from '../../commands/spec/standard.ts'
 import { ROOT_CWD } from '../../commands/constants.ts'
 import type { OpKwargs, SessionAccess } from '../../view/types.ts'
-import { makeResolveGlob } from '../../utils/glob_walk.ts'
 import {
   appendByRewrite,
   expectOffset,
@@ -53,7 +51,7 @@ import {
 } from '../../core/generic/rewrite.ts'
 import { declared, declaredCalls, methodName } from '../../vfs/call.ts'
 import { WRITE_EFFECTS } from '../../vfs/constants.ts'
-import { Effect, type Handed, type SearchQuery } from '../../vfs/types.ts'
+import { Effect, type Handed } from '../../vfs/types.ts'
 import { isUnsatisfiableRange, sliceWindow } from '../../utils/ranges.ts'
 
 import { getExtension } from '../../utils/filetype.ts'
@@ -81,14 +79,15 @@ import { uuid7 } from '../../utils/ids.ts'
 import { Activity } from '../../utils/activity.ts'
 import type { BaseVFS } from '../../vfs/base.ts'
 import type { Accessor } from '../../accessor/base.ts'
+import type { DirListing } from '../../types.ts'
 import {
   type Limit,
   type Producer,
   type ReadSpec,
+  type SearchQuery,
   type SetAttrFields,
   type WalkProbe,
   DEFAULT_READ_SPEC,
-  DirListing,
   FileStat,
   WritePolicy,
   FileType,
@@ -112,7 +111,13 @@ import {
   unprovenMiss,
 } from './listing.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { dispatchStat, linkFollow, vfsStatPath } from '../../commands/builtin/utils/paths.ts'
+import {
+  dispatchStat,
+  linkFollow,
+  vfsStatPath,
+  virtualFlags,
+  virtualKey,
+} from '../../commands/builtin/utils/paths.ts'
 import { linkView } from '../../commands/builtin/utils/links.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { encodeText } from '../../shell/bytes.ts'
@@ -262,16 +267,6 @@ export interface MountInit {
   // The `vfs:` value the driver was built from, recorded for snapshots;
   // null for one constructed in code.
   vfsRef?: string | null
-}
-
-// A VFS's listing as the paths a glob walks, listed bare with no mount to
-// keep its rows: each row names a child of `path`. Mirrors Python's
-// `_listed_paths`.
-async function listedPaths(vfs: BaseVFS, path: PathSpec): Promise<string[]> {
-  const listed = await vfs.readdir(path, {})
-  const rows = listed instanceof DirListing ? listed.entries : listed
-  const base = rstripSlash((path.pattern !== null ? path.dir : path).virtual)
-  return rows.map((row) => `${base}/${row.name}`)
 }
 
 // What the walk guard proves an operand's `.` and `..` with: the
@@ -439,52 +434,6 @@ export class MountEntry {
   }
 
   /**
-   * Expand glob words through the VFS's `readdir`, one pattern spec at a
-   * time; a VFS with no `readdir` leaves every word as typed. The mount
-   * stamps each word's mount-relative key before the walk sees it, since
-   * the key is the placement's to know, and keeps the VFS retained while
-   * the walk reads metadata.
-   */
-  async expandGlob(
-    paths: readonly PathSpec[],
-    prefix: string,
-    access?: SessionAccess,
-  ): Promise<PathSpec[]> {
-    if (!this.vfs.supports('readdir')) return [...paths]
-    return this.use(async () => {
-      const manager = this.cacheManager
-      if (manager === null) return this.runGlob(paths, prefix, this.indexStore, access)
-      return manager.mutation(async () => {
-        await this.ensureReady()
-        return this.runGlob(paths, prefix, manager.scopeIndexLocked(this.indexStore), access)
-      })
-    })
-  }
-
-  private async runGlob(
-    paths: readonly PathSpec[],
-    prefix: string,
-    index: IndexCacheStore,
-    access?: SessionAccess,
-  ): Promise<PathSpec[]> {
-    const out: PathSpec[] = []
-    for (const p of paths) {
-      const spec = prefix
-        ? new PathSpec({
-            virtual: p.virtual,
-            directory: p.directory,
-            ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-            resolved: p.resolved,
-            vfsPath: mountKey(p.virtual, prefix),
-            rawPath: p.rawPath,
-          })
-        : p
-      out.push(...(await this.glob(spec, index, access)))
-    }
-    return out
-  }
-
-  /**
    * The VFS as the owner of `access` sees it: the device mount's view of that
    * session's descriptors, or the history view of its commands, which a
    * browser call cannot find any other way.
@@ -509,19 +458,6 @@ export class MountEntry {
     const accessor = this.viewFor(access).accessor
     if (!(accessor instanceof RAMAccessor)) return false
     return pipeBelow(accessor, norm('/' + mountKey(path, rstripSlash(this.prefix))))
-  }
-
-  /** Expand one pattern, keyed below the mount, through the VFS's `readdir` and `stat`. */
-  glob(path: PathSpec, index?: IndexCacheStore, access?: SessionAccess): Promise<PathSpec[]> {
-    const vfs = this.viewFor(access)
-    const store = index ?? this.index
-    return makeResolveGlob(
-      this.lists ? (p) => this.listed(p, store) : (p) => listedPaths(vfs, p),
-      vfs.maxGlobMatches,
-      this.lists ? (p) => this.statAt(store, p) : (p) => vfs.stat(p, {}),
-      undefined,
-      access,
-    )([path])
   }
 
   /** Metadata access bound to this mount's ownership. */
@@ -739,8 +675,7 @@ export class MountEntry {
    * Batch-register user commands. Mirrors Python's `Mount.register_commands(...)`.
    * Each one is this mount's own, keyed by name and filetype, so it wins
    * over the shared commands of that name, and is a user command
-   * (`isUserCommand`): refused while the session restricts this mount, and
-   * before it writes to a read-only one. Multi-VFS entries are filtered as
+   * (`isUserCommand`): refused before it writes to a read-only one. Multi-VFS entries are filtered as
    * `ownCommands` says. A `CLI` serves its verbs as a command tree on this
    * mount, under its root's name: a line naming it walks the tree as an
    * installed CLI's does and runs the leaf on this mount's accessor
@@ -825,9 +760,9 @@ export class MountEntry {
    * window and all, and the first answer that is not null wins. The rest
    * is the dispatcher's own shape around the VFS's functions: a read takes a
    * window, `append` and `pwrite` are a rewrite where the VFS only writes
-   * whole files, `mkdir` refuses a taken name first, and `glob` walks
-   * `readdir`. Only a method marked `@vfsCall` is reachable by name, and a
-   * custom one is handed the scope and the op's positional arguments.
+   * whole files, and `mkdir` refuses a taken name first. Only a method
+   * marked `@vfsCall` is reachable by name, and a custom one is handed the
+   * scope and the op's positional arguments.
    * Mirrors Python's `MountEntry._callers`.
    */
   callers(name: string, filetype: string | null, vfs: BaseVFS = this.vfs): OpCall[] {
@@ -851,9 +786,6 @@ export class MountEntry {
         )
       }
       return levels
-    }
-    if (name === 'glob') {
-      return vfs.supports('readdir') ? [(scope, _args, kw) => this.glob(scope, kw.index)] : []
     }
     if (name === 'write' && vfs.supports('write')) {
       return [(scope, args, kw) => this.writeSource(vfs, scope, writeSource(args), false, kw)]
@@ -1521,19 +1453,17 @@ export class MountEntry {
     const pulls = new ContextScope([
       ...captureSessionContext(),
       captureExecutionContext(),
+      (fn) => runWithMountContext(async () => await fn(), this.mountId),
       (fn) => runWithWriteContext(this.prefix, this.writeContext(), async () => await fn()),
       (fn) => runWithRevisions(revisions, async () => await fn()),
     ])
     const signal = callerSignal()
-    const stream = withMountContext(
-      withPullTimeout(
-        this.wants('readStream').length > 0
-          ? this.readEntryStream(vfs, scope, this.index, signal)
-          : vfs.readStream(scope, {}, signal),
-        limit?.timeoutSeconds ?? null,
-        'read',
-      ),
-      this.mountId,
+    const stream = withPullTimeout(
+      this.wants('readStream').length > 0
+        ? this.readEntryStream(vfs, scope, this.index, signal)
+        : vfs.readStream(scope, {}, signal),
+      limit?.timeoutSeconds ?? null,
+      'read',
     )
     return this.activity.hold(pulls.stream(stream)) as AsyncIterable<Uint8Array>
   }
@@ -1617,20 +1547,21 @@ export class MountEntry {
           }),
         ]
       }
-      const keyedPaths = this.keyedPaths(cmdName, paths)
       const probe = walkProbeOf(ctx)
       const access = ctx.session?.access()
-      const runCtx = this.commandCtx(this.keyedFlags(flags), ctx)
       return this.inCommandScope(probe, async (): Promise<[ByteSource | null, IOResult]> => {
         for (const cmd of handlers) {
-          const refusal =
-            this.readOnlyRefusal(cmdName, cmd, flags, access) ??
-            this.unenforcedRefusal(cmdName, cmd)
+          const user = this.isUserCommand(cmd)
+          const operands = user ? this.keyedPaths(cmdName, paths) : paths.map(virtualKey)
+          const runCtx = user
+            ? this.commandCtx(this.keyedFlags(flags), ctx, this.prefix)
+            : this.commandCtx(virtualFlags(flags), ctx, '')
+          const refusal = this.readOnlyRefusal(cmdName, cmd, flags, access)
           if (refusal !== null) return [null, refusal]
           const result = await this.runOne(
             cmdName,
             cmd,
-            keyedPaths,
+            operands,
             texts,
             { ...runCtx, spec: namedSpec(cmd, cmdName) },
             limitOverride,
@@ -1695,9 +1626,13 @@ export class MountEntry {
   }
 
   /**
-   * Stamp this mount's backend key onto each path operand. A stdin `-`
-   * routed nowhere, so it rides on whichever mount runs the line, beside
-   * the operands that chose it. Mirrors Python's MountEntry._keyed_paths.
+   * Stamp this mount's backend key onto each path operand, for a handler that
+   * addresses its backend through the mount's accessor (a user command, a
+   * command tree's leaf); mirage's own commands get every path keyed by its
+   * whole virtual path (`virtualKey`) and reach it through their files. A
+   * stdin `-` routed nowhere, so it rides on whichever mount runs the line,
+   * beside the operands that chose it. Mirrors Python's
+   * MountEntry._keyed_paths.
    */
   private keyedPaths(cmdName: string, paths: PathSpec[]): PathSpec[] {
     const mountPrefix = rstripSlash(this.prefix)
@@ -1743,14 +1678,19 @@ export class MountEntry {
    *
    * A pattern operand travels to the handler whole. The handler resolves it
    * once, through its files, which is where the namespace facts (links,
-   * nested mount roots, a trailing slash) are in view; the VFS's glob hook
-   * serves the shell tier and cannot see them, so expanding here would lose
-   * what the handler needs. Python's dispatcher never expands either. The
-   * working directory carries this mount's key. Mirrors Python's
+   * nested mount roots, a trailing slash) are in view, so expanding here
+   * would lose what the handler needs. Python's dispatcher never expands
+   * either. The working directory is keyed below `prefix`: this mount's for a
+   * handler `keyedPaths` keys the operands of, empty for mirage's own
+   * commands, whose paths keep their whole virtual path. Mirrors Python's
    * MountEntry._command_ctx.
    */
-  private commandCtx(flags: Record<string, FlagValue>, ctx: Partial<Context>): Context {
-    const prefix = rstripSlash(this.prefix)
+  private commandCtx(
+    flags: Record<string, FlagValue>,
+    ctx: Partial<Context>,
+    mountPrefix: string,
+  ): Context {
+    const prefix = rstripSlash(mountPrefix)
     const cwd = (ctx.cwd ?? ROOT_CWD).virtual
     return {
       ...ctx,
@@ -1835,30 +1775,6 @@ export class MountEntry {
       })
     }
     return null
-  }
-
-  /**
-   * Refuse a user command while the session restricts this mount. Such a
-   * command may reach its backend through its own handle, past the
-   * dispatcher, so no hide, path rule or mode cap sees what it reads or
-   * writes; like a runtime that cannot enforce them, it does not run. The
-   * handle reaches the whole store, a part another mount shadows included, so
-   * a restriction anywhere below the prefix counts. Mirrors Python's
-   * MountEntry._unenforced_refusal.
-   */
-  private unenforcedRefusal(cmdName: string, cmd: Command): IOResult | null {
-    if (!this.isUserCommand(cmd)) return null
-    const session = currentCaller().session
-    if (
-      session === null ||
-      !restrictedMountsFor(session, [this.prefix]).map(norm).includes(norm(this.prefix))
-    ) {
-      return null
-    }
-    return new IOResult({
-      exitCode: 127,
-      stderr: encodeText(`${cmdName}: command cannot enforce this session's file restrictions\n`),
-    })
   }
 
   /**
@@ -1954,12 +1870,11 @@ export class MountEntry {
       const probe = walkProbeOf(ctx)
       const access = ctx.session?.access()
       const flags = this.keyedFlags(ctx.flags)
-      const runCtx = this.commandCtx(flags, ctx)
+      const runCtx = this.commandCtx(flags, ctx, this.prefix)
       return this.inCommandScope(probe, async (): Promise<CommandFnResult> => {
         // No flag here is answered for the leaf: walkLeaf answered the
         // tree's own help, and the leaf is handed the rest.
-        const refusal =
-          this.readOnlyRefusal(prog, leaf, {}, access, root) ?? this.unenforcedRefusal(prog, root)
+        const refusal = this.readOnlyRefusal(prog, leaf, {}, access, root)
         if (refusal !== null) return [null, refusal]
         const accessor = this.viewFor(access).accessor
         return this.runIn(
@@ -2006,7 +1921,7 @@ export class MountEntry {
           }
         : ctx
     return runHandler(call(runCtx), name, limit, producer, voice, {
-      scope: (result) => wrapMountStreams(result, this.mountId, this.activity),
+      scope: (result) => wrapMountStreams(result, this.activity),
       ...(writes ? { drop: () => this.dropCaches() } : {}),
       ...(runSignal !== undefined ? { signal: runSignal } : {}),
       ...(guard !== null ? { abort: guard } : {}),
@@ -2226,18 +2141,18 @@ export function wrapStream(result: unknown, mountId: string, activity: Activity)
   return result
 }
 
-// Push `mountId` back during lazy consumption of the stream the command
-// handed back, so a deferred backend read attributes its record the same
-// way an eager one does. Mirrors python's _wrap_mount_streams.
+// Keep the command's caller on the stream the command handed back, so a
+// deferred backend read records under the mount and reads the revisions its
+// command bound, as an eager one does. Called inside the mount's command
+// scope. Mirrors python's _wrap_mount_streams.
 function wrapMountStreams(
   result: [ByteSource | null, IOResult],
-  mountId: string,
   activity: Activity,
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   if (stream === null || stream instanceof Uint8Array) return [stream, io]
   const scope = new ContextScope([...captureSessionContext(), captureExecutionContext()])
-  return [activity.hold(scope.stream(withMountContext(stream, mountId))), io]
+  return [activity.hold(scope.stream(stream)), io]
 }
 
 function sortFiletypeMap(m: Map<string, (string | null)[]>): Record<string, (string | null)[]> {

@@ -15,6 +15,7 @@
 import { childMountNames, namespaceNames } from '../../view/namespace_view.ts'
 import { sessionAccess, sessionVisibility } from '../../context/session_context.ts'
 import type { NamespaceLinks, SessionAccess } from '../../view/types.ts'
+import type { DispatchFn } from '../../runtime/types.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { isFsError } from '../../errors/fs.ts'
@@ -26,6 +27,7 @@ import {
   globPattern,
   hasGlob as hasGlobChars,
   literalWord,
+  makeResolveGlob,
   markGlobs,
   spellMatch,
   unmarkGlobs,
@@ -68,6 +70,57 @@ export function globOptions(session: SessionState): GlobOptions {
     globstar: session.shopts.globstar ?? SHOPT_DEFAULTS.get('globstar') ?? false,
     extglob: session.shopts.extglob ?? SHOPT_DEFAULTS.get('extglob') ?? false,
   }
+}
+
+// A directory's entries as the dispatcher lists them, the listing a glob
+// walks: the session's hides, the links and the nested mount roots are the
+// dispatcher's to apply. Mirrors Python's _listing.
+async function listing(dispatch: DispatchFn, path: PathSpec): Promise<string[]> {
+  const [entries] = await dispatch('readdir', path)
+  return [...(entries as string[])]
+}
+
+// A path's row as the dispatcher answers it. Mirrors Python's _stat_of.
+async function statOf(dispatch: DispatchFn, path: PathSpec): Promise<FileStat> {
+  const [row] = await dispatch('stat', path)
+  return row as FileStat
+}
+
+/**
+ * Expand pattern specs on one mount, one at a time, through the dispatcher's
+ * listing and stat, capped at the mount's match limit. A mount that lists
+ * nothing, or no dispatcher (a registry no workspace wired one into), leaves
+ * every word as typed. Each word is keyed below the mount before the walk
+ * reads it. Mirrors Python's expand_glob.
+ */
+export async function expandGlob(
+  dispatch: DispatchFn | null,
+  mount: MountEntry,
+  paths: readonly PathSpec[],
+  access?: SessionAccess,
+): Promise<PathSpec[]> {
+  if (dispatch === null || !mount.answers('readdir')) return [...paths]
+  const prefix = rstripSlash(mount.prefix)
+  const resolve = makeResolveGlob(
+    (p) => listing(dispatch, p),
+    mount.vfs.maxGlobMatches,
+    (p) => statOf(dispatch, p),
+    undefined,
+    access,
+  )
+  const out: PathSpec[] = []
+  for (const p of paths) {
+    const spec = new PathSpec({
+      virtual: p.virtual,
+      directory: p.directory,
+      ...(p.pattern !== null ? { pattern: p.pattern } : {}),
+      resolved: p.resolved,
+      vfsPath: mountKey(p.virtual, prefix),
+      rawPath: p.rawPath,
+    })
+    out.push(...(await resolve([spec])))
+  }
+  return out
 }
 
 // Virtual paths a directory owes the namespace, matching a segment.
@@ -182,13 +235,13 @@ function mergeNamespace(
   return specs.sort((a, b) => compareCodePoints(a.virtual, b.virtual))
 }
 
-// One descent step: the owning backend's matches plus the namespace's.
-// The walk can cross into a nested mount, because a mid-path segment may
-// match a mount root, so the backend asked is the one owning that parent
-// rather than the one owning the typed word. It can equally descend
-// through a symlinked directory, so the parent is resolved through the
-// namespace first and the matches are spelled back under the name that
-// was typed.
+// One descent step: the dispatcher's listing of the parent's mount, matched,
+// plus the namespace's. The walk can cross into a nested mount, because a
+// mid-path segment may match a mount root, so the mount listed is the one
+// owning that parent rather than the one owning the typed word. It can
+// equally descend through a symlinked directory, so the parent is resolved
+// through the namespace first and the matches are spelled back under the
+// name that was typed.
 async function levelMatches(
   registry: MountRegistry,
   mount: MountEntry,
@@ -202,7 +255,7 @@ async function levelMatches(
   await owner.ensureReady()
   const prefix = rstripSlash(owner.prefix)
   const out: string[] = []
-  if (owner.answers('glob')) {
+  if (owner.answers('readdir')) {
     const patternDir = prefix + markGlobs(real.slice(prefix.length))
     const spec = new PathSpec({
       virtual: patternDir,
@@ -212,7 +265,7 @@ async function levelMatches(
       resolved: false,
     })
     try {
-      const matches = await owner.expandGlob([spec], prefix, access)
+      const matches = await expandGlob(registry.dispatchFor(access), owner, [spec], access)
       // A descent step yields children, so a match that is the parent
       // itself is not one. A backend asked to list a path that is really
       // a file answers with that file, which walked back out as a
@@ -320,7 +373,7 @@ async function walk(
     const gathered: [string, string, boolean][] = []
     for (const [dir, spelled] of level) {
       if (seg === '.' || seg === '..') {
-        if (await isDirectory(registry, mount, links, dir)) {
+        if (await isDirectory(registry, mount, links, dir, access)) {
           const real = links !== null ? links.follow(dir) : dir
           gathered.push([seg === '..' ? parent(real) : dir, joinSpelling(spelled, seg), false])
         }
@@ -369,15 +422,16 @@ async function walk(
 // Whether a match is a directory, the way a trailing slash asks. bash keeps
 // a directory or a symlink to one and drops a regular file or a broken link
 // (bash 5.2, `*/`). A nested mount root is a directory by construction;
-// anything else is asked of the mount that owns the link-resolved path, one
-// stat per match. That mount is readied first, as levelMatches readies one
+// anything else is the dispatcher's stat of the link-resolved path, one per
+// match. The mount it lands on is readied first, as levelMatches readies one
 // before listing it, because a link can point into a mount nothing has
-// touched yet. The mount's op table supplies stat; an unclassified match is dropped.
+// touched yet. An unclassified match is dropped.
 async function isDirectory(
   registry: MountRegistry,
   mount: MountEntry,
   links: NamespaceLinks | null,
   virtual: string,
+  access?: SessionAccess,
 ): Promise<boolean> {
   let real = virtual
   if (links !== null) {
@@ -391,13 +445,12 @@ async function isDirectory(
   const owner = mountOf(registry, real, mount)
   const prefix = rstripSlash(owner.prefix)
   if (rstripSlash(real) === prefix) return true
+  const dispatch = registry.dispatchFor(access)
+  if (dispatch === null) return false
   let row: unknown
   try {
     await owner.ensureReady()
-    row =
-      registry.opStat === null
-        ? await owner.call('stat', real)
-        : await registry.opStat(owner, PathSpec.fromStrPath(real, mountKey(real, prefix)))
+    row = await statOf(dispatch, PathSpec.fromStrPath(real))
   } catch (err) {
     if (isFsError(err)) return false
     throw err
@@ -448,7 +501,7 @@ export async function resolveGlobs(
         continue
       }
       const prefix = rstripSlash(mount.prefix)
-      // A VFS with no glob of its own can still hold a nested mount
+      // A VFS that lists nothing can still hold a nested mount
       // root or a link under the globbed directory; with nothing for the
       // namespace to add it keeps the untouched pass-through it had.
       const midPath = item.dotted !== null || hasGlobChars(item.directory, access)
@@ -460,7 +513,7 @@ export async function resolveGlobs(
       const linked = !midPath && listingDir(links, directory) !== directory
       const extra =
         midPath || linked ? [] : namespaceChildren(registry, links, directory, item.pattern, access)
-      if (!linked && !mount.answers('glob') && extra.length === 0) {
+      if (!linked && !mount.answers('readdir') && extra.length === 0) {
         result.push(item)
         continue
       }
@@ -513,13 +566,18 @@ export async function resolveGlobs(
           // to `xa.txt` lost its first match to that ambiguity. The
           // directory-shaped spec has no literal to reinstate, so an
           // empty list means no match and every spec returned is one.
-          const own = await mount.expandGlob([withPrefix.dir], prefix, access)
+          const own = await expandGlob(
+            registry.dispatchFor(access),
+            mount,
+            [withPrefix.dir],
+            access,
+          )
           resolved = mergeNamespace(own, extra, directory, registry, mount)
         }
         if (dirsOnly) {
           const kept: PathSpec[] = []
           for (const p of resolved) {
-            if (await isDirectory(registry, mount, links, p.virtual)) kept.push(p)
+            if (await isDirectory(registry, mount, links, p.virtual, access)) kept.push(p)
           }
           resolved = kept
         }

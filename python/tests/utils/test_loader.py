@@ -18,7 +18,7 @@ import pytest
 
 from mirage.core.ram.stream import read_stream
 from mirage.types import PathSpec
-from mirage.vfs.loader import load_backend_class
+from mirage.utils.loader import load_backend_class
 from tests.fixtures.driver_ops import ops
 
 _ps = PathSpec.from_str_path

@@ -412,6 +412,20 @@ class PrimitiveMove:
 MoveStrategy: TypeAlias = NativeMove | PrimitiveMove
 
 
+@dataclass(frozen=True, slots=True)
+class SearchQuery:
+    """A resource query and its backend-specific arguments.
+
+    Args:
+        query (str): the search text, interpreted by the resource.
+        options (Mapping[str, JsonValue]): filters, limits, or namespaced
+            integration options. The backend validates the keys it supports.
+    """
+
+    query: str
+    options: Mapping[str, JsonValue] = field(default_factory=dict)
+
+
 class MountMode(str, Enum):
     """What a mount lets commands do, a cumulative ladder.
 

@@ -34,7 +34,6 @@ from mirage.io.stream import OutputStream, close_quietly, drain
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 from mirage.utils.compress import gzip_compress_stream
-from mirage.utils.key_prefix import mounted_path
 from mirage.utils.path import gnu_basename
 
 
@@ -154,7 +153,9 @@ async def gzip(
                         report(f"\ngzip: {p.raw_path}: {fs_strerror(exc)}", 1)
                         return
                     out = (
-                        mounted_path(p, p.mount_path + suffix)
+                        PathSpec.from_str_path(
+                            "/" + p.virtual.strip("/") + suffix
+                        )
                         if link is None
                         else beside_link(link, p.raw_path + suffix)
                     )

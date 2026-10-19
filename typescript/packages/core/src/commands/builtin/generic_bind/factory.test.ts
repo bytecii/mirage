@@ -14,10 +14,8 @@
 
 import { describe, expect, it } from 'vitest'
 import type { Accessor } from '../../../accessor/base.ts'
-import { runWithMountGate } from '../../../context/session_context.ts'
 import { materialize } from '../../../io/types.ts'
-import { MountMode, PathSpec } from '../../../types.ts'
-import { answeringFiles } from '../../../test-utils.ts'
+import { PathSpec } from '../../../types.ts'
 import { BUILDERS } from './builders/index.ts'
 import { GENERIC_COMMANDS, generic, genericReading } from './factory.ts'
 
@@ -71,38 +69,5 @@ describe('GENERIC_COMMANDS', () => {
     // `shuf -o` may write, which policy reads; a backend with no write
     // function still serves it.
     expect(generic('shuf').write).toBe(true)
-  })
-})
-
-describe('the slash guard on the write tier', () => {
-  it('refuses a slashed write before the dispatcher', async () => {
-    // open(2) with O_CREAT answers `x/` with EISDIR before looking anything
-    // up, so `tee missing/` must not leave a regular file called `missing`
-    // behind; a bare operand passes through.
-    const written: string[] = []
-    const vfs = answeringFiles({
-      write: (path) => {
-        written.push(path.virtual)
-        return null
-      },
-      stat: () => {
-        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
-      },
-    })
-    const run = (name: string, raw: string) =>
-      runWithMountGate('/', MountMode.WRITE, async () => {
-        const path = PathSpec.fromStrPath(raw)
-        const result = await generic(name).fn({} as Accessor, [path], [], {
-          stdin: name === 'tee' ? new Uint8Array() : null,
-          flags: {},
-          cwd: PathSpec.fromStrPath('/'),
-          vfs,
-        })
-        await materialize(result?.[0] ?? null)
-        return DEC.decode(await materialize(result?.[1].stderr ?? null))
-      })
-    expect(await run('tee', '/mnt/missing/')).toBe('tee: /mnt/missing/: Is a directory\n')
-    expect(await run('tee', '/mnt/a.txt')).toBe('')
-    expect(new Set(written)).toEqual(new Set(['/mnt/a.txt']))
   })
 })

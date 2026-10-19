@@ -20,6 +20,7 @@ import pytest
 
 from mirage.core.ram.readdir import readdir as ram_readdir
 from mirage.core.ram.stat import stat as ram_stat
+from mirage.io.types import IOResult
 from mirage.types import MountMode, PathSpec
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.utils.key_prefix import mount_key
@@ -29,27 +30,26 @@ from mirage.workspace import Workspace
 from mirage.workspace.cli.registry import CLIRegistry
 from mirage.workspace.expand.globs import resolve_globs
 from mirage.workspace.mount.mount import MountEntry
-from tests.fixtures.vfs_io import override, override_glob
+from tests.fixtures.vfs_io import override
 
 
-def _mock_registry(resolve_result=None):
-    async def _glob(accessor, path, **kwargs):
-        if callable(resolve_result):
-            return resolve_result([path])
-        if resolve_result is not None:
-            return resolve_result
-        # A backend holding nothing the patterns match. Echoing the spec
-        # back would stand in for no backend: a real one never answers a
-        # dir-shaped ask with the directory itself.
-        return [] if path.pattern else [path]
+def _mock_registry(listing=None):
+    """A registry whose dispatcher lists ``listing`` for every directory.
 
-    mount = override_glob(
-        MountEntry("/data/", RAMVFS(), MountMode.READ), _glob
-    )
+    Args:
+        listing (list[str] | None): the virtual paths a listing answers.
+    """
+    mount = MountEntry("/data/", RAMVFS(), MountMode.READ)
+
+    async def dispatch(name, path, /, **kwargs):
+        if name == "readdir":
+            return list(listing or []), IOResult()
+        raise FileNotFoundError(path.virtual)
 
     reg = MagicMock()
     reg.file_cache = None
     reg.clis = CLIRegistry()
+    reg.dispatch = dispatch
     reg.try_mount_for = MagicMock(return_value=mount)
     reg.mounts = MagicMock(return_value=[mount])
     return reg
@@ -83,13 +83,7 @@ def test_pathspec_without_pattern_preserved():
 
 
 def test_glob_pathspec_resolved_to_pathspec():
-    resolved_ps = PathSpec(
-        vfs_path=mount_key("/data/a.txt", "/data"),
-        virtual="/data/a.txt",
-        directory="/data/",
-        resolved=True,
-    )
-    reg = _mock_registry(resolve_result=[resolved_ps])
+    reg = _mock_registry(["/data/a.txt"])
     glob_ps = PathSpec(
         vfs_path="data/*.txt",
         virtual="/data/*.txt",
@@ -102,25 +96,12 @@ def test_glob_pathspec_resolved_to_pathspec():
     assert len(result) == 2
     assert result[0] == "cat"
     assert isinstance(result[1], PathSpec)
-    assert result[1] is resolved_ps
+    assert result[1].virtual == "/data/a.txt"
+    assert result[1].vfs_path == mount_key("/data/a.txt", "/data")
 
 
 def test_glob_multiple_matches_expand():
-    matches = [
-        PathSpec(
-            vfs_path="data/a.txt",
-            virtual="/data/a.txt",
-            directory="/data/",
-            resolved=True,
-        ),
-        PathSpec(
-            vfs_path="data/b.txt",
-            virtual="/data/b.txt",
-            directory="/data/",
-            resolved=True,
-        ),
-    ]
-    reg = _mock_registry(resolve_result=matches)
+    reg = _mock_registry(["/data/a.txt", "/data/b.txt"])
     glob_ps = PathSpec(
         vfs_path="data/*.txt",
         virtual="/data/*.txt",
@@ -137,24 +118,8 @@ def test_glob_multiple_matches_expand():
     assert result[2].virtual == "/data/b.txt"
 
 
-def test_glob_string_result_wrapped_in_pathspec():
-    reg = _mock_registry(resolve_result=["/a.txt"])
-    glob_ps = PathSpec(
-        vfs_path="data/*.txt",
-        virtual="/data/*.txt",
-        directory="/data/",
-        pattern="*.txt",
-        resolved=False,
-    )
-    classified = ["cat", glob_ps]
-    result = _run(resolve_globs(classified, reg))
-    assert len(result) == 2
-    assert isinstance(result[1], PathSpec)
-    assert result[1].virtual == "/data/a.txt"
-
-
 def test_glob_no_match_keeps_literal_word():
-    reg = _mock_registry(resolve_result=[])
+    reg = _mock_registry([])
     glob_ps = PathSpec(
         vfs_path="data/*.xyz",
         virtual="/data/*.xyz",
@@ -179,21 +144,7 @@ def test_match_named_like_the_glob_word_survives():
     answers with nullglob off. The two are byte-identical, so the real
     match was thrown away.
     """
-    matches = [
-        PathSpec(
-            vfs_path="*a.txt",
-            virtual="/data/*a.txt",
-            directory="/data/",
-            resolved=True,
-        ),
-        PathSpec(
-            vfs_path="xa.txt",
-            virtual="/data/xa.txt",
-            directory="/data/",
-            resolved=True,
-        ),
-    ]
-    reg = _mock_registry(resolve_result=matches)
+    reg = _mock_registry(["/data/*a.txt", "/data/xa.txt"])
     glob_ps = PathSpec(
         vfs_path="*a.txt",
         virtual="/data/*a.txt",
@@ -204,28 +155,6 @@ def test_match_named_like_the_glob_word_survives():
     result = _run(resolve_globs(["echo", glob_ps], reg))
     assert [r.virtual for r in result[1:]] == ["/data/*a.txt", "/data/xa.txt"]
     assert all(not r.pattern for r in result[1:])
-
-
-def test_vfs_reinstating_the_literal_itself_yields_no_match():
-    """``resolve_glob`` is a public hook, so the shape is not a contract.
-
-    A VFS that implements nullglob-off on its own answers a
-    no-match ask with the spec it was handed, which is now the directory.
-    That is not a child of the directory, so it is no match, and the word
-    stays literal rather than expanding to ``/data/``.
-    """
-    reg = _mock_registry(resolve_result=list)
-    glob_ps = PathSpec(
-        vfs_path="*.nope",
-        virtual="/data/*.nope",
-        directory="/data/",
-        pattern="*.nope",
-        resolved=False,
-    )
-    result = _run(resolve_globs(["cat", glob_ps], reg))
-    assert len(result) == 2
-    assert result[1].virtual == "/data/*.nope"
-    assert result[1].pattern
 
 
 def test_mixed_text_and_pathspec():
@@ -315,15 +244,7 @@ def test_scope_error_truncates_instead_of_crash():
 
 
 def test_relative_glob_matches_spelled_as_typed():
-    matches = [
-        PathSpec(
-            vfs_path="data/sub/a.txt",
-            virtual="/data/sub/a.txt",
-            directory="/data/sub/",
-            resolved=True,
-        ),
-    ]
-    reg = _mock_registry(resolve_result=matches)
+    reg = _mock_registry(["/data/sub/a.txt"])
     glob_ps = PathSpec(
         vfs_path="data/sub/*.txt",
         virtual="/data/sub/*.txt",
@@ -339,15 +260,7 @@ def test_relative_glob_matches_spelled_as_typed():
 
 
 def test_absolute_glob_matches_keep_virtual():
-    matches = [
-        PathSpec(
-            vfs_path="data/a.txt",
-            virtual="/data/a.txt",
-            directory="/data/",
-            resolved=True,
-        ),
-    ]
-    reg = _mock_registry(resolve_result=matches)
+    reg = _mock_registry(["/data/a.txt"])
     glob_ps = PathSpec(
         vfs_path="data/*.txt",
         virtual="/data/*.txt",
@@ -362,15 +275,7 @@ def test_absolute_glob_matches_keep_virtual():
 
 
 def test_bare_relative_glob_raw_has_no_dir_prefix():
-    matches = [
-        PathSpec(
-            vfs_path="data/a.txt",
-            virtual="/data/a.txt",
-            directory="/data/",
-            resolved=True,
-        ),
-    ]
-    reg = _mock_registry(resolve_result=matches)
+    reg = _mock_registry(["/data/a.txt"])
     glob_ps = PathSpec(
         vfs_path="data/*.txt",
         virtual="/data/*.txt",
@@ -471,6 +376,39 @@ def test_glob_operand_commands_see_mount_and_link():
         "10",
         "total",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("echo /base/*", "/base/f1 /base/sub\n"),
+        ("shopt -s dotglob; echo /base/*", "/base/f1 /base/sub\n"),
+        ("echo /base/*/*", "/base/*/*\n"),
+        ("echo /base/*/", "/base/sub/\n"),
+        ("shopt -s globstar; echo /base/**", "/base/ /base/f1 /base/sub\n"),
+        ("for f in /base/*; do echo $f; done", "/base/f1\n/base/sub\n"),
+        ("touch /base/*.key; echo /base/*", "/base/f1 /base/sub\n"),
+    ],
+)
+async def test_a_glob_never_matches_what_the_session_hides(line, expected):
+    """The listing a glob walks is the dispatcher's, so a hidden file, a
+    hidden nested mount and a link leading where the session cannot see
+    match nothing, at any depth."""
+    ws = _ws()
+    await _seed(ws)
+    await ws.shell("printf k > /base/sub/f.key", session_id="s")
+    await ws.shell("printf k > /base/top.key", session_id="s")
+    await ws.shell("ln -s /base/sub/f.key /base/.alias", session_id="s")
+    ws.create_session(
+        "n",
+        profile={"paths": {"hide": ["*.key", "/base/inner", "/base/sub/f2"]}},
+    )
+    try:
+        result = await ws.shell(line, session_id="n")
+        assert await result.stdout_str() == expected
+    finally:
+        await ws.close()
 
 
 def test_glob_matches_only_the_pattern():
@@ -706,32 +644,32 @@ def test_trailing_slash_glob_drives_the_issue_loop():
     assert _out(ws, line) == "sample\nsample\n"
 
 
-def _recording_keys(mount: MountEntry) -> list[tuple[str, str]]:
-    """Record the keys ``mount``'s glob is handed, then expand as before.
+def _recording_keys(vfs: RAMVFS) -> list[tuple[str, str]]:
+    """Record the keys ``vfs``'s listing is handed, then list as before.
 
     Args:
-        mount (MountEntry): the mount to watch.
+        vfs (RAMVFS): the backend to watch.
     """
     seen: list[tuple[str, str]] = []
-    derived = mount._glob
 
-    async def glob(accessor, path: PathSpec, **kwargs) -> list[PathSpec]:
+    async def readdir(accessor, path: PathSpec, **kwargs):
         seen.append((path.virtual, path.vfs_path))
-        return await derived(path, **kwargs)
+        return await ram_readdir(accessor, path)
 
-    override_glob(mount, glob)
+    override(vfs, "readdir", readdir)
     return seen
 
 
-def test_glob_op_is_handed_keys_below_a_non_root_prefix():
-    # The ``glob`` op never sees the mount prefix: the mount stamps each
-    # spec's ``vfs_path`` with ``mount_key(virtual, prefix)`` before the
-    # op runs, on every entry point that expands a word (the workspace
-    # expander, its mid-path and globstar walks, and the builtins' operands),
-    # a quoted prefix read by its literal spelling.
+def test_glob_listing_is_handed_keys_below_a_non_root_prefix():
+    # A glob's listing never sees the mount prefix: the backend is handed
+    # each directory keyed ``mount_key(virtual, prefix)``, on every entry
+    # point that expands a word (the workspace expander, its mid-path and
+    # globstar walks, and the builtins' operands), a quoted prefix read
+    # by its literal spelling.
     # Pinned the same way in typescript's globs.test.ts.
-    ws = Workspace({"/mnt/x+/": RAMVFS()}, mode=MountMode.WRITE)
-    seen = _recording_keys(ws.mount("/mnt/x+/"))
+    vfs = RAMVFS()
+    ws = Workspace({"/mnt/x+/": vfs}, mode=MountMode.WRITE)
+    seen = _recording_keys(vfs)
     ws.create_session("s")
     for line in (
         "mkdir -p /mnt/x+/team/sub",

@@ -37,4 +37,4 @@ def test_vfs_uses_generic_read_only_surface():
         "search",
         "stat",
     } <= commands
-    assert served(res) == {"glob", "read", "readdir", "stat"}
+    assert served(res) == {"read", "readdir", "stat"}

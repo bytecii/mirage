@@ -19,9 +19,11 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { Context } from '@struktoai/mirage-core/commands/config'
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
-import type { Program } from '@struktoai/mirage-core/runtime/types'
+import type { Program, RunResult } from '@struktoai/mirage-core/runtime/types'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import { DiskVFS } from '../../../vfs/disk/disk.ts'
 import { Workspace } from '../../../workspace.ts'
 import { LocalRuntime } from './runtime.ts'
 
@@ -475,3 +477,43 @@ it.each(["yes | perl -ne 'print; exit'", 'perl -e \'$|=1; print "y\\n" while 1\'
   },
   5000,
 )
+
+// A local runtime that records the programs it would run.
+class RecordingLocalRuntime extends LocalRuntime {
+  readonly programs: Program[] = []
+
+  override interpret(_engine: undefined, program: Program): Promise<RunResult> {
+    this.programs.push(program)
+    return Promise.resolve({ stdout: new TextEncoder().encode('ran\n'), stderr: null, exitCode: 0 })
+  }
+}
+
+const RESTRICTIONS: SessionProfile[] = [
+  { paths: { hide: ['/data/secret'] } },
+  { commands: { deny: [{ paths: ['/data/secret'], reason: 'x' }] } },
+  { mounts: new Map([['/data', { mode: MountMode.READ }]]) },
+]
+
+it.each(RESTRICTIONS)('refuses every program under a session restriction', async (profile) => {
+  const runtime = new RecordingLocalRuntime()
+  const root = await mkdtemp(join(tmpdir(), 'mirage-local-'))
+  const ws = new Workspace(
+    { '/data': new DiskVFS({ root }) },
+    { mode: MountMode.EXEC, profiles: { agent: profile }, runtimes: [runtime, 'workspace'] },
+  )
+  try {
+    const agent = await ws.session('agent', { profile: 'agent' })
+    const result = await agent.shell('python3 -c pass')
+    expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+      127,
+      '',
+      "local: runtime cannot enforce this session's file restrictions\n",
+    ])
+    expect(runtime.programs).toEqual([])
+    const other = await ws.session('other')
+    expect(DEC.decode((await other.shell('python3 -c pass')).stdout)).toBe('ran\n')
+  } finally {
+    await ws.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})

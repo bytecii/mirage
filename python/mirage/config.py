@@ -54,8 +54,8 @@ from mirage.types import (
     WritePolicy,
     parse_mount_mode,
 )
+from mirage.utils.loader import load_attr
 from mirage.utils.yaml import parse_yaml
-from mirage.vfs.loader import load_attr
 from mirage.vfs.registry import build_vfs
 from mirage.vfs.s3.config import S3Config
 from mirage.workspace.mount.read_policy import (

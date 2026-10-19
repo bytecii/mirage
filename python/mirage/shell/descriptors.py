@@ -15,7 +15,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import aclosing
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from mirage.errors.fs import ebadf
@@ -205,16 +204,11 @@ class Recorder(JobConsole, StreamOwner):
         ]
 
 
-# The recorder of the innermost level running a command, for a level
-# whose output is a value (a substitution's) to send another level's
-# stream bytes toward it.
-ENCLOSING: ContextVar[Recorder | None] = ContextVar(
-    "enclosing_recorder", default=None
-)
-
-
 async def deliver(
-    sink: JobConsole | None, stream: Inherited, data: ByteSource
+    sink: JobConsole | None,
+    stream: Inherited,
+    data: ByteSource,
+    enclosing: JobConsole | None,
 ) -> bool:
     """Send bytes written to a stream another level owns toward it.
 
@@ -228,11 +222,13 @@ async def deliver(
         sink (JobConsole | None): where the level writes.
         stream (Inherited): the stream the bytes were written to.
         data (bytes): the bytes.
+        enclosing (JobConsole | None): the enclosing level's recorder,
+            its caller's ``enclosing``.
     """
     target = (
         sink
         if sink is not None and not isinstance(sink, Terminal)
-        else ENCLOSING.get()
+        else enclosing
     )
     if target is None:
         return False

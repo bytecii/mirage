@@ -15,13 +15,13 @@
 import { missingOperandError } from '../../../spec/usage.ts'
 import { IOResult } from '../../../../io/types.ts'
 import type { LinkView } from '../../../../view/types.ts'
-import { FileType, type PathSpec } from '../../../../types.ts'
+import { FileType, PathSpec } from '../../../../types.ts'
 import { fsStrerror, isFsError } from '../../../../errors/fs.ts'
-import { mountPrefixOf, mountedPath, respelled } from '../../../../utils/key_prefix.ts'
+import { respelled } from '../../../../utils/key_prefix.ts'
 import { CycleError, resolvePath } from '../../../../utils/path.ts'
 import { rstripSlash } from '../../../../utils/slash.ts'
 import { formatRecords } from '../../utils/output.ts'
-import { linkLocation, linksOf } from '../../utils/links.ts'
+import { linkLocation, linksOf, mountRoot } from '../../utils/links.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import type { CommandFn } from '../../../config.ts'
@@ -45,15 +45,17 @@ function followedParent(virtual: string, links: LinkView | null): string {
 
 // The directories -p removes after `path`, as GNU cuts them from the
 // operand as typed, each with its spelling. null stands for the mount root,
-// which is a mount point and is never removed. Each is reached through the
-// links in its parent, as GNU's rmdir(2) is: `rmdir -p link/nested/leaf`
-// removes the directory `link/nested` names. Mirrors Python's ancestors.
+// which is a mount point and is never removed: `root` is the prefix of the
+// mount the command runs on, without its trailing slash (`mountRoot`). Each
+// is reached through the links in its parent, as GNU's rmdir(2) is: `rmdir
+// -p link/nested/leaf` removes the directory `link/nested` names. Mirrors
+// Python's ancestors.
 export function ancestors(
   path: PathSpec,
   cwd: string,
+  root: string,
   links: LinkView | null = null,
 ): [PathSpec | null, string][] {
-  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   let typed = rstripSlash(path.rawPath) || '/'
   const chain: [PathSpec | null, string][] = []
   while (typed.includes('/')) {
@@ -61,15 +63,15 @@ export function ancestors(
     while (cut > 0 && typed[cut] === '/') cut -= 1
     typed = typed.slice(0, cut + 1)
     const literal = rstripSlash(resolvePath(typed, cwd))
-    if (!literal.startsWith(`${prefix}/`)) {
+    if (!literal.startsWith(`${root}/`)) {
       chain.push([null, typed])
       break
     }
     // A parent linked onto another mount is out of this mount's reach, so
     // the name is tried here as typed.
     const followed = followedParent(literal, links)
-    const virtual = followed.startsWith(`${prefix}/`) ? followed : literal
-    chain.push([respelled(mountedPath(path, virtual.slice(prefix.length)), typed), typed])
+    const virtual = followed.startsWith(`${root}/`) ? followed : literal
+    chain.push([respelled(PathSpec.fromStrPath(virtual), typed), typed])
   }
   return chain
 }
@@ -131,7 +133,7 @@ const rmdir: CommandFn = async (_accessor, paths, _texts, ctx) => {
       continue
     }
     if (!fl.asBool('parents')) continue
-    for (const [ancestor, typed] of ancestors(p, ctx.cwd.virtual, links)) {
+    for (const [ancestor, typed] of ancestors(p, ctx.cwd.virtual, mountRoot(ctx), links)) {
       if (verbose) lines.push(`rmdir: removing directory, '${typed}'`)
       // The walk up meets the mount root, which rmdir(2) answers with EBUSY.
       // An ancestor already gone held the entry just removed, so it was a

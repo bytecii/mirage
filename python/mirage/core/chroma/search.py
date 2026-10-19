@@ -8,11 +8,10 @@ from mirage.core.slug_tree.search import (
     target_entries,
     validate_query,
 )
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.utils.key_prefix import mount_prefix_of, mounted_path
 from mirage.utils.score import score_from_distance
 from mirage.vfs.search import int_option, validate_options
-from mirage.vfs.types import SearchQuery
 
 
 async def search_segments(

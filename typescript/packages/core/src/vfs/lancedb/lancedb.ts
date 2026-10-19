@@ -15,11 +15,10 @@
 import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import { filesContaining } from '../../core/lancedb/search.ts'
 import { SEARCH, read, readdir, stat } from '../../core/lancedb/tree.ts'
-import type { DirListing, FileStat, PathSpec } from '../../types.ts'
+import type { DirListing, FileStat, PathSpec, SearchQuery } from '../../types.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
 import { BaseVFS } from '../base.ts'
 import type { Handed } from '../types.ts'
-import type { SearchQuery } from '../types.ts'
 
 /**
  * LanceDB's functions over its accessor, which a host package builds

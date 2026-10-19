@@ -15,7 +15,7 @@
 import { onMount } from '../../test-utils.ts'
 import { GENERIC_COMMANDS } from '../../commands/builtin/generic_bind/factory.ts'
 import { describe, expect, it } from 'vitest'
-import { materialize } from '../../io/types.ts'
+import { materialize, type PathRecord } from '../../io/types.ts'
 import { RAMVFS } from './ram.ts'
 import { PathSpec } from '../../types.ts'
 const RAM_FIND = GENERIC_COMMANDS.filter((c) => c.name === 'find' && c.filetype == null)
@@ -28,7 +28,7 @@ async function runFind(
   paths: PathSpec[],
   flags: Record<string, string | boolean | number | string[]> = {},
   texts: string[] = [],
-): Promise<{ lines: string[]; exitCode: number; runs: PathSpec[][] | null }> {
+): Promise<{ lines: string[]; exitCode: number; records: PathRecord[] | null }> {
   const cmd = RAM_FIND[0]
   if (cmd === undefined) throw new Error('find not registered')
   const result = await onMount(vfs, (files) =>
@@ -39,7 +39,7 @@ async function runFind(
       cwd: PathSpec.fromStrPath('/'),
     }),
   )
-  if (result === null) return { lines: [], exitCode: -1, runs: null }
+  if (result === null) return { lines: [], exitCode: -1, records: null }
   const [out, ioResult] = result
   const buf =
     out === null
@@ -49,21 +49,20 @@ async function runFind(
         : await materialize(out as AsyncIterable<Uint8Array>)
   const text = DEC.decode(buf)
   const lines = text === '' ? [] : text.replace(/\n$/, '').split('\n')
-  return { lines, exitCode: ioResult.exitCode, runs: ioResult.matchedRuns }
+  return { lines, exitCode: ioResult.exitCode, records: ioResult.records }
 }
 
 describe('find -printf', () => {
   // The action layer renders -printf per row, beside the other actions,
-  // so the handler hands back the rows as selected: one run per start
-  // point, empty for one that is missing, the run a row's %P and %d are
-  // measured from.
-  it('hands the rows back unrendered, one run per start point', async () => {
+  // so the handler hands back the rows as selected, each naming the start
+  // point its %P and %d are measured from; a missing one names none.
+  it('hands the rows back unrendered, each under its start point', async () => {
     const vfs = new RAMVFS()
     vfs.store.dirs.add('/data')
     vfs.store.dirs.add('/data/sub')
     vfs.store.files.set('/data/a.txt', ENC.encode('hello\n'))
     vfs.store.files.set('/data/sub/b.txt', ENC.encode('hi\n'))
-    const { lines, runs } = await runFind(
+    const { lines, records } = await runFind(
       vfs,
       [
         PathSpec.fromStrPath('/data'),
@@ -74,10 +73,10 @@ describe('find -printf', () => {
       ['-type', 'f', '-printf', '%f %s\\n'],
     )
     expect(lines).toEqual(['/data/a.txt', '/data/sub/b.txt', '/data/sub/b.txt'])
-    expect(runs?.map((run) => run.map((p) => p.virtual))).toEqual([
-      ['/data/a.txt', '/data/sub/b.txt'],
-      [],
-      ['/data/sub/b.txt'],
+    expect(records?.map((r) => [r.path.virtual, r.run])).toEqual([
+      ['/data/a.txt', 0],
+      ['/data/sub/b.txt', 0],
+      ['/data/sub/b.txt', 2],
     ])
   })
 })

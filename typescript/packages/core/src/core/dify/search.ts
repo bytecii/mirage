@@ -13,13 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { DifyAccessor } from '../../accessor/dify.ts'
-import type { PathSpec } from '../../types.ts'
+import type { PathSpec, SearchQuery } from '../../types.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import { formatScore } from '../../utils/score.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { floatOption, intOption, textOption, validateOptions } from '../../vfs/search.ts'
-import type { SearchQuery } from '../../vfs/types.ts'
 import { normalizeSlug, scalarString } from '../slug_tree/rows.ts'
 import { searchScope, targetEntries, validateQuery } from '../slug_tree/search.ts'
 import { difyPost } from './client.ts'

@@ -37,7 +37,7 @@ from mirage.errors.fs import enoent
 from mirage.errors.posix import posix_phrase
 from mirage.errors.types import FsCondition
 from mirage.io.stream import SharedStdin, materialize
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, PathRecord
 from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import encode_text
 from mirage.shell.join import shell_join
@@ -448,7 +448,7 @@ def _structural(path: PathSpec, registry: MountRegistry) -> bool:
 
 async def _apply_find_actions(
     stdout: ByteSource | None,
-    matched_runs: list[list[PathSpec]] | None,
+    records: list[PathRecord] | None,
     texts: list[str],
     registry: MountRegistry,
     cwd: str,
@@ -498,14 +498,15 @@ async def _apply_find_actions(
     both order one start point's walk at a time: GNU walks each start
     point to completion before the next, so ``find b a -depth`` prints
     ``b/x b a/y a`` and ``find d d/sub -depth`` finishes ``d`` before
-    it begins ``d/sub`` again, which is why the rows arrive as one run
-    per start point rather than one list; ``-printf``'s ``%P`` and
-    ``%d`` measure a row from its run's start point.
+    it begins ``d/sub`` again, which is why each row names the start
+    point it was found under; ``-printf``'s ``%P`` and ``%d`` measure a
+    row from that start point.
 
     Args:
         stdout (ByteSource | None): display output from find.
-        matched_runs (list[list[PathSpec]] | None): matches before
-            rendering, one run per start point in operand order.
+        records (list[PathRecord] | None): matches before rendering,
+            each with the start point it was found under, in operand
+            order.
         texts (list[str]): the expression tokens, already validated.
         registry (MountRegistry): used to route per-match dispatch.
         cwd (str): cwd forwarded to per-match sub-dispatch.
@@ -542,19 +543,29 @@ async def _apply_find_actions(
     await materialize(stdout)
     if expr.execs and execute_fn is None:
         return None, b"find: -exec: no shell to run the command\n", 1
-    if matched_runs is None:
+    if records is None:
         return None, b"find: actions require structured matches\n", 1
-    # The runs arrive one per start point, in operand order, so each row
-    # carries the start point it was found under; with no operand that is
-    # the working directory, which prints as `.`.
+    # The rows arrive in operand order, each naming the start point it was
+    # found under; with no operand that is the working directory, which
+    # prints as `.`.
     cwd_start = PathSpec(virtual=cwd, directory=cwd, vfs_path="", raw_path=".")
     matches = [
-        (match, starts[i] if starts and i < len(starts) else cwd_start)
-        for i, run in enumerate(matched_runs)
-        for match in (
-            sorted(run, key=lambda p: depth_first_key(p.raw_path or p.virtual))
+        (
+            record.path,
+            starts[record.run]
+            if starts and record.run < len(starts)
+            else cwd_start,
+        )
+        for record in (
+            sorted(
+                records,
+                key=lambda r: (
+                    r.run,
+                    depth_first_key(r.path.raw_path or r.path.virtual),
+                ),
+            )
             if reorders
-            else run
+            else records
         )
     ]
     # An expression with no action of its own prints, which is the one

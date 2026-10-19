@@ -15,9 +15,8 @@
 import pytest
 
 from mirage.core.vector.search import make_search, search_rows_output
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.utils.key_prefix import mount_key
-from mirage.vfs.types import SearchQuery
 
 
 def _ps(path: str) -> PathSpec:

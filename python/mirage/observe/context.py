@@ -592,37 +592,3 @@ def revision_for(path: str) -> str | None:
     if revs is None:
         return None
     return revs.get(path)
-
-
-async def with_revisions(
-    revisions: dict[str, str] | None, it: AsyncIterator[bytes]
-) -> AsyncIterator[bytes]:
-    """Wrap an async iterator so the active revisions map is ``revisions``
-    during each ``__anext__`` of the underlying stream.
-
-    Mirrors :func:`with_mount_context`. A command handler can return an
-    async generator that defers its backend ``read_stream`` call to the
-    first chunk request; by the time the caller consumes it, the
-    dispatcher's ``revisions`` context would otherwise have been reset.
-    Wrapping with this restores the pins on every iteration.
-
-    Args:
-        revisions (dict[str, str] | None): Revisions to push during
-            iteration.
-        it (AsyncIterator[bytes]): The stream to wrap.
-    """
-    aiter = it.__aiter__()
-    try:
-        while True:
-            token = push_revisions(revisions)
-            try:
-                chunk = await aiter.__anext__()
-            except StopAsyncIteration:
-                return
-            finally:
-                reset_revisions(token)
-            yield chunk
-    finally:
-        close = getattr(aiter, "aclose", None)
-        if close is not None:
-            await close()

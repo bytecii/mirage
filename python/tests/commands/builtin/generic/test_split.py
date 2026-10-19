@@ -379,7 +379,6 @@ async def test_stdin_outputs_are_named_in_the_working_directory(
         write_bytes=write_bytes,
         stdin=b"a\nb\n",
         lines_per_file=1,
-        mount_prefix="/data",
         cwd=cwd,
     )
     assert [p.virtual for p in specs] == named

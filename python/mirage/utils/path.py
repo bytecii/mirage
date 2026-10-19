@@ -155,6 +155,18 @@ def resolve_path(path: str, cwd: str) -> str:
 _DOTS = (".", "..")
 
 
+def ends_at_dot(spelling: str) -> bool:
+    """Whether a name's last component, before any trailing slash, is
+    ``.`` or ``..``: then a trailing slash says nothing on its own, and
+    the walk through the dot answers first (``missing/./`` is ENOENT,
+    ``f/./`` ENOTDIR, where ``missing/`` and ``f/`` are EISDIR).
+
+    Args:
+        spelling (str): the name as typed.
+    """
+    return spelling.rstrip("/").rsplit("/", 1)[-1] in (".", "..")
+
+
 def dotted_spelling(word: str, base: str = "/") -> str | None:
     """The absolute spelling of a typed path whose dots a walk proves.
 

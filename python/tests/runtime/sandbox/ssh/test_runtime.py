@@ -18,8 +18,10 @@ from pathlib import Path
 import asyncssh
 import pytest
 
+from mirage import MountMode, Workspace
 from mirage.commands.config import Context
 from mirage.runtime.sandbox.ssh import SSHRuntime, sdk
+from mirage.vfs.ssh import SSHVFS, SSHConfig
 
 
 def _line(box: SSHRuntime, line: str, stdin: bytes | None = None):
@@ -265,3 +267,39 @@ async def test_dropped_connection_reconnects_before_next_command(monkeypatch):
     await _line(runtime, "true")
     assert len(connections) == 2
     await runtime.close()
+
+
+async def _fake_connect(**kwargs):
+    return FakeConn()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"paths": {"hide": ["/data/secret"]}},
+        {"commands": {"deny": [{"paths": ["/data/secret"], "reason": "x"}]}},
+        {"mounts": {"/data": "r"}},
+    ],
+)
+async def test_a_session_restriction_refuses_a_line_with_no_mount_type(
+    monkeypatch, profile
+):
+    monkeypatch.setattr(sdk, "connect", _fake_connect)
+    runtime = FakeSSHRuntime(config={"host": "box"})
+    ws = Workspace(
+        {"/data": SSHVFS(SSHConfig(host="box"))},
+        mode=MountMode.EXEC,
+        profiles={"agent": profile},
+        runtimes=[runtime, "workspace"],
+    )
+    agent = await ws.session("agent", profile="agent")
+    result = await agent.shell("tool run")
+    assert (result.exit_code, result.stdout, result.stderr) == (
+        127,
+        b"",
+        b"ssh: runtime cannot enforce this session's file restrictions\n",
+    )
+    assert runtime.calls == []
+    assert (await (await ws.session("other")).shell("tool run")).exit_code == 0
+    await ws.close()

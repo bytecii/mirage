@@ -26,6 +26,7 @@ from mirage.policy.types import (
     CommandContext,
     Deny,
     Pending,
+    PolicyCaller,
     Route,
     RouteContext,
 )
@@ -298,24 +299,27 @@ class Router:
 
         def handles(
             walked: SessionState,
-        ) -> tuple[SessionView | None, Files | None]:
+        ) -> tuple[SessionView | None, Files | None, PolicyCaller | None]:
             found = views(walked.session_id, walked) if views else None
-            return found or (None, None)
+            return found or (None, None, None)
 
         commands: list[CommandContext] = []
         for item, explained in judged:
             for one in explained:
                 if one.ctx is None:
                     continue
-                view, vfs = handles(one.session or item.session)
+                view, vfs, caller = handles(one.session or item.session)
                 commands.append(
-                    dataclasses.replace(one.ctx, session=view, vfs=vfs)
+                    dataclasses.replace(
+                        one.ctx, session=view, vfs=vfs, caller=caller
+                    )
                 )
-        view, vfs = handles(session)
+        view, vfs, caller = handles(session)
         return RouteContext(
             line=line,
             commands=tuple(commands),
             session_id=session.session_id,
             session=view,
             vfs=vfs,
+            caller=caller,
         )

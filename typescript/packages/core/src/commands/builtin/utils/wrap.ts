@@ -13,10 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { MountView } from '../../../view/types.ts'
-import { FileStat, FileType } from '../../../types.ts'
+import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { isMissError } from '../../../errors/fs.ts'
 import { operandName } from './operands.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
+
+/** `path` as a PathSpec keyed by its whole virtual path. Mirrors Python's
+ * to_pathspec. */
+export function toPathspec(path: string | PathSpec): PathSpec {
+  if (path instanceof PathSpec) return path
+  return new PathSpec({ virtual: path, directory: path, vfsPath: stripSlash(path) })
+}
 
 /**
  * Wrap a walker's readdir so a mount parent lists as empty, not absent.

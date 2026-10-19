@@ -193,13 +193,3 @@ export function childSpec(spec: PathSpec, name: string): PathSpec {
     vfsPath: key === '' ? name : `${key}/${name}`,
   })
 }
-
-/** The unresolved path `virtual` names on the mount `template` sits on. */
-export function sameMountSpec(virtual: string, template: PathSpec): PathSpec {
-  return new PathSpec({
-    virtual,
-    directory: virtual,
-    resolved: false,
-    vfsPath: mountKey(virtual, mountPrefixOf(template.virtual, template.vfsPath)),
-  })
-}

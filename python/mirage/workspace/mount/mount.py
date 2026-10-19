@@ -45,6 +45,8 @@ from mirage.commands.builtin.utils.paths import (
     dispatch_stat,
     link_follow,
     vfs_stat_path,
+    virtual_flags,
+    virtual_key,
 )
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.config import (
@@ -84,13 +86,11 @@ from mirage.core.generic.rewrite import (
 from mirage.errors.fs import ebusy, enotdir, enotsup
 from mirage.io.stream import OutputStream, close_quietly
 from mirage.io.types import ByteSource, CommandOutput, IOResult, materialize
-from mirage.observe.context import with_mount_context, with_revisions
+from mirage.observe.context import with_mount_context
 from mirage.policy import resolve_limit
-from mirage.runtime.binding import restricted_mounts_for
 from mirage.runtime.python.host.host_io import host_io, with_host_io
 from mirage.shell.bytes import encode_text
 from mirage.types import (
-    DirListing,
     FileStat,
     FileType,
     Limit,
@@ -100,13 +100,13 @@ from mirage.types import (
     Producer,
     ReadPolicy,
     ReadSpec,
+    SearchQuery,
     WalkProbe,
     WritePolicy,
 )
 from mirage.utils.activity import Activity
 from mirage.utils.context_scope import ContextScope
 from mirage.utils.filetype import get_extension
-from mirage.utils.glob_walk import make_resolve_glob
 from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import norm
@@ -114,7 +114,7 @@ from mirage.utils.ranges import is_unsatisfiable_range, slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.call import declared, declared_calls
 from mirage.vfs.constants import WRITE_EFFECTS
-from mirage.vfs.types import Effect, SearchQuery
+from mirage.vfs.types import Effect
 from mirage.view.types import StatPath
 from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.executor.command.handler import (
@@ -148,31 +148,22 @@ logger = logging.getLogger(__name__)
 
 def _wrap_mount_streams(
     result: tuple[ByteSource | None, IOResult],
-    revisions: dict[str, str] | None,
-    mount_id: str | None = None,
     activity: Activity | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
-    """Wrap the stream in ``result`` with the mount identity and active
-    revisions, so ``record_stream`` and ``revision_for`` calls inside the
-    lazy backend body see the right context when consumed after this
-    frame exits.
-
-    A thin async-gen wrapper that side-effects the recorder state as
-    bytes flow through.
+    """Keep the command's caller on the stream in ``result``, so the
+    lazy backend body pulled after this frame exits records under the
+    mount and reads the revisions its command bound.
 
     Args:
-        result: ``(stream, io)`` as returned by a command handler.
-        revisions: revisions map to push during stream consumption
-            (None when the mount has no pins installed).
-        mount_id (str | None): identity of the serving mount.
+        result: ``(stream, io)`` as returned by a command handler, inside
+            the mount's command scope.
+        activity (Activity | None): the mount's activity, held until the
+            stream ends.
     """
     stream, io = result
     if stream is None or isinstance(stream, (bytes, bytearray)):
         return stream, io
-    wrapped = with_mount_context(stream, mount_id)
-    if revisions:
-        wrapped = with_revisions(revisions, wrapped)
-    wrapped = ContextScope().stream(with_host_io(wrapped))
+    wrapped = ContextScope().stream(with_host_io(stream))
     return (activity.hold(wrapped) if activity is not None else wrapped), io
 
 
@@ -415,20 +406,6 @@ async def _read_window(
     return slice_window(data, offset, size)
 
 
-async def _listed_paths(vfs: BaseVFS, path: PathSpec) -> list[str]:
-    """A VFS's listing as the paths a glob walks, listed bare with no
-    index to keep its rows: each row names a child of ``path``.
-
-    Args:
-        vfs (BaseVFS): the VFS.
-        path (PathSpec): the directory.
-    """
-    listed = await vfs.readdir(path)
-    rows = listed.entries if isinstance(listed, DirListing) else listed
-    base = (path.dir if path.pattern else path).virtual.rstrip("/")
-    return [f"{base}/{row.name}" for row in rows]
-
-
 class MountEntry:
     """A mounted VFS with command and op dispatch.
 
@@ -563,72 +540,6 @@ class MountEntry:
             name (str): the op name.
         """
         return bool(self._callers(name, None))
-
-    async def expand_glob(
-        self, paths: list[PathSpec], prefix: str
-    ) -> list[PathSpec]:
-        """Expand glob words through the VFS's ``readdir``, one at a time.
-
-        A VFS with no ``readdir`` leaves every word as typed. The mount
-        stamps each word's mount-relative key before the walk sees it,
-        since the key is the placement's to know, and keeps the VFS
-        retained while the walk reads metadata.
-
-        Args:
-            paths (list[PathSpec]): the words, pattern specs among them.
-            prefix (str): the mount prefix without its trailing slash.
-        """
-        if not self.vfs.supports("readdir"):
-            return list(paths)
-        async with self.use():
-            if self.cache_manager is None:
-                return await self._run_glob(paths, prefix, self.index_store)
-            async with self.cache_manager.mutation():
-                await self.ensure_ready()
-                index = self.cache_manager.scope_index_locked(self.index_store)
-                return await self._run_glob(paths, prefix, index)
-
-    async def _run_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str,
-        index: IndexCacheStore,
-    ) -> list[PathSpec]:
-        out: list[PathSpec] = []
-        for p in paths:
-            spec = (
-                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
-                if prefix
-                else p
-            )
-            out.extend(await self._glob(spec, index))
-        return out
-
-    async def _glob(
-        self, path: PathSpec, index: IndexCacheStore = NULL_INDEX
-    ) -> list[PathSpec]:
-        """Expand one pattern through the VFS's ``readdir`` and ``stat``,
-        over this mount's listings where it keeps them.
-
-        Args:
-            path (PathSpec): the pattern, keyed below the mount.
-            index (IndexCacheStore): the mount's index.
-        """
-        readdir: Callable[[PathSpec], Awaitable[list[str]]]
-        stat: Callable[[PathSpec], Awaitable[FileStat]]
-        if self._lists:
-            readdir = functools.partial(self._listed, index=index)
-            stat = functools.partial(self._stat, index)
-        else:
-            readdir = functools.partial(_listed_paths, self.vfs)
-            own: Callable[..., Awaitable[FileStat]] = self.vfs.stat
-            stat = (
-                functools.partial(own, index=index)
-                if _takes_index(own)
-                else own
-            )
-        resolve = make_resolve_glob(readdir, self.vfs.max_glob_matches, stat)
-        return await resolve([path])
 
     @property
     def index(self) -> IndexCacheStore:
@@ -1063,22 +974,30 @@ class MountEntry:
                     exit_code=127,
                     stderr=encode_text(f"{cmd_name}: command not found"),
                 )
-            keyed = self._keyed_paths(cmd_name, paths)
-            flags = self._keyed_flags(flag_kwargs)
-            run_ctx = self._command_ctx(flags, ctx)
-            with self._command_scope(run_ctx):
+            with self._command_scope(ctx):
                 for cmd in handlers:
-                    refusal = self._read_only_refusal(
-                        cmd_name, cmd, flags
-                    ) or self._unenforced_refusal(cmd_name, cmd)
+                    user = self._is_user_command(cmd)
+                    operands = (
+                        self._keyed_paths(cmd_name, paths)
+                        if user
+                        else [virtual_key(p) for p in paths]
+                    )
+                    flags = (
+                        self._keyed_flags(flag_kwargs)
+                        if user
+                        else virtual_flags(flag_kwargs)
+                    )
+                    refusal = self._read_only_refusal(cmd_name, cmd, flags)
                     if refusal is not None:
                         return None, refusal
                     result = await self._run_one(
                         cmd_name,
                         cmd,
-                        keyed,
+                        operands,
                         texts,
-                        run_ctx,
+                        self._command_ctx(
+                            flags, ctx, self.prefix if user else ""
+                        ),
                         limit_override,
                         paths,
                     )
@@ -1146,7 +1065,11 @@ class MountEntry:
     def _keyed_paths(
         self, cmd_name: str, paths: list[PathSpec]
     ) -> list[PathSpec]:
-        """Stamp this mount's backend key onto each path operand.
+        """Stamp this mount's backend key onto each path operand, for a
+        handler that addresses its backend through the mount's accessor
+        (a user command, a command tree's leaf); mirage's own commands
+        get every path keyed by its whole virtual path (``virtual_key``)
+        and reach it through their files.
 
         A stdin `-` routed nowhere, so it rides on whichever mount runs
         the line, beside the operands that chose it.
@@ -1211,15 +1134,18 @@ class MountEntry:
         return flags
 
     def _command_ctx(
-        self, flags: dict[str, FlagValue], ctx: Context
+        self, flags: dict[str, FlagValue], ctx: Context, prefix: str
     ) -> Context:
-        """The context a handler reads: the workspace's, its flags and
-        working directory keyed below this mount (mirrors
+        """The context a handler reads: the workspace's, its flags and its
+        working directory keyed below ``prefix`` (mirrors
         Mount.runCommand).
 
         Args:
-            flags (dict[str, FlagValue]): the keyed flags.
+            flags (dict[str, FlagValue]): the handler's flags.
             ctx (Context): the workspace's context for the command.
+            prefix (str): this mount's prefix for a handler
+                ``_keyed_paths`` keys the operands of; empty for mirage's
+                own commands, whose paths keep their whole virtual path.
         """
         cwd = ctx.cwd.virtual
         return dataclasses.replace(
@@ -1229,7 +1155,7 @@ class MountEntry:
                 virtual=cwd,
                 directory=cwd,
                 resolved=False,
-                vfs_path=mount_key(cwd, self.prefix.rstrip("/")),
+                vfs_path=mount_key(cwd, prefix.rstrip("/")),
             ),
         )
 
@@ -1320,40 +1246,6 @@ class MountEntry:
             )
         return None
 
-    def _unenforced_refusal(
-        self, cmd_name: str, cmd: Command
-    ) -> IOResult | None:
-        """Refuse a user command while the session restricts this mount.
-
-        A user command (``_is_user_command``: one the VFS was handed, or
-        one registered on the mount later) reaches its backend through its
-        own handle, past the dispatcher, so no hide, path rule or mode cap
-        sees what it reads or writes; like a runtime that cannot enforce
-        them, it does not run. The handle reaches the whole store, a part
-        another mount shadows included, so a restriction anywhere below
-        the prefix counts. Mirage's own commands (the generic and general
-        ones, a builtin backend's) read and write through the dispatcher,
-        and run.
-
-        Args:
-            cmd_name (str): command name.
-            cmd (Command): the handler about to run.
-        """
-        if not self._is_user_command(cmd):
-            return None
-        session = current_caller().session
-        if session is None or norm(self.prefix) not in {
-            norm(p) for p in restricted_mounts_for(session, [self.prefix])
-        }:
-            return None
-        return IOResult(
-            exit_code=127,
-            stderr=encode_text(
-                f"{cmd_name}: command cannot enforce this session's "
-                "file restrictions\n"
-            ),
-        )
-
     async def _run_one(
         self,
         cmd_name: str,
@@ -1412,18 +1304,14 @@ class MountEntry:
             )
 
     def _streams(self, result: CommandOutput) -> CommandOutput:
-        """Bind this mount's recorder, revisions and activity to an
-        answer's stream, which runs after the handler's frame is gone.
+        """Bind the command's caller (this mount's recorder and
+        revisions) and this mount's activity to an answer's stream,
+        which runs after the handler's frame is gone.
 
         Args:
             result (CommandOutput): the handler's ``(stream, io)``.
         """
-        return _wrap_mount_streams(
-            result,
-            self.revisions or None,
-            self.mount_id,
-            self.activity,
-        )
+        return _wrap_mount_streams(result, self.activity)
 
     async def run_leaf(
         self,
@@ -1469,13 +1357,11 @@ class MountEntry:
         async with self.use():
             keyed = self._keyed_paths(prog, paths)
             flags = self._keyed_flags(FlagBag(ctx.flags))
-            run_ctx = self._command_ctx(flags, ctx)
+            run_ctx = self._command_ctx(flags, ctx, self.prefix)
             with self._command_scope(run_ctx):
                 # No flag here is answered for the leaf: walk_leaf answered
                 # the tree's own help, and the leaf is handed the rest.
-                refusal = self._read_only_refusal(
-                    prog, leaf, {}, root
-                ) or self._unenforced_refusal(prog, root)
+                refusal = self._read_only_refusal(prog, leaf, {}, root)
                 if refusal is not None:
                     return None, refusal
                 with host_io():
@@ -1535,9 +1421,9 @@ class MountEntry:
         does, window and all, and the first answer that is not None wins.
         The rest is the dispatcher's own shape around the VFS's functions: a
         read takes a window, ``append`` and ``pwrite`` are a rewrite where
-        the VFS only writes whole files, ``mkdir`` refuses a taken name
-        first, and ``glob`` walks ``readdir``. Only a function marked
-        ``@vfs_call`` is reachable by name.
+        the VFS only writes whole files, and ``mkdir`` refuses a taken
+        name first. Only a function marked ``@vfs_call`` is reachable by
+        name.
 
         Args:
             name (str): the op name.
@@ -1560,8 +1446,6 @@ class MountEntry:
                     functools.partial(_read_window, vfs.read, vfs.reads_ranges)
                 )
             return levels
-        if name == "glob":
-            return [self._glob] if vfs.supports("readdir") else []
         if name == "write" and vfs.supports("write"):
             return [self._write_op]
         if name == "append" and (
@@ -2690,13 +2574,10 @@ class MountEntry:
             limit.timeout_seconds if limit is not None else None,
             "read",
         )
-        stream = with_revisions(
-            self.revisions or None,
-            with_mount_context(stream, self.mount_id),
-        )
         token = bind_caller(
             dataclasses.replace(
-                current_caller(), write_context=self.write_context()
+                self._on_mount(current_caller()),
+                revisions=self.revisions or None,
             )
         )
         try:

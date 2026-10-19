@@ -10,7 +10,7 @@ mod vm;
 
 use crate::{Stream, StreamError, parse_config};
 use common::{Budget, Config};
-use compiler::{CompileResult, Compiler};
+use compiler::{CompileResult, Compiler, Diagnostic};
 use source::{FrontEvent, FrontStep, Source};
 use vm::Vm;
 
@@ -25,6 +25,10 @@ pub(super) fn open(config: &[u8]) -> Result<Box<dyn Stream>, StreamError> {
         names,
         files_ended: 0,
         compiler: None,
+        scanner: None,
+        scan_due: false,
+        reported: 0,
+        closing: None,
         vm: Vm::new(config.math_mode, config.line_length.as_deref()),
         stderr: Vec::new(),
         stopped: false,
@@ -33,12 +37,26 @@ pub(super) fn open(config: &[u8]) -> Result<Box<dyn Stream>, StreamError> {
     }))
 }
 
+enum Closing {
+    Input,
+    Comment,
+}
+
 struct Bc {
     source: Source,
     /// The files' names, then standard input's.
     names: Vec<Vec<u8>>,
     files_ended: usize,
     compiler: Option<Compiler>,
+    /// The line a file left unended, compiled only for what bc reports
+    /// as it scans: it does not wait for the next input to say it.
+    scanner: Option<Compiler>,
+    /// A file has ended, so the line it leaves is due a scan.
+    scan_due: bool,
+    /// How much of the line being read a scan has reported.
+    reported: usize,
+    /// How input ended, while the scan of the line it left runs.
+    closing: Option<Closing>,
     vm: Vm,
     stderr: Vec<u8>,
     stopped: bool,
@@ -63,7 +81,11 @@ impl Bc {
                 if !compiler.advance(&mut budget) {
                     return;
                 }
-                let result = self.compiler.take().expect("completed compiler").finish();
+                let result = self
+                    .compiler
+                    .take()
+                    .expect("completed compiler")
+                    .finish(std::mem::take(&mut self.reported));
                 match result {
                     CompileResult::Program(program) => {
                         self.stopped |= program.quits;
@@ -79,6 +101,36 @@ impl Bc {
                 }
                 continue;
             }
+            if let Some(scanner) = &mut self.scanner {
+                if !scanner.advance(&mut budget) {
+                    return;
+                }
+                let scan = self
+                    .scanner
+                    .take()
+                    .expect("completed scan")
+                    .scanned(self.reported);
+                for diagnostic in &scan.diagnostics {
+                    self.stderr
+                        .extend_from_slice(&diagnostic.render(&self.names));
+                }
+                self.reported = scan.end;
+                // bc quits as it reads `quit`, before it opens the next file.
+                self.stopped |= scan.quits;
+                if let Some(closing) = self.closing.take() {
+                    if matches!(closing, Closing::Comment) && !scan.quits {
+                        self.stderr
+                            .extend_from_slice(b"EOF encountered in a comment.\n");
+                    }
+                    if scan.open {
+                        let diagnostic = Diagnostic::end_of_input(self.names.len());
+                        self.stderr
+                            .extend_from_slice(&diagnostic.render(&self.names));
+                    }
+                    self.ended = true;
+                }
+                continue;
+            }
             if self.stopped || self.ended {
                 return;
             }
@@ -88,6 +140,12 @@ impl Bc {
                     return;
                 }
                 FrontStep::NeedsInput => {
+                    if std::mem::take(&mut self.scan_due) {
+                        if let Some(line) = self.source.scanned() {
+                            self.scanner = Some(Compiler::new(line));
+                            continue;
+                        }
+                    }
                     self.needs_input = true;
                     return;
                 }
@@ -95,10 +153,18 @@ impl Bc {
                     self.needs_input = false;
                     self.compiler = Some(Compiler::new(line));
                 }
-                FrontStep::Event(FrontEvent::EofInComment) => {
-                    self.stderr
-                        .extend_from_slice(b"EOF encountered in a comment.\n");
-                    self.ended = true;
+                // Input has ended. bc says what it scanned of the last line,
+                // runs none of it, and calls a statement left open a syntax
+                // error.
+                FrontStep::Event(FrontEvent::Unended(line)) => {
+                    self.needs_input = false;
+                    self.closing = Some(Closing::Input);
+                    self.scanner = Some(Compiler::new(line));
+                }
+                FrontStep::Event(FrontEvent::EofInComment(line)) => {
+                    self.needs_input = false;
+                    self.closing = Some(Closing::Comment);
+                    self.scanner = Some(Compiler::new(line));
                 }
                 FrontStep::Event(FrontEvent::End) => self.ended = true,
             }
@@ -124,6 +190,7 @@ impl Stream for Bc {
         }
         self.files_ended += 1;
         self.source.end_file();
+        self.scan_due = true;
         self.needs_input = false;
         self.advance(output);
         Ok(())
@@ -139,6 +206,7 @@ impl Stream for Bc {
     fn busy(&self) -> bool {
         self.vm.busy()
             || self.compiler.is_some()
+            || self.scanner.is_some()
             || (!self.stopped && !self.ended && !self.needs_input && self.source.busy())
     }
 

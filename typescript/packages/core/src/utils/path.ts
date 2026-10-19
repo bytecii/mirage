@@ -74,6 +74,17 @@ const DOTS = new Set(['.', '..'])
  * from `base`, a directory already, so the common `cd ..` and `cat ../f`
  * cost nothing. Mirrors Python's dotted_spelling.
  */
+/**
+ * Whether a name's last component, before any trailing slash, is `.` or
+ * `..`: then a trailing slash says nothing on its own, and the walk through
+ * the dot answers first (`missing/./` is ENOENT, `f/./` ENOTDIR, where
+ * `missing/` and `f/` are EISDIR).
+ */
+export function endsAtDot(spelling: string): boolean {
+  const last = spelling.replace(/\/+$/, '').split('/').pop()
+  return last === '.' || last === '..'
+}
+
 export function dottedSpelling(word: string, base = '/'): string | null {
   const parts = word.split('/').filter((part) => part !== '')
   let lead = 0

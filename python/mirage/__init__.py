@@ -95,6 +95,7 @@ if TYPE_CHECKING:
         PathSpec,
         ReadPolicy,
         ReadSpec,
+        SearchQuery,
         VFSName,
         WritePolicy,
     )
@@ -114,7 +115,6 @@ if TYPE_CHECKING:
     )
     from mirage.vfs.types import (
         Effect,
-        SearchQuery,
         Target,
     )
     from mirage.workspace import (
@@ -157,6 +157,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "FileType",
         "Limit",
         "PathSpec",
+        "SearchQuery",
         "VFSName",
     ),
     "mirage.policy": (
@@ -204,7 +205,6 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
     "mirage.vfs.call": ("vfs_call",),
     "mirage.vfs.types": (
         "Effect",
-        "SearchQuery",
         "Target",
     ),
     "mirage.vfs.registry": ("build_vfs", "known_vfs_names", "register_vfs"),

@@ -28,7 +28,7 @@ import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import type { FlagValue } from '../../../spec/types.ts'
 import { boundedMap } from '../../../../concurrency/limiter.ts'
-import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
+import { IOResult, materialize, type ByteSource, type PathRecord } from '../../../../io/types.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { FollowOperands } from '../../../../view/types.ts'
 import { PathSpec } from '../../../../types.ts'
@@ -144,7 +144,7 @@ export function joints(path: PathSpec, starts: readonly PathSpec[]): PathSpec[] 
  * start point; the directories between them (`joints`) are matched once each
  * through the dispatcher. Each run answers for the rows its mount owns (the
  * parent's shadowed keys stay out), and the rows merge in the walk's path
- * order, so the actions still run once over every mount's `matchedRuns`; a
+ * order, so the actions still run once over every mount's `records`; a
  * mount whose find fails adds its diagnostic and status, as GNU's walk past
  * an unreadable directory does, and the mounts below it count only where the
  * walk could still reach them (`reached`). An expression that looks across a
@@ -228,7 +228,7 @@ export async function runFind(
   )
   // A run that failed found no rows and says why; one that succeeded without
   // structured rows is a find this line cannot compose.
-  if (ios.some((io) => io.matchedRuns === null && io.exitCode === 0)) return walk()
+  if (ios.some((io) => io.records === null && io.exitCode === 0)) return walk()
   const between = paths.map(
     (_, index) =>
       new Set(plan.filter((s) => s.index === index && s.alone).map((s) => s.start.virtual)),
@@ -247,22 +247,19 @@ export async function runFind(
   let merged = new IOResult()
   for (const { step, io } of done) {
     const owner = mounts.rootOf(step.start.virtual)
-    for (const run of io.matchedRuns ?? []) {
-      for (const row of run) {
-        const kept = step.alone
-          ? row.virtual === step.start.virtual
-          : mounts.rootOf(row.virtual) === owner &&
-            !(between[step.index]?.has(row.virtual) ?? false)
-        if (kept) runs[step.index]?.push(row)
-      }
+    for (const { path: row } of io.records ?? []) {
+      const kept = step.alone
+        ? row.virtual === step.start.virtual
+        : mounts.rootOf(row.virtual) === owner && !(between[step.index]?.has(row.virtual) ?? false)
+      if (kept) runs[step.index]?.push(row)
     }
     merged = await merged.merge(io)
   }
   for (const rows of runs) rows.sort((a, b) => compareCodePoints(a.virtual, b.virtual))
   merged.exitCode = Math.max(0, ...done.map(({ io }) => io.exitCode))
-  merged.matchedRuns = runs
+  merged.records = runs.flatMap((rows, run) => rows.map((path): PathRecord => ({ path, run })))
   const body = new TextEncoder().encode(
-    runs.flatMap((rows) => rows.map((row) => `${row.rawPath}\n`)).join(''),
+    merged.records.map((record) => `${record.path.rawPath}\n`).join(''),
   )
   return [body, merged]
 }

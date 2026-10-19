@@ -119,30 +119,22 @@ export class OpReport {
 }
 
 /**
- * One `du` operand as measured, before its rows are rendered.
+ * One path a command reports, before its output is rendered.
  *
- * du derives every row from the files it counted, so a line spanning mounts
- * renders each mount's own measurement as one tree, the way find's actions
- * run over every mount's `matchedRuns`. `leaves` are every file counted, as
- * (virtual path, bytes); `directories` the directories the walk met, which
- * keep a row though no counted file lies under them.
+ * A line spanning mounts renders every mount's records as one output: find's
+ * actions run over every match, du's rows derive from every file counted, wc
+ * lays every row out with one width and one total. `run` is the start point
+ * or operand it belongs to, in operand order, so a nested or repeated start
+ * point stays its own traversal (GNU walks each to completion before the
+ * next); `size` du's bytes for a file it counted, absent for a directory its
+ * walk met, the operand's own included; `values` wc's counts for the row, in
+ * GNU's column order.
  */
-export interface SizedRun {
-  readonly leaves: readonly (readonly [string, number])[]
-  readonly directories: readonly string[]
-}
-
-/**
- * One `wc` operand as counted, before its row is rendered.
- *
- * A line spanning mounts lays every mount's own counts out as one report,
- * with one column width and one total, the way du renders every mount's
- * `sizedRuns` as one tree. `values` are the counts the row shows, in GNU's
- * column order; `label` the name it prints, null for none.
- */
-export interface CountedRun {
-  readonly values: readonly number[]
-  readonly label: string | null
+export interface PathRecord {
+  readonly path: PathSpec
+  readonly run: number
+  readonly size?: number
+  readonly values?: readonly number[]
 }
 
 /** The live pipe a `PipeStream` reads, for a descriptor reading on after it. Mirrors Python's PipeEnd. */
@@ -165,25 +157,17 @@ export interface IOResultInit {
   stderr?: ByteSource | null
   exitCode?: number
   producer?: Producer | null
-  matchedRuns?: PathSpec[][] | null
-  sizedRuns?: SizedRun[] | null
-  countedRuns?: CountedRun[] | null
+  records?: PathRecord[] | null
   refusal?: Refusal | null
   closedStdout?: ClosedPipe | null
 }
 
 export class IOResult {
-  // Structured selection before display rendering, for later actions:
-  // one list of rows per start point, in operand order, so a nested or
-  // repeated start point stays its own traversal (GNU walks each to
-  // completion before the next).
-  matchedRuns: PathSpec[][] | null
-  // du's measurement before rendering, one run per operand it could read, in
-  // operand order; null when the command supplied none.
-  sizedRuns: SizedRun[] | null
-  // wc's counts before rendering, one run per row it prints, in operand order
-  // and without the total; null when the command supplied none.
-  countedRuns: CountedRun[] | null
+  // What the command found before it is rendered, for commands whose output
+  // a later step renders again (find's actions, a line spanning mounts):
+  // find's matches, du's files and directories, wc's rows without the total,
+  // in operand order; null when the command supplied none.
+  records: PathRecord[] | null
   stdout: ByteSource | null
   stderr: ByteSource | null
   private _exitCode: number
@@ -208,9 +192,7 @@ export class IOResult {
   streamSource: IOResult | null
 
   constructor(init: IOResultInit = {}) {
-    this.matchedRuns = init.matchedRuns ?? null
-    this.sizedRuns = init.sizedRuns ?? null
-    this.countedRuns = init.countedRuns ?? null
+    this.records = init.records ?? null
     this.stdout = init.stdout ?? null
     this.stderr = init.stderr ?? null
     this._exitCode = init.exitCode ?? 0
@@ -271,9 +253,7 @@ export class IOResult {
     // drain time) is still visible.
     const result = new IOResult({
       stdout: other.stdout,
-      matchedRuns: other.matchedRuns,
-      sizedRuns: other.sizedRuns,
-      countedRuns: other.countedRuns,
+      records: other.records,
       stderr: mergedStderr,
       producer: other.producer,
       refusal: other.refusal ?? this.refusal,

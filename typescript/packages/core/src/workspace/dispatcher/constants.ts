@@ -61,6 +61,16 @@ export const DISPATCH_READ_OPS: ReadonlySet<string> = new Set(
   ),
 )
 
+// The calls that stand in for a whole read of a file. The cache stage answers
+// each null for a file the read cache holds, so its caller reads the file
+// instead and is served the copy a read would be.
+export const READ_STAND_IN_OPS: ReadonlySet<string> = new Set([
+  'first_lines',
+  'last_lines',
+  'line_count',
+  'checksum',
+])
+
 // Backend mutations that run the dispatcher's post-write bookkeeping:
 // file-cache eviction, parent index invalidation, and overlay time
 // clearing (plus the observed-mtime stamp for the content writes in
@@ -155,7 +165,7 @@ export const HIDE_FILTERED_OPS: ReadonlySet<string> = new Set([
 export const READ_AHEAD_BYTES = 1 << 20
 
 // Ops that open the regular file they name with O_CREAT, which answers a
-// slash-terminated name (`x/`, only ever a directory) with EISDIR.
+// slash-terminated name (`x/`, `x/./`, only ever a directory) with EISDIR.
 export const FILE_CREATE_OPS = callNames(VFS_CALLS, { effects: [Effect.WRITE], creates: true })
 
 // Ops that create the name itself: an existing one answers EEXIST, before a

@@ -19,9 +19,15 @@ import { ByteWriter } from '../../io/writer.ts'
 
 import type { EvaluationContext } from '../evaluation.ts'
 import { PipeClosed } from '../../io/errors.ts'
-import { type RedirectGuard, runWithRedirectPaths } from '../../context/session_context.ts'
+import {
+  currentCaller,
+  type RedirectGuard,
+  runWithCaller,
+  runWithRedirectPaths,
+} from '../../context/session_context.ts'
 import { fsStrerror, isFsError, isMissingPath } from '../../errors/fs.ts'
 import { ownerPrefix, stripSlash } from '../../utils/slash.ts'
+import { endsAtDot } from '../../utils/path.ts'
 import { SharedInput, share } from '../../io/async_line_iterator.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { DeviceInput, IOResult, PipeStream, materialize } from '../../io/types.ts'
@@ -36,7 +42,6 @@ import {
   OUTPUT_ONLY_BUILTINS,
 } from '../../shell/constants.ts'
 import {
-  ENCLOSING,
   FileDescription,
   FileInput,
   Inherited,
@@ -178,7 +183,7 @@ class PipeRecorder extends Recorder {
         await this.sink.emit(stream.channel, data)
         return
       }
-      if (await deliver(this.sink, stream, data)) return
+      if (await deliver(this.sink, stream, data, currentCaller().enclosing)) return
     }
     await super.emitTo(stream, data)
   }
@@ -422,7 +427,10 @@ async function runRedirects(
         if (target instanceof FileDescription) {
           if (target.scope.virtual !== failedFile?.scope.virtual)
             await writeDescription(dispatch, session, target, data)
-        } else if (target instanceof Inherited && !(await deliver(sink ?? null, target, data))) {
+        } else if (
+          target instanceof Inherited &&
+          !(await deliver(sink ?? null, target, data, currentCaller().enclosing))
+        ) {
           if (target.channel === Channel.STDOUT) stdout = data
           else io.stderr = data
         }
@@ -646,7 +654,7 @@ async function runRedirects(
       if (captureInput && given !== UNREADABLE) await pump(recorder, Channel.STDOUT, given)
     } else {
       try {
-        const result = await ENCLOSING.run(recorder, () =>
+        const result = await runWithCaller({ ...currentCaller(), enclosing: recorder }, () =>
           runWithRedirectPaths(command, targets, () =>
             executeNode(
               command,
@@ -795,7 +803,8 @@ async function runRedirects(
     const kept: [Channel, ByteSource][] = []
     for (const [key, data] of routed) {
       if (key instanceof Inherited) {
-        if (!(await deliver(sink ?? null, key, data))) kept.push([key.channel, data])
+        if (!(await deliver(sink ?? null, key, data, currentCaller().enclosing)))
+          kept.push([key.channel, data])
       } else if (sink !== undefined) {
         for await (const part of byteChunks(data)) await sink.emit(key, part)
       } else kept.push([key, data])
@@ -1048,7 +1057,8 @@ async function openRefusal(
       continue
     }
     const scope = ensureScope(r.target)
-    if (scope.rawPath.endsWith('/')) {
+    // Behind a dot (`x/./`) the open's own walk answers instead.
+    if (scope.rawPath.endsWith('/') && !endsAtDot(scope.rawPath)) {
       return shellFailure(encodeText(`${scope.rawPath}: Is a directory\n`))
     }
     let exists = false

@@ -44,11 +44,11 @@ from mirage.shell.constants import BIN_PREFIX
 from mirage.shell.job_table import Job, JobStatus, JobTable
 from mirage.shell.variable import ShellVar
 from mirage.types import JsonValue, MountMode, ReadSpec, VFSName, WritePolicy
+from mirage.utils.loader import SCRIPT_MODULE_NAME
 from mirage.utils.path import norm_dir
 from mirage.version import __version__
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.history import HISTORY_PREFIX
-from mirage.vfs.loader import SCRIPT_MODULE_NAME
 from mirage.vfs.registry import (
     REGISTRY,
     VFSEntry,

@@ -36,6 +36,7 @@ from mirage.observe.observer import Observer
 from mirage.policy import Decisions, MountRootPolicy, Policies
 from mirage.process.view import ProcessView
 from mirage.runtime.base import Runtime
+from mirage.runtime.types import DispatchFn
 from mirage.runtime.workspace import WorkspaceRuntime
 from mirage.types import (
     Limit,
@@ -160,6 +161,7 @@ class MountRegistry:
         self._default_write: WritePolicy = WritePolicy.UNCONDITIONAL
         self._file_cache: FileCacheMixin | None = None
         self._reconciler: ReadReconciler | None = None
+        self._dispatch: DispatchFn | None = None
         # Explicit at the construction site: /dev does not cache reads,
         # so its policy can only ever be bounded, and it keeps no index,
         # since a path-only index would expose one session's descriptors
@@ -202,6 +204,21 @@ class MountRegistry:
 
     def set_reconciler(self, reconciler: ReadReconciler) -> None:
         self._reconciler = reconciler
+
+    @property
+    def dispatch(self) -> DispatchFn | None:
+        """The workspace's dispatcher, which a shell glob lists and stats
+        through; None until the workspace wires it in, and for a bare
+        registry with no workspace behind it."""
+        return self._dispatch
+
+    def set_dispatch(self, dispatch: DispatchFn) -> None:
+        """Wire in the workspace's dispatcher.
+
+        Args:
+            dispatch (DispatchFn): the dispatcher's ``dispatch``.
+        """
+        self._dispatch = dispatch
 
     def attach_file_cache(self, cache: FileCacheMixin | None) -> None:
         """Attach the workspace file cache and build per-mount

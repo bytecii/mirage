@@ -15,14 +15,12 @@
 import type { Accessor } from '../../../accessor/base.ts'
 import { IOResult } from '../../../io/types.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
-import type { JsonValue, PathSpec, VFSName } from '../../../types.ts'
-import type { SearchQuery } from '../../../vfs/types.ts'
+import type { JsonValue, PathSpec, SearchQuery, VFSName } from '../../../types.ts'
 import { command, type CommandFnResult, type Context, type Command } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { defaultPaths } from '../utils/paths.ts'
-import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 
 const ENC = new TextEncoder()
 
@@ -84,11 +82,7 @@ export function makeSearch(
     if (query === undefined || query === '') throw new UsageError('search: query is required')
     const fl = new FlagView(ctx.flags, specOf('search'))
     try {
-      const scopes = defaultPaths(
-        paths,
-        ctx.cwd.virtual,
-        mountPrefixOf(ctx.cwd.virtual, ctx.cwd.vfsPath),
-      )
+      const scopes = defaultPaths(paths, ctx.cwd.virtual)
       const asked = { query, options: options(fl) }
       if (ctx.vfs === undefined) throw new Error('search: no workspace files')
       const out = await searchResources(ctx.vfs.dispatch, scopes, asked)

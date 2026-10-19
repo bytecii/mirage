@@ -20,7 +20,6 @@ import { FileType, PathSpec, type StatFn, type Visibility } from '../../../types
 import type { CommandFnResult, Context } from '../../config.ts'
 import { eloop, enoent, enotdir, isMissingPath } from '../../../errors/fs.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { parent } from '../../../utils/path.ts'
 import { pathVisible } from '../../../utils/hidden.ts'
 import { dispatchStat, linkTarget } from '../utils/paths.ts'
@@ -257,15 +256,10 @@ export async function realpathGeneric(
   ctx: Context,
   stat: (p: PathSpec) => Promise<unknown>,
 ): Promise<CommandFnResult> {
-  const first = paths[0]
-  const prefix = first !== undefined ? mountPrefixOf(first.virtual, first.vfsPath) : ''
   const pathStat: StatFn =
     ctx.vfs !== undefined
       ? dispatchStat(ctx.vfs.dispatch)
-      : async (path) =>
-          (await stat(
-            PathSpec.fromStrPath(path.virtual, mountKey(path.virtual, prefix)),
-          )) as FileStat
+      : async (path) => (await stat(path)) as FileStat
   return realpath(
     paths,
     pathStat,

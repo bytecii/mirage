@@ -255,7 +255,7 @@ fn chunk_boundaries_preserve_program_behavior() {
         (b"1+/* across\n boundary */2\n", b"3\n"),
         ("print \"é🌍\\n\"\n2+2\n".as_bytes(), "é🌍\n4\n".as_bytes()),
         (b"print \"a\nb\"\n3+3\n", b"a\nb6\n"),
-        (b"scale=3;1/8", b".125\n"),
+        (b"scale=3;1/8\n", b".125\n"),
     ];
     for &(program, expected) in programs {
         for split in 0..=program.len() {
@@ -321,13 +321,20 @@ fn separate_invocations_isolate_variables_registers_and_diagnostics() {
 /// Feed `files` ahead of `stdin` one byte at a time, as the hosts feed a
 /// `files` config, so every source boundary falls inside a call.
 fn run_files(files: &[(&str, &[u8])], stdin: &[u8]) -> Output {
+    run_inputs(files, Some(stdin)).0
+}
+
+/// Run `files`, then `stdin` and `finish`; with no `stdin`, stop after the
+/// files without either, as the hosts do when the next file cannot be
+/// opened. Also says whether bc stopped on its own.
+fn run_inputs(files: &[(&str, &[u8])], stdin: Option<&[u8]>) -> (Output, bool) {
     let names: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
     let config = serde_json::json!({ "files": names });
     let mut stream = open("bc", config.to_string().as_bytes()).expect("bc stream opens");
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut remaining = MAX_DRAIN_STEPS;
-    let inputs = files.iter().map(|(_, bytes)| *bytes).chain([stdin]);
+    let inputs = files.iter().map(|(_, bytes)| *bytes).chain(stdin);
     'inputs: for (index, bytes) in inputs.enumerate() {
         for byte in bytes {
             if stream.done() {
@@ -345,14 +352,17 @@ fn run_files(files: &[(&str, &[u8])], stdin: &[u8]) -> Output {
             drain(stream.as_mut(), &mut stdout, &mut remaining);
         }
     }
-    stream.finish(&mut stdout).expect("bc finish succeeds");
-    drain(stream.as_mut(), &mut stdout, &mut remaining);
+    if stdin.is_some() {
+        stream.finish(&mut stdout).expect("bc finish succeeds");
+        drain(stream.as_mut(), &mut stdout, &mut remaining);
+    }
     stream.take_stderr(&mut stderr);
-    Output {
+    let output = Output {
         stdout,
         stderr,
         status: stream.status(),
-    }
+    };
+    (output, stream.done())
 }
 
 #[test]
@@ -393,6 +403,215 @@ fn files_run_ahead_of_standard_input_as_one_program() {
             b"EOF encountered in a comment.\n",
         ),
         (&[("q.bc", &b"7\nquit\n8\n"[..])], b"10\n", b"7\n", b""),
+    ] {
+        assert_output(run_files(files, stdin), stdout, stderr, 0);
+    }
+}
+
+#[test]
+fn a_file_says_what_bc_scanned_in_it_when_the_next_cannot_be_opened() {
+    // Pinned against bc 1.07.1 on Debian 13, the file after these missing:
+    // what bc scanned is reported, a statement still open neither runs
+    // nor is an error, and a `quit` it read stops bc before it opens the
+    // next file.
+    for (files, stdout, stderr, stopped) in [
+        (
+            &[("a.bc", &b"@"[..])][..],
+            &b""[..],
+            &b"a.bc 1: illegal character: @\n"[..],
+            false,
+        ),
+        (
+            &[("b.bc", &b"1+@"[..])],
+            b"",
+            b"b.bc 1: illegal character: @\n",
+            false,
+        ),
+        (
+            &[("d.bc", &b"1 @ 2"[..])],
+            b"",
+            b"d.bc 1: illegal character: @\nd.bc 1: syntax error\n",
+            false,
+        ),
+        (
+            &[("e.bc", &b"\"abc"[..])],
+            b"",
+            b"e.bc 1: illegal character: \"\n",
+            false,
+        ),
+        (
+            &[("f.bc", &b"1 2"[..])],
+            b"",
+            b"f.bc 1: syntax error\n",
+            false,
+        ),
+        (
+            &[("g.bc", &b"1+\n2 3"[..])],
+            b"",
+            b"g.bc 2: syntax error\ng.bc 2: syntax error\n",
+            false,
+        ),
+        (
+            &[("h.bc", &b"4\n5 @"[..])],
+            b"4\n",
+            b"h.bc 2: illegal character: @\n",
+            false,
+        ),
+        (
+            &[("i.bc", &b"1 2 3 4"[..])],
+            b"",
+            b"i.bc 1: syntax error\n",
+            false,
+        ),
+        (&[("j.bc", &b"(1"[..])], b"", b"", false),
+        (&[("a.bc", &b"7"[..])], b"", b"", false),
+        (&[("c.bc", &b"/* open"[..])], b"", b"", false),
+        (
+            &[("k.bc", &b"@"[..]), ("a.bc", &b"@"[..])],
+            b"",
+            b"k.bc 1: illegal character: @\na.bc 1: illegal character: @\n",
+            false,
+        ),
+        (&[("q.bc", &b"quit"[..])], b"", b"", true),
+        (&[("q2.bc", &b"1;quit"[..])], b"", b"", true),
+        (
+            &[("q3.bc", &b"@ quit"[..])],
+            b"",
+            b"q3.bc 1: illegal character: @\n",
+            true,
+        ),
+    ] {
+        let (output, done) = run_inputs(files, None);
+        assert_output(output, stdout, stderr, 0);
+        assert_eq!(done, stopped, "{files:?}");
+    }
+}
+
+#[test]
+fn what_bc_scanned_in_a_file_is_reported_once() {
+    // Pinned against bc 1.07.1 on Debian 13: a line a file leaves open is
+    // reported as bc scans it, still refused whole, and never twice.
+    let five: &[u8] = b"5\n";
+    for (files, stdin, stderr) in [
+        (
+            &[("a.bc", &b"@"[..]), ("five.bc", five)][..],
+            &b""[..],
+            &b"a.bc 1: illegal character: @\n"[..],
+        ),
+        (
+            &[("f.bc", &b"1 2"[..]), ("five.bc", five)],
+            b"",
+            b"f.bc 1: syntax error\n",
+        ),
+        (
+            &[("a.bc", &b"@"[..]), ("c.bc", &b"@\n"[..])],
+            b"",
+            b"a.bc 1: illegal character: @\nc.bc 1: illegal character: @\n",
+        ),
+        (
+            &[("b.bc", &b"1+@"[..]), ("five.bc", five)],
+            b"",
+            b"b.bc 1: illegal character: @\n",
+        ),
+        (
+            &[("s.bc", &b"\"ab"[..]), ("five.bc", five)],
+            b"",
+            b"s.bc 1: illegal character: \"\nfive.bc 1: syntax error\n",
+        ),
+        (
+            &[("d.bc", &b"1 @ 2"[..]), ("five.bc", five)],
+            b"",
+            b"d.bc 1: illegal character: @\nd.bc 1: syntax error\n",
+        ),
+        (
+            &[("a.bc", &b"@"[..])],
+            five,
+            b"a.bc 1: illegal character: @\n",
+        ),
+        (
+            &[("d.bc", &b"1 @ 2"[..])],
+            five,
+            b"d.bc 1: illegal character: @\nd.bc 1: syntax error\n",
+        ),
+    ] {
+        assert_output(run_files(files, stdin), b"", stderr, 0);
+    }
+}
+
+#[test]
+fn the_last_line_runs_only_once_a_newline_ends_it() {
+    // Pinned against bc 1.07.1 on Debian 13. bc runs nothing of a line input
+    // ends without a newline, and calls a statement left open a syntax
+    // error, blamed on standard input's line 1 since bc has moved past the
+    // files by then. After a syntax error its parser says nothing until it
+    // has taken three tokens.
+    let eof = &b"(standard_in) 1: syntax error\n"[..];
+    let twice = &b"(standard_in) 1: syntax error\n(standard_in) 1: syntax error\n"[..];
+    for (files, stdin, stdout, stderr) in [
+        (&[][..], &b"7"[..], &b""[..], eof),
+        (&[], b"7\n8", b"7\n", eof),
+        (&[], b"1;2", b"", eof),
+        (&[], b"7 ", b"", eof),
+        (&[], b";", b"", eof),
+        (&[], b"halt", b"", eof),
+        (&[], b"print \"a\"", b"", eof),
+        (&[], b"1\n2\n3+", b"1\n2\n", eof),
+        (&[], b"7\n   ", b"7\n", b""),
+        (&[], b"7\n/* c */", b"7\n", b""),
+        (&[], b"7\n#c", b"7\n", b""),
+        (&[], b"7\nquit", b"7\n", b""),
+        (
+            &[],
+            b"1\n2\n3 4",
+            b"1\n2\n",
+            b"(standard_in) 3: syntax error\n",
+        ),
+        (&[], b"3 4 5 6 7", b"", eof),
+        (&[], b"1+;2", b"", eof),
+        (&[], b"1 2+3", b"", twice),
+        (&[], b"1 2;;", b"", twice),
+        (&[], b"1 )+3+4", b"", twice),
+        (
+            &[],
+            b"7\n\\",
+            b"7\n",
+            b"(standard_in) 2: illegal character: \\\n",
+        ),
+        (
+            &[],
+            b"1\n7@",
+            b"1\n",
+            b"(standard_in) 2: illegal character: @\n(standard_in) 1: syntax error\n",
+        ),
+        (
+            &[],
+            b"7 /* open",
+            b"",
+            b"EOF encountered in a comment.\n(standard_in) 1: syntax error\n",
+        ),
+        (
+            &[],
+            b"1 2 /* open",
+            b"",
+            b"(standard_in) 1: syntax error\nEOF encountered in a comment.\n",
+        ),
+        (
+            &[],
+            b"7\n/* open",
+            b"7\n",
+            b"EOF encountered in a comment.\n",
+        ),
+        (&[("a.bc", &b"7"[..])], b"", b"", eof),
+        (&[("a.bc", b"7")], b"\n", b"7\n", b""),
+        (&[("r.bc", b"1\n2\n3")], b"5", b"1\n2\n", eof),
+        (&[("q.bc", b"1\n2\n3+")], b"", b"1\n2\n", eof),
+        (
+            &[("m.bc", b"1\n2\n3 4")],
+            b"",
+            b"1\n2\n",
+            b"m.bc 3: syntax error\n",
+        ),
+        (&[("n.bc", b"7\n"), ("a.bc", b"7")], b"", b"7\n", eof),
     ] {
         assert_output(run_files(files, stdin), stdout, stderr, 0);
     }

@@ -32,7 +32,8 @@ import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { type FlagValue } from '../../spec/types.ts'
 import { encodeText } from '../../../shell/bytes.ts'
-import { linksOf } from '../utils/links.ts'
+import { linksOf, mountRoot } from '../utils/links.ts'
+import { mountKey } from '../../../utils/key_prefix.ts'
 
 /**
  * How tee answers a write into a pipe whose reader has gone: SIGPIPE without
@@ -85,6 +86,7 @@ export async function teeGeneric(
   outputKey?: (path: PathSpec) => string,
 ): Promise<CommandFnResult> {
   const parsed = parseFlags(ctx.flags)
+  const root = mountRoot(ctx)
   if (ctx.stdin != null && !(ctx.stdin instanceof Uint8Array)) {
     const opened: PathSpec[] = []
     const [, io] = await writeOutput(
@@ -96,6 +98,7 @@ export async function teeGeneric(
       append,
       stat,
       opened,
+      root,
     )
     io.closedStdout = closedStdout(parsed)
     if (io.exitCode !== 0 && parsed.stopOnError) {
@@ -116,6 +119,7 @@ export async function teeGeneric(
           io,
           outputKey ?? ((p) => linksOf(ctx)?.resolve(p.virtual) ?? p.virtual),
           parked,
+          root,
         )[Symbol.asyncIterator](),
         // Parked at a yield, tee's own return copies what its files still
         // take and closes its input; otherwise nothing would.
@@ -129,7 +133,7 @@ export async function teeGeneric(
   const [stdout, io] =
     paths.length === 0
       ? [raw, new IOResult()]
-      : await writeOutput(paths, raw, parsed, stream, write, append, stat)
+      : await writeOutput(paths, raw, parsed, stream, write, append, stat, undefined, root)
   io.closedStdout = closedStdout(parsed)
   return [stdout, io]
 }
@@ -200,10 +204,12 @@ async function writeOne(
  * written. The two agree whenever the failure is at write time, which is what a
  * remote backend reports.
  */
-// GNU's diagnostic for one unwritable operand. Mirrors Python's error_line.
-function errorLine(path: PathSpec, err: unknown): string {
+// GNU's diagnostic for one unwritable operand, a transport error naming it
+// below `root`, the mount the command runs on. Mirrors Python's error_line.
+function errorLine(path: PathSpec, err: unknown, root = ''): string {
   if (isFsError(err)) return fsErrorLine('tee', path, err)
-  return `tee: ${path.mountPath}: ${err instanceof Error ? err.message : String(err)}\n`
+  const shown = `/${mountKey(path.virtual, root)}`
+  return `tee: ${shown}: ${err instanceof Error ? err.message : String(err)}\n`
 }
 
 // The error GNU's open of an output would meet, or null. GNU opens the
@@ -234,6 +240,7 @@ export async function writeOutput(
   append?: (p: PathSpec, data: Uint8Array) => Promise<void>,
   stat?: StatFn,
   openedPaths?: PathSpec[],
+  root = '',
 ): Promise<[ByteSource | null, IOResult]> {
   const errors: string[] = []
   // GNU opens every output before it reads a byte: under exit the first open
@@ -257,7 +264,7 @@ export async function writeOutput(
       if (probed && refusal === null) continue
       let failed = path
       for (const prior of paths.slice(0, index)) {
-        if (opened.has(prior.mountPath)) continue
+        if (opened.has(prior.virtual)) continue
         try {
           if (!(parsed.append && (await entryKind(stat, prior)).exists)) {
             await write(prior, new Uint8Array(0))
@@ -267,18 +274,18 @@ export async function writeOutput(
           refusal = err
           break
         }
-        opened.add(prior.mountPath)
+        opened.add(prior.virtual)
       }
       if (refusal === null) {
         try {
           await writeOne(path, new Uint8Array(0), parsed, stream, write, append)
-          opened.add(path.mountPath)
+          opened.add(path.virtual)
           continue
         } catch (err) {
           refusal = err
         }
       }
-      const stderr = encodeText(errorLine(failed, refusal))
+      const stderr = encodeText(errorLine(failed, refusal, root))
       return [null, new IOResult({ exitCode: 1, stderr })]
     }
   }
@@ -299,7 +306,7 @@ export async function writeOutput(
       }
     }
     if (refusal !== null && refusal.code !== 'ENOENT') {
-      errors.push(errorLine(path, refusal))
+      errors.push(errorLine(path, refusal, root))
       continue
     }
     if (openedPaths !== undefined && proved) {
@@ -320,8 +327,8 @@ export async function writeOutput(
           return [null, new IOResult({ exitCode: SIGPIPE_EXIT, stderr })]
         }
         if (parsed.pipeErrors === PipeErrors.IGNORE) continue
-        errors.push(errorLine(path, fsError(path, 'EPIPE')))
-      } else errors.push(errorLine(path, err))
+        errors.push(errorLine(path, fsError(path, 'EPIPE'), root))
+      } else errors.push(errorLine(path, err, root))
       if (parsed.stopOnError) break
     }
   }
@@ -366,6 +373,7 @@ async function* teeStream(
   io: IOResult,
   outputKey: (path: PathSpec) => string,
   parked: { atYield: boolean },
+  root: string,
 ): AsyncIterable<Uint8Array> {
   const writers = new Map<string, { path: PathSpec; writer: ByteWriter; copies: number }>()
   const errors = [await io.stderrStr()]
@@ -378,7 +386,7 @@ async function* teeStream(
       if (parsed.pipeErrors === PipeErrors.IGNORE) return false
       error = fsError(path, 'EPIPE')
     }
-    errors.push(errorLine(path, error))
+    errors.push(errorLine(path, error, root))
     io.exitCode = 1
     return parsed.stopOnError
   }

@@ -37,7 +37,6 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.fnmatch import fnmatch
-from mirage.utils.key_prefix import rekey
 from mirage.utils.path import gnu_basename
 from mirage.utils.quote import shell_quote
 from mirage.utils.timezone import zone_from_env
@@ -104,7 +103,7 @@ def _child_spec(parent: PathSpec, name: str) -> PathSpec:
     return PathSpec(
         virtual=child,
         directory=child,
-        vfs_path=rekey(parent.virtual, parent.vfs_path, child),
+        vfs_path=child.strip("/"),
         raw_path=_name(parent).rstrip("/") + "/" + name,
     )
 

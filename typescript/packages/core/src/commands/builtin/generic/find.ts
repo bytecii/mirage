@@ -12,7 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { activeCacheManager } from '../../../cache/context.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
@@ -20,17 +19,15 @@ import { type FindOptions, modifiedTs } from '../../../core/generic/find.ts'
 import { fsStrerror, isEnoent, isEnotdir, isMissError, walkRefusal } from '../../../errors/fs.ts'
 import { dotRefusal, linkFollow, statOrEnoent, vfsStatPath } from '../utils/paths.ts'
 import { failureText } from '../../../errors/classify.ts'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, type PathRecord } from '../../../io/types.ts'
 import { FindParseError } from '../../errors.ts'
 import { parseDepth, parseFindExpression, parseMtime, parseSize } from '../find_parse.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, Context } from '../../config.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import { respellOne, respellRaw } from '../../../utils/path.ts'
-import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import {
   bindTree,
-  displayPath,
   dropPruned,
   emitStartPath,
   optionsTree,
@@ -57,13 +54,13 @@ function invalidFindArg(message: string): CommandFnResult {
   ]
 }
 
-// The stat probe's path for one display row of a mount.
-function rowSpec(row: string, mountPrefix: string): PathSpec {
+// The stat probe's path for one display row.
+function rowSpec(row: string): PathSpec {
   return new PathSpec({
     virtual: row,
     directory: row,
     resolved: false,
-    vfsPath: mountKey(row, mountPrefix),
+    vfsPath: stripSlash(row),
   })
 }
 
@@ -74,7 +71,7 @@ function matchedPath(row: string, root: PathSpec): PathSpec {
   return new PathSpec({
     virtual,
     directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',
-    vfsPath: mountKey(virtual, mountPrefixOf(root.virtual, root.vfsPath)),
+    vfsPath: stripSlash(virtual),
     rawPath: row,
     resolved: true,
   })
@@ -85,14 +82,13 @@ async function applyMtimeFilter(
   mtimeMin: number | null,
   mtimeMax: number | null,
   stat: (spec: PathSpec) => Promise<FileStat>,
-  mountPrefix: string,
 ): Promise<string[]> {
   if (mtimeMin === null && mtimeMax === null) return results
   const filtered: string[] = []
   for (const r of results) {
     let st: FileStat
     try {
-      st = await stat(rowSpec(r, mountPrefix))
+      st = await stat(rowSpec(r))
     } catch (err) {
       if (isEnoent(err) || isEnotdir(err)) continue
       throw err
@@ -106,15 +102,14 @@ async function applyMtimeFilter(
   return filtered
 }
 
-// Epoch-second mtime of one mount-relative row through the overlay-aware
-// stat, null when it has none or is gone.
+// Epoch-second mtime of one row through the overlay-aware stat, null when it
+// has none or is gone.
 async function rowMtime(
   stat: (spec: PathSpec) => Promise<FileStat>,
-  mountPrefix: string,
   row: string,
 ): Promise<number | null> {
   try {
-    return modifiedTs((await stat(rowSpec(displayPath(mountPrefix, row), mountPrefix))).modified)
+    return modifiedTs((await stat(rowSpec(row))).modified)
   } catch (err) {
     if (!isEnoent(err) && !isEnotdir(err)) throw err
     return null
@@ -148,7 +143,7 @@ function startPointResults(
     if (mtimeMin !== null && ts < mtimeMin) return results
     if (mtimeMax !== null && ts > mtimeMax) return results
   }
-  emitStartPath(results, rstripSlash(root.mountPath) || '/', startBasename(root.virtual), {
+  emitStartPath(results, rstripSlash(root.virtual) || '/', startBasename(root.virtual), {
     kind: printfKind(start),
     isEmpty: usesEmpty && printfKind(start) === 'f' ? start.size === 0 : usesEmpty ? false : null,
     exists: true,
@@ -181,7 +176,7 @@ function rootDirResults(
   isEmpty: boolean | null,
 ): string[] {
   const results: string[] = []
-  emitStartPath(results, rstripSlash(root.mountPath) || '/', startBasename(root.virtual), {
+  emitStartPath(results, rstripSlash(root.virtual) || '/', startBasename(root.virtual), {
     kind: 'd',
     isEmpty,
     exists: true,
@@ -348,23 +343,18 @@ export function findGeneric(
           ...(pathFlag !== null ? { pathPattern: pathFlag } : {}),
           ...(emptyFlag ? { empty: true } : {}),
         }
-  const cacheManager = activeCacheManager()
-  const matchedRuns: PathSpec[][] = []
-  const io = new IOResult({ matchedRuns })
+  const records: PathRecord[] = []
+  const io = new IOResult({ records })
   async function* stream(): AsyncGenerator<Uint8Array> {
     const missing: string[] = []
-    // One run per start point, in operand order, empty for one that matched
-    // nothing or is missing: the action layer acts on each traversal on its
-    // own and reads a row's start point off its run (-printf's %P and %d).
-    for (const root of targets) {
-      const run: PathSpec[] = []
-      matchedRuns.push(run)
-      // `-path` matches the row as printed; stamp the mount prefix and the
-      // operand's spelling onto path nodes before the backend walks
-      // mount-relative keys (#396). Bound per start point: options is
+    // Each row names the start point it was found under, in operand order:
+    // the action layer acts on each traversal on its own and reads a row's
+    // start point off it (-printf's %P and %d).
+    for (const [run, root] of targets.entries()) {
+      // `-path` matches the row as printed; stamp the operand's spelling onto
+      // path nodes before the walk (#396). Bound per start point: options is
       // shared by every one of them and must stay unbound.
-      const prefix = mountPrefixOf(root.virtual, root.vfsPath)
-      const tree = bindTree(optionsTree(options), prefix, root.virtual, root.rawPath)
+      const tree = bindTree(optionsTree(options), '', root.virtual, root.rawPath)
       const rootOptions: FindOptions = { ...options, tree }
       // A start point that is itself a symlink is the walk's to report: the
       // table it walks answers the link's own row, and GNU's default -P
@@ -424,11 +414,6 @@ export function findGeneric(
           missing.push(`find: '${label}': ${await missingStartDetail(root, missingStat ?? stat)}`)
           continue
         }
-        const cachedSize =
-          start.type === FileType.FILE && start.size === null
-            ? await cacheManager?.cachedSize(root)
-            : null
-        if (cachedSize != null) start = start.with({ size: cachedSize })
         if (start.type !== FileType.DIRECTORY && root.rawPath.endsWith('/')) {
           // POSIX reads `x/` as `x/.`, so an operand typed with a trailing
           // slash has to name a directory; GNU refuses the rest with
@@ -452,7 +437,7 @@ export function findGeneric(
             const display = root.virtual === '/' ? '/' : rstripSlash(root.virtual)
             const added = respellRaw([display], root.virtual, root.rawPath)
             yield ENC.encode(added.join('\n') + '\n')
-            for (const r of added) run.push(matchedPath(r, root))
+            for (const r of added) records.push({ path: matchedPath(r, root), run })
           }
           continue
         }
@@ -473,7 +458,7 @@ export function findGeneric(
             : []
         const checked =
           stat !== undefined
-            ? await applyMtimeFilter(rootRows, effMtimeMin, effMtimeMax, stat, prefix)
+            ? await applyMtimeFilter(rootRows, effMtimeMin, effMtimeMax, stat)
             : rootRows
         first = respellRaw(
           checked.filter((row) => pathVisible(visibilityOf(ctx.vfs), row)),
@@ -510,7 +495,7 @@ export function findGeneric(
             `is part of the same file system loop as '${respellOne(above, root.virtual, root.rawPath)}'.`,
         )
       }
-      const rootKey = rstripSlash(root.mountPath) || '/'
+      const rootKey = rstripSlash(root.virtual) || '/'
       const rootMatches: string[] = []
       for (const key of keys) {
         const displayPath =
@@ -543,24 +528,22 @@ export function findGeneric(
         )
       }
       const filtered =
-        stat !== undefined
-          ? await applyMtimeFilter(rows, effMtimeMin, effMtimeMax, stat, prefix)
-          : rows
+        stat !== undefined ? await applyMtimeFilter(rows, effMtimeMin, effMtimeMax, stat) : rows
       filtered.sort(compareCodePoints)
       // What -prune reached is known only once every row has been judged: a
       // flat listing meets a child before its parent, so the ledger the tree
       // kept is applied here, after every row is in.
       if (stat !== undefined) {
-        await settlePendingPrunes(tree, (key) => rowMtime(stat, prefix, key))
+        await settlePendingPrunes(tree, (key) => rowMtime(stat, key))
       }
-      const unpruned = dropPruned(filtered, tree, prefix)
+      const unpruned = dropPruned(filtered, tree)
       // Hidden rows drop here, above the native-op/walk fork, so a mount's
       // visibility behavior cannot depend on whether its backend ships a
       // native find op.
       const visibleRows = unpruned.filter((row) => pathVisible(visibilityOf(ctx.vfs), row))
       const added = respellRaw(visibleRows, root.virtual, root.rawPath)
       for (const row of added) if (!first.includes(row)) yield ENC.encode(row + '\n')
-      for (const r of added) run.push(matchedPath(r, root))
+      for (const r of added) records.push({ path: matchedPath(r, root), run })
     }
     if (missing.length > 0) {
       io.stderr = ENC.encode(missing.join('\n') + '\n')

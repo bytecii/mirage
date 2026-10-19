@@ -35,12 +35,7 @@ from mirage.errors.constants import FS_ERRORS
 from mirage.errors.fs import fs_strerror
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec, ReaddirFn
-from mirage.utils.key_prefix import (
-    mount_key,
-    mount_prefix_of,
-    rekey,
-    under_path,
-)
+from mirage.utils.key_prefix import under_path
 from mirage.utils.path import CycleError
 from mirage.view.types import LinkView, MountView
 
@@ -287,8 +282,7 @@ async def _du_walk(
     if info.type != FileType.DIRECTORY:
         size = info.size or 0
         if entries is not None:
-            prefix = mount_prefix_of(path.virtual, path.vfs_path)
-            entries.append(("/" + mount_key(path.virtual, prefix), size))
+            entries.append(("/" + path.virtual.strip("/"), size))
         return size
     budget.directories.append(path.virtual)
     try:
@@ -305,7 +299,7 @@ async def _du_walk(
             virtual=child,
             directory=child,
             resolved=False,
-            vfs_path=rekey(path.virtual, path.vfs_path, child),
+            vfs_path=child.strip("/"),
         )
         total += await _du_walk(walk, child_spec, budget, entries, follow)
     return total

@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
@@ -1716,6 +1716,127 @@ async def test_a_method_reads_the_session_and_its_files_and_writes_nothing():
         # explain walks the `cd` on a copy, and the method reads that copy.
         await ws.explain("cd /; echo hi")
         assert reader.seen[-1][0] == "/"
+    finally:
+        await ws.close()
+
+
+class SeesCaller(Policy):
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, str, str]] = []
+
+    def _note(self, method: str, ctx) -> None:
+        caller = ctx.caller
+        assert caller is not None and caller.session is not None
+        self.seen.append(
+            (method, caller.session.session_id, caller.session.cwd)
+        )
+
+    async def pre_command(self, ctx: CommandContext) -> Action | None:
+        if ctx.command == "cat":
+            self._note("pre_command", ctx)
+        return None
+
+    async def pre_vfs(self, ctx) -> Action | None:
+        if ctx.path.virtual == "/data/owner.txt":
+            self._note("pre_vfs", ctx)
+        return None
+
+    async def pre_session(self, ctx) -> Action | None:
+        if ctx.key == "TEAM":
+            self._note("pre_session", ctx)
+        return None
+
+
+# A program that denies with what its caller says: the same session id
+# and working directory a coded policy reads off ``ctx.caller``.
+CALLER = (
+    CONTEXT
+    + """
+caller = ctx['caller']['session']
+if ctx['command'] == 'cat':
+    print(json.dumps({
+        'kind': 'deny',
+        'reason': caller['session_id'] + ' in ' + caller['cwd'],
+    }))
+"""
+)
+
+
+@pytest.mark.asyncio
+async def test_a_method_sees_who_makes_the_call():
+    seer = SeesCaller()
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[seer])
+    try:
+        await ws.vfs.write("/data/owner.txt", b"core\n")
+        seer.seen.clear()
+        ws.create_session("agent")
+        await ws.shell("cd /data", session_id="agent")
+        await ws.shell("export TEAM=core", session_id="agent")
+        await ws.shell("cat /data/owner.txt", session_id="agent")
+        await Session(ws, "agent").vfs.read("/data/owner.txt")
+        assert seer.seen == [
+            ("pre_session", "agent", "/data"),
+            ("pre_command", "agent", "/data"),
+            ("pre_vfs", "agent", "/data"),
+        ]
+        await ws.explain("cat /data/owner.txt", session_id="agent")
+        assert seer.seen[-1] == ("pre_command", "agent", "/data")
+    finally:
+        await ws.close()
+
+
+class TouchesCaller(Policy):
+    def __init__(self) -> None:
+        self.refused: list[str] = []
+        self.fields: set[str] = set()
+
+    async def pre_command(self, ctx: CommandContext) -> Action | None:
+        if ctx.command == "cat":
+            caller = ctx.caller
+            assert caller is not None and caller.session is not None
+            try:
+                caller.session.cwd = "/"
+            except FrozenInstanceError:
+                self.refused.append("cwd")
+            self.fields = {f.name for f in fields(caller)}
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_method_cannot_change_the_session_through_its_caller():
+    toucher = TouchesCaller()
+    ws = Workspace(
+        {"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[toucher]
+    )
+    try:
+        await ws.vfs.write("/data/owner.txt", b"core\n")
+        ws.create_session("agent")
+        await ws.shell("cd /data", session_id="agent")
+        await ws.shell("cat /data/owner.txt", session_id="agent")
+        assert toucher.refused == ["cwd"]
+        assert toucher.fields == {"session"}
+        assert (await ws.shell("pwd", session_id="agent")).stdout == (
+            b"/data\n"
+        )
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_program_sees_who_makes_the_call_as_a_coded_policy_does():
+    ws = Workspace(
+        {"/data/": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles=_scripted({"pre_command": CALLER}),
+    )
+    try:
+        await ws.vfs.write("/data/owner.txt", b"core\n")
+        ws.create_session("s", profile="release")
+        await ws.shell("cd /data", session_id="s")
+        denied = await ws.shell("cat owner.txt", session_id="s")
+        assert denied.exit_code == 126
+        assert denied.refusal is not None
+        assert denied.refusal.reason == "s in /data"
     finally:
         await ws.close()
 

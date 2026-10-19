@@ -16,7 +16,7 @@ import { transferLinksOf } from '../../generic/crossmount/utils.ts'
 import type { FileStat, NativeCopy, PathSpec, PrimitiveCopy } from '../../../../types.ts'
 import { treeWalk } from '../../utils/tree.ts'
 import { walkFind } from '../../../../core/generic/find.ts'
-import { rekey } from '../../../../utils/key_prefix.ts'
+import { stripSlash } from '../../../../utils/slash.ts'
 import { cpGeneric, parseFlags } from '../../generic/cp.ts'
 import {
   serves,
@@ -74,9 +74,7 @@ export const BUILDER: GenericCommand = {
         { readdir, stat, ...(options.unreadable === undefined ? {} : { unreadable: refused }) },
         { type: options.type },
       )
-      options.unreadable?.push(
-        ...refused.map((path) => `/${rekey(src.virtual, src.vfsPath, path)}`),
-      )
+      options.unreadable?.push(...refused.map((path) => `/${stripSlash(path)}`))
       return found
     }
     const parsed = parseFlags(new FlagView(ctx.flags, specOf('cp')))

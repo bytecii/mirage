@@ -19,8 +19,8 @@ from mirage.commands.config import command
 from mirage.commands.spec import SPECS
 from mirage.errors.fs import eacces
 from mirage.io import IOResult
-from mirage.io.types import SizedRun
-from mirage.types import FileStat, FileType, MountMode
+from mirage.io.types import PathRecord
+from mirage.types import FileStat, FileType, MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from tests.fixtures.vfs_io import install, replaces
@@ -59,7 +59,11 @@ async def _partly_measured(accessor, paths, texts, opts):
     return b"", IOResult(
         stderr=b"du: cannot read directory '/a/d': Permission denied\n",
         exit_code=1,
-        sized_runs=[SizedRun((("/a/d/f", 5),), ("/a/d",))],
+        records=[
+            PathRecord(paths[0]),
+            PathRecord(PathSpec.from_str_path("/a/d/f"), size=5),
+            PathRecord(PathSpec.from_str_path("/a/d")),
+        ],
     )
 
 

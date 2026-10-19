@@ -31,7 +31,7 @@ import { currentCaller, runWithCaller } from '../context/session_context.ts'
 import { scriptContext } from './script.ts'
 
 // The browser-runtime branch under node's test runner: no task isolation,
-// so a method cannot run as a policy deciding.
+// so a method's deciding mark rides its own files and program alone.
 vi.mock('../utils/async_context.ts', async (importOriginal) => {
   const real = await importOriginal<typeof asyncContextModule>()
   return {
@@ -44,14 +44,19 @@ vi.mock('../utils/async_context.ts', async (importOriginal) => {
 })
 
 describe('a method without task isolation', () => {
-  it('reads the session and its mounts, and writes or reads no file', async () => {
+  it('reads the session, its mounts and its files, and writes nothing', async () => {
     const refused: string[] = []
+    const read: string[] = []
     let mounts: JsonValue = null
     const writer: Policy = {
       async preCommand(ctx: CommandContext): Promise<Action | null> {
         if (ctx.command !== 'echo' || ctx.session === undefined) return null
         mounts = scriptContext(ctx).mounts ?? null
-        for (const call of [() => ctx.session?.set('TEAM', 'me'), () => ctx.vfs?.read('/data')]) {
+        read.push(new TextDecoder().decode(await ctx.vfs?.read('/data/team')))
+        for (const call of [
+          () => ctx.session?.set('TEAM', 'me'),
+          () => ctx.vfs?.write('/data/team', 'me'),
+        ]) {
           try {
             await call()
           } catch (err) {
@@ -66,15 +71,72 @@ describe('a method without task isolation', () => {
       { mode: MountMode.WRITE, shellParser: await getTestParser(), policies: [writer] },
     )
     try {
+      await ws.vfs.write('/data/team', 'core')
       await ws.shell('export TEAM=core')
       expect((await ws.shell('echo $TEAM')).stdoutText).toBe('core\n')
-      expect(refused).toEqual(['EACCES', 'EACCES'])
+      expect(read).toEqual(['core'])
+      expect(refused).toEqual(['EACCES', 'EROFS'])
       expect(mounts).toContain('/data')
       expect((await ws.shell('echo $TEAM')).stdoutText).toBe('core\n')
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/team'))).toBe('core')
     } finally {
       await ws.close()
     }
   })
+
+  it("explains a line with its policies deciding, a program's write refused", async () => {
+    // explain.shell runs no policy for real: a coded method reads and a
+    // profile's program reads, and neither one's write lands.
+    const source =
+      'import json\n' +
+      "value = open('/data/rule').read()\n" +
+      'try:\n' +
+      "    open('/data/mark', 'w').write('x')\n" +
+      'except OSError:\n' +
+      '    pass\n' +
+      "print(json.dumps({'kind': 'deny', 'reason': value}))"
+    const read: string[] = []
+    const refused: string[] = []
+    const coded: Policy = {
+      async preCommand(ctx: CommandContext): Promise<Action | null> {
+        if (ctx.command !== 'cat') return null
+        read.push(new TextDecoder().decode(await ctx.vfs?.read('/data/rule')))
+        try {
+          await ctx.vfs?.write('/data/coded', 'x')
+        } catch (err) {
+          refused.push((err as { code?: string }).code ?? '')
+        }
+        return null
+      },
+    }
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: await getTestParser(),
+        policies: [coded],
+        profiles: {
+          checked: {
+            policy: {
+              preCommand: [{ runtime: 'monty', script: new ScriptSource(source, 'python') }],
+            },
+          },
+        },
+      },
+    )
+    try {
+      await ws.vfs.write('/data/rule', 'sealed')
+      ws.createSession('s', { profile: 'checked' })
+      const said = await new Session(ws, 's').explain.shell('cat /data/rule')
+      expect(JSON.stringify(said)).toContain('sealed')
+      expect(read).toEqual(['sealed'])
+      expect(refused).toEqual(['EROFS'])
+      expect(await ws.vfs.exists('/data/mark')).toBe(false)
+      expect(await ws.vfs.exists('/data/coded')).toBe(false)
+    } finally {
+      await ws.close()
+    }
+  }, 30_000)
 
   it("spends a write's approval with that write, while another waits", async () => {
     // A's write waits on the host while B's is approved: B's nod is spent

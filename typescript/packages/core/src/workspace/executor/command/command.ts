@@ -135,7 +135,7 @@ const JOB_HANDLERS: Record<
  * Apply find's actions once, at the command boundary. Every runner below
  * this point (one mount, a fan-out over nested mounts, one native run per
  * cross-mount operand) only selects rows and hands them back as
- * `io.matchedRuns`; the actions run here over all of them together, so
+ * `io.records`; the actions run here over all of them together, so
  * a batched `-exec {} +` is one invocation across every start point, as
  * GNU's is, and a per-match action runs in start-point order.
  */
@@ -156,7 +156,7 @@ async function finishFind(
   const session = context.session
   const [newStdout, actionErr, actionExit] = await applyFindActions(
     stdout,
-    io.matchedRuns,
+    io.records,
     texts,
     registry,
     session.cwd,

@@ -65,11 +65,12 @@ describe('builtins/shared: the result triple', () => {
   })
 
   it('finish with no errors keeps the carried result and exits 0', () => {
-    const io = new IOResult({ countedRuns: [{ values: [1], label: '/data/f.txt' }] })
+    const counted = { path: PathSpec.fromStrPath('/data/f.txt'), run: 0, values: [1] }
+    const io = new IOResult({ records: [counted] })
     const [out, resultIo, node] = finish('touch', [], io)
     expect(out).toBeNull()
     expect(resultIo.exitCode).toBe(0)
-    expect(resultIo.countedRuns).toEqual([{ values: [1], label: '/data/f.txt' }])
+    expect(resultIo.records).toEqual([counted])
     expect(node.exitCode).toBe(0)
     expect(node.stderr).toEqual(new Uint8Array())
   })
@@ -133,7 +134,9 @@ describe('builtins/shared: expandOperands', () => {
       resolved: false,
       vfsPath: '*.txt',
     })
-    const expanded = await expandOperands(ws.namespace, [globSpec, '/data/c.md'])
+    const dispatch = ws.registry.dispatch
+    if (dispatch === null) throw new Error('no dispatcher wired')
+    const expanded = await expandOperands(ws.namespace, dispatch, [globSpec, '/data/c.md'])
     expect(expanded.map((p) => p.virtual).sort()).toEqual([
       '/data/a.txt',
       '/data/b.txt',

@@ -1305,7 +1305,6 @@ describe('a command tree a mount serves', () => {
       0: '',
       1: 'notes add: read-only mount at /n/\n',
       126: 'notes: Permission denied\n',
-      127: "notes show: command cannot enforce this session's file restrictions\n",
     }
     try {
       ws.mount('/n/').registerCommands([NOTES])
@@ -1350,7 +1349,7 @@ describe('a command tree a mount serves', () => {
         ['notes show /n/a.md', undefined, 0],
         ['notes add /n/a.md w', undefined, 1],
         ['notes add /n/a.md w --help', undefined, 1],
-        ['notes show /n/a.md', 'hidden', 127],
+        ['notes show /n/a.md', 'hidden', 0],
         ['notes ls /n/a.md', 'ruled', 0],
         ['notes add /n/a.md w', 'ruled', 126],
       ] as const) {

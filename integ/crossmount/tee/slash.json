@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "id": "xm_tee_slash_terminated_names_answer_as_gnu",
+      "seq": 15000099,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf x | tee /data2/xts/./ /data2/xtsn/ /data/xts.txt; echo \" rc=$?\"; cat /data/xts.txt; echo; ls /data2/xts /data2/xtsn; rm -f /data/xts.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "x rc=1\nx\n",
+        "stderr": "tee: /data2/xts/./: No such file or directory\ntee: /data2/xtsn/: Is a directory\nls: cannot access '/data2/xts': No such file or directory\nls: cannot access '/data2/xtsn': No such file or directory\n"
+      }
+    }
+  ]
+}

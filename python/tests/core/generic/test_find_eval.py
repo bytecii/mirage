@@ -487,7 +487,7 @@ def test_without_prune_and_tree_has_helpers():
     assert not tree_has_action(Or([Path("x"), Prune()]))
 
 
-def test_display_path_joins_like_apply_mount_prefix():
+def test_display_path_joins_the_prefix_and_the_key_with_one_slash():
     assert display_path("", "/sub/x") == "/sub/x"
     assert display_path("/data", "/sub/x") == "/data/sub/x"
     assert display_path("/data", "/") == "/data"

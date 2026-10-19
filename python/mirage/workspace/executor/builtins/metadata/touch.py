@@ -121,7 +121,7 @@ async def handle_touch(
     no_create = fl.as_bool("no_create")
 
     errors: list[str] = []
-    for target in await expand_operands(namespace, operands):
+    for target in await expand_operands(namespace, dispatch, operands):
         if fl.as_bool("no_dereference") and namespace.is_link(target.virtual):
             await apply_link_attrs(
                 dispatch, "touch", target, errors, mtime=stamp

@@ -555,7 +555,7 @@ async def change_owner(
         await apply_link_attrs(dispatch, cmd, link, errors, uid=uid, gid=gid)
         describe(name, stat, len(errors) > before)
 
-    for target in await expand_operands(namespace, operands):
+    for target in await expand_operands(namespace, dispatch, operands):
         typed = target.raw_path or target.virtual
         if not follow and namespace.is_link(target.virtual):
             await own_link(target, typed)

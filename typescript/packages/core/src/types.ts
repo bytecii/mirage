@@ -967,6 +967,12 @@ export interface PrimitiveMove {
 
 export type MoveStrategy = NativeMove | PrimitiveMove
 
+/** A resource query and backend-specific arguments, validated by the backend. */
+export interface SearchQuery {
+  readonly query: string
+  readonly options?: Readonly<Record<string, JsonValue>>
+}
+
 // What the kernel walk answers for a path it cannot resolve at all: the
 // empty name (POSIX never resolves a null pathname) or a symlink loop.
 // Mirrors Python's WalkErrno.

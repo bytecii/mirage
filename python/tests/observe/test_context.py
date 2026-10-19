@@ -32,7 +32,6 @@ from mirage.observe.context import (
     revision_for,
     start_op,
     with_mount_context,
-    with_revisions,
 )
 from mirage.types import PathSpec
 from mirage.vfs.ram import RAMVFS
@@ -215,15 +214,6 @@ async def test_with_mount_context_without_id_inherits_the_frame():
 async def test_with_mount_context_close_propagates_to_source():
     source = ClosingIterator()
     wrapped = with_mount_context(source, "mount-a")
-    assert await anext(wrapped) == b"chunk"
-    await wrapped.aclose()
-    assert source.closed
-
-
-@pytest.mark.asyncio
-async def test_with_revisions_close_propagates_to_source():
-    source = ClosingIterator()
-    wrapped = with_revisions({"/s3/a": "v1"}, source)
     assert await anext(wrapped) == b"chunk"
     await wrapped.aclose()
     assert source.closed

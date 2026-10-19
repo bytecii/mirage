@@ -9,7 +9,6 @@ from mirage.commands.builtin.generic.du import (
     to_virtual,
 )
 from mirage.commands.config import Context
-from mirage.io.types import SizedRun
 from mirage.types import PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.view.types import MountView
@@ -119,8 +118,11 @@ async def test_du_reports_what_it_measured_unless_it_only_summed():
         flags=DuFlags(),
         directories=lambda: ["/m/dir/e"],
     )
-    assert out.runs == [
-        SizedRun((("/m/dir/a.txt", 2), ("/m/dir/s/b", 3)), ("/m/dir/e",))
+    assert [(r.path.virtual, r.run, r.size) for r in out.records] == [
+        ("/m/dir", 0, None),
+        ("/m/dir/a.txt", 0, 2),
+        ("/m/dir/s/b", 0, 3),
+        ("/m/dir/e", 0, None),
     ]
     out = await du(
         paths,
@@ -128,7 +130,7 @@ async def test_du_reports_what_it_measured_unless_it_only_summed():
         compute_entries=compute_entries,
         flags=DuFlags(s=True),
     )
-    assert out.runs is None
+    assert out.records is None
 
 
 def test_rollup_handles_a_root_mount():

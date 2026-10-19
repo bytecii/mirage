@@ -59,7 +59,7 @@ import { RAMWorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/r
 import { S3WorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/s3'
 import type { WorkspaceOptions } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { normalizeS3Config } from './vfs/s3/config.ts'
-import { isModulePath, loadAttr, splitRef } from './vfs/loader.ts'
+import { isModulePath, loadAttr, splitRef } from './utils/loader.ts'
 // The config loader is a workspace entry point of its own (the daemon
 // builds from here), so it arms the builtin secrets sources like the
 // node Workspace module does.

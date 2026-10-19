@@ -142,49 +142,58 @@ async def handed_cat(accessor: RAMAccessor, paths, texts, opts):
     return b"handed\n", IOResult()
 
 
+@command(
+    "peek",
+    vfs="ram",
+    spec=CommandSpec(arguments=(Argument("path", type="path"),)),
+)
+async def handed_peek(accessor: RAMAccessor, paths, texts, ctx):
+    return await ctx.vfs.read(paths[0]), IOResult()
+
+
 class HandedRAM(RAMVFS):
     def commands(self):
-        return [handed_cat]
+        return [handed_cat, handed_peek]
 
 
 @pytest.mark.asyncio
-async def test_a_handed_command_does_not_run_where_the_session_restricts():
+async def test_a_handed_command_runs_where_the_session_restricts():
+    # Mirage cannot see what a handler reads through its own accessor, so
+    # it does not try: a hide covers what the handler reads through
+    # ctx.vfs.
     profiles = {
         "here": {"paths": {"hide": ["/data/secret"]}},
-        "pattern": {"paths": {"hide": ["*.key"]}},
-        "nested": {"paths": {"hide": ["/data/nested/secret.txt"]}},
         "elsewhere": {"paths": {"hide": ["/other/x"]}},
     }
     ws = Workspace(
-        {
-            "/data/": HandedRAM(),
-            "/data/nested/": RAMVFS(),
-            "/other/": RAMVFS(),
-        },
+        {"/data/": HandedRAM(), "/other/": RAMVFS()},
         mode=MountMode.WRITE,
         profiles=profiles,
     )
-    refused = b"cat: command cannot enforce this session's file restrictions\n"
     try:
-        await ws.shell("echo hi > /data/n.txt; echo o > /other/o.txt")
+        await ws.shell("echo hi > /data/n.txt; echo s > /data/secret")
         for sid in profiles:
             ws.create_session(sid, profile=sid)
-        for sid, out, err, code in (
-            (None, b"handed\n", b"", 0),
-            ("elsewhere", b"handed\n", b"", 0),
-            ("here", b"", refused, 127),
-            ("pattern", b"", refused, 127),
-            ("nested", b"", refused, 127),
+        for sid, line, out, err, code in (
+            (None, "cat /data/n.txt", b"handed\n", b"", 0),
+            ("here", "cat /data/n.txt", b"handed\n", b"", 0),
+            ("here", "peek /data/n.txt", b"hi\n", b"", 0),
+            ("elsewhere", "peek /data/secret", b"s\n", b"", 0),
+            (
+                "here",
+                "peek /data/secret",
+                b"",
+                b"peek: /data/secret: No such file or directory\n",
+                1,
+            ),
         ):
-            io = await ws.shell("cat /data/n.txt", session_id=sid)
+            io = await ws.shell(line, session_id=sid)
             got = (
                 await io.materialize_stdout(),
                 await io.materialize_stderr(),
                 io.exit_code,
             )
-            assert got == (out, err, code), sid
-        io = await ws.shell("cat /other/o.txt", session_id="here")
-        assert await io.materialize_stdout() == b"o\n"
+            assert got == (out, err, code), (sid, line)
     finally:
         await ws.close()
 

@@ -41,6 +41,7 @@ import {
   type CommandResultContext,
   type Deny,
   type ExecuteResultContext,
+  type PolicyCaller,
   type PolicyMethod,
   type ProfileScript,
   type Route,
@@ -60,6 +61,17 @@ const ENCODER = new TextEncoder()
 // instead: the session as its cwd, env and profile, the files as the mounts
 // they show and through the program's own open().
 const LIVE = new Set(['session', 'vfs'])
+
+/**
+ * A context's caller as a program reads it: the facts a policy reads of
+ * it, its session's id and working directory. Mirrors the Python
+ * `_caller_data`.
+ */
+function callerData(caller: PolicyCaller | undefined): JsonValue {
+  if (caller === undefined) return null
+  const session = caller.session
+  return { session: session === null ? null : { session_id: session.sessionId, cwd: session.cwd } }
+}
 
 /**
  * A value as a program reads it: JSON-shaped data, bytes as text, a path
@@ -101,7 +113,9 @@ function plain(value: unknown, data = false): JsonValue {
         // Under the field names the document and the Python host spell.
         .map(([key, item]) => [
           named ? key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`) : key,
-          plain(item, data || (value instanceof FileStat && key === 'extra')),
+          named && key === 'caller'
+            ? callerData(item as PolicyCaller)
+            : plain(item, data || (value instanceof FileStat && key === 'extra')),
         ]),
     )
   }

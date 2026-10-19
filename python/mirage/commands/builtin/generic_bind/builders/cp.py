@@ -49,7 +49,6 @@ from mirage.types import (
     ReaddirFn,
     StatFn,
 )
-from mirage.utils.key_prefix import rekey
 from mirage.view.namespace_view import paths_scoped
 
 
@@ -69,10 +68,8 @@ async def _walk_find(
         unreadable=refused,
     )
     if unreadable is not None and refused is not None:
-        unreadable.extend(
-            "/" + rekey(src.virtual, src.vfs_path, path) for path in refused
-        )
-    return ["/" + rekey(src.virtual, src.vfs_path, path) for path in results]
+        unreadable.extend("/" + path.strip("/") for path in refused)
+    return ["/" + path.strip("/") for path in results]
 
 
 def _make_find(files: CommandFiles) -> Callable[..., Awaitable[list[str]]]:
