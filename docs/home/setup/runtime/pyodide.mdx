@@ -125,32 +125,301 @@ A run starts at about 50M. One that passes the cap fails with
 as soon as it passes the cap; in a browser, which cannot read a worker's
 memory, it fails when it ends. There is no cap by default.
 
-## What is wired
+## Python compatibility
 
-Anything built on these calls, such as `os.path`, `pathlib`, `glob`,
-`shutil` and `json.load`, works too.
+The tables list supported APIs; expand **Limitations** for unsupported APIs
+and runtime-specific restrictions. These sections describe how Python APIs
+reach the workspace. Higher-level modules built on these calls, including
+`os.path`, `pathlib`, `glob`, `shutil` and `json.load()`, work too.
 
-| Python | Supported | Notes |
-| --- | --- | --- |
-| `open()` in every mode, `os.open` | Yes | The file is read when it is opened. |
-| `f.read()`, `os.read`, `os.pread` | Yes | |
-| `f.write()`, `os.write`, `os.pwrite` | Yes | Written at close, or at the next call that reaches a mount. |
-| `f.truncate()`, `os.truncate` | Yes | |
-| `os.stat`, `os.lstat`, `os.fstat`, `Path.stat` | Yes | |
-| `os.listdir`, `os.scandir`, `os.walk`, `glob.glob`, `Path.glob` | Yes | |
-| `os.mkdir`, `os.makedirs`, `os.rmdir`, `shutil.rmtree` | Yes | |
-| `os.remove`, `os.unlink`, `Path.unlink` | Yes | |
-| `os.rename`, `os.replace`, `shutil.move` | Yes | `EXDEV` across mounts, where `shutil.move` copies instead. |
-| `os.symlink`, `os.readlink` | Yes | |
-| `os.utime`, `os.chmod`, `Path.touch` | Yes | |
-| `os.getxattr`, `os.setxattr`, `os.listxattr`, `os.removexattr` | Yes | The same attributes as `getfattr` in the shell. |
-| `subprocess.run`, `subprocess.Popen`, `shutil.which` | Yes | Runs a Mirage command, after pending writes land. |
-| `os.getcwd`, `os.chdir` | Yes | The shell's working directory; a change lasts for the run. |
-| `os.environ`, `sys.argv`, `sys.stdin` | Yes | The session's environment, the words after the script, and the piped input. |
-| `os.fsync` | No | Does nothing. |
-| `os.link` | No | Does not exist. |
-| `mmap` | No | Fails. |
-| `socket` | No | Cannot connect (`ENETUNREACH`). |
+Examples assume a writable `/data` mount. Mount modes and permissions still apply.
+
+### `open()`
+
+Modes and modifiers are listed separately; for example, `rb` combines `r`
+and `b`. The file is read when it is opened.
+
+| Mode or modifier | Support |
+| --- | --- |
+| `r` | ✓ |
+| `w` | ✓ |
+| `a` | ✓ |
+| `x` | ✓ |
+| `b` | ✓ |
+| `t` | ✓ |
+| `+` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: append to a workspace file" id="open-example">
+    ```python
+    with open("/data/log.txt", "a") as f:
+        f.write("Job completed.\n")
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="open-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | File access | Writes to workspace files follow mount permissions. Files created outside the mounts stay in memory and are lost when the run ends. |
+  </Accordion>
+</AccordionGroup>
+
+### File objects
+
+| API | Support |
+| --- | --- |
+| `f.read()` | ✓ |
+| `f.write()` | ✓ |
+| `f.truncate()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: write, read and truncate a file" id="file-objects-example">
+    ```python
+    with open("/data/example.txt", "w+") as f:
+        f.write("first\nsecond\n")
+        f.seek(0)
+        print(f.read(5))  # first
+        f.truncate(5)
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="file-objects-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `f.write()` | Written at close, or at the next call that reaches a mount. |
+  </Accordion>
+</AccordionGroup>
+
+### `os`
+
+#### File operations
+
+| API | Support |
+| --- | --- |
+| `os.open()` | ✓ |
+| `os.read()` | ✓ |
+| `os.pread()` | ✓ |
+| `os.write()` | ✓ |
+| `os.pwrite()` | ✓ |
+| `os.truncate()` | ✓ |
+| `os.remove()` | ✓ |
+| `os.unlink()` | ✓ |
+| `os.rename()` | ✓ |
+| `os.replace()` | ✓ |
+
+#### Directory operations
+
+| API | Support |
+| --- | --- |
+| `os.listdir()` | ✓ |
+| `os.scandir()` | ✓ |
+| `os.walk()` | ✓ |
+| `os.mkdir()` | ✓ |
+| `os.makedirs()` | ✓ |
+| `os.rmdir()` | ✓ |
+
+#### Metadata and links
+
+| API | Support |
+| --- | --- |
+| `os.stat()` | ✓ |
+| `os.lstat()` | ✓ |
+| `os.fstat()` | ✓ |
+| `os.symlink()` | ✓ |
+| `os.readlink()` | ✓ |
+| `os.utime()` | ✓ |
+| `os.chmod()` | ✓ |
+| `os.getxattr()` | ✓ |
+| `os.setxattr()` | ✓ |
+| `os.listxattr()` | ✓ |
+| `os.removexattr()` | ✓ |
+
+#### Environment and working directory
+
+| API | Support |
+| --- | --- |
+| `os.getcwd()` | ✓ |
+| `os.chdir()` | ✓ |
+| `os.environ` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: list a workspace directory" id="os-example">
+    ```python
+    import os
+
+    print(os.listdir("/data"))
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="os-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `os.fsync()` | Accepted, but has no effect. |
+    | `os.link()` | Does not exist. |
+    | `os.open()` | The file is read when it is opened. |
+    | `os.write()`, `os.pwrite()` | Written at close, or at the next call that reaches a mount. |
+    | `os.rename()`, `os.replace()` | `EXDEV` across mounts, where `shutil.move` copies instead. |
+    | `os.getxattr()`, `os.setxattr()`, `os.listxattr()`, `os.removexattr()` | The same attributes as `getfattr` in the shell. |
+    | `os.getcwd()`, `os.chdir()` | The shell's working directory; a change lasts for the run. |
+    | `os.environ` | The session's environment, never the host's. |
+  </Accordion>
+</AccordionGroup>
+
+### `os.path`
+
+| API | Support |
+| --- | --- |
+| `os.path` | ✓ |
+
+<Accordion title="Example: check a workspace path" id="os-path-example">
+  ```python
+  import os.path
+
+  path = os.path.join("/data", "input.txt")
+  print(os.path.exists(path))
+  ```
+</Accordion>
+
+### `pathlib`
+
+| API | Support |
+| --- | --- |
+| `Path.stat()` | ✓ |
+| `Path.glob()` | ✓ |
+| `Path.unlink()` | ✓ |
+| `Path.touch()` | ✓ |
+
+<Accordion title="Example: create and inspect a workspace file" id="pathlib-example">
+  ```python
+  from pathlib import Path
+
+  path = Path("/data/example.txt")
+  path.write_text("hello\n")
+  print(path.read_text())
+  print(path.stat().st_size)
+  ```
+</Accordion>
+
+### `sys`
+
+| API | Support |
+| --- | --- |
+| `sys.argv` | ✓ |
+| `sys.stdin` | ✓ |
+
+<Accordion title="Example: read arguments and piped input" id="sys-example">
+  ```python
+  import sys
+
+  print(sys.argv[1:])
+  print(sys.stdin.read())
+  ```
+</Accordion>
+
+### `json`
+
+| API | Support |
+| --- | --- |
+| `json.load()` | ✓ |
+
+<Accordion title="Example: write and read workspace JSON" id="json-example">
+  ```python
+  import json
+
+  with open("/data/result.json", "w") as f:
+      json.dump({"status": "done"}, f)
+
+  with open("/data/result.json", "r") as f:
+      result = json.load(f)
+  print(result["status"])  # done
+  ```
+</Accordion>
+
+### `glob`
+
+| API | Support |
+| --- | --- |
+| `glob.glob()` | ✓ |
+
+<Accordion title="Example: find workspace text files" id="glob-example">
+  ```python
+  import glob
+
+  print(glob.glob("/data/*.txt"))
+  ```
+</Accordion>
+
+### `shutil`
+
+| API | Support |
+| --- | --- |
+| `shutil.rmtree()` | ✓ |
+| `shutil.move()` | ✓ |
+| `shutil.which()` | ✓ |
+
+- `shutil.which()`: Resolves executable names through Mirage's command lookup.
+
+<AccordionGroup>
+  <Accordion title="Example: move a workspace file" id="shutil-example">
+    ```python
+    import shutil
+
+    with open("/data/draft.txt", "w") as f:
+        f.write("ready\n")
+
+    shutil.move("/data/draft.txt", "/data/final.txt")
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="shutil-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `shutil.move()` | Copies instead when a rename would cross mounts (`EXDEV`). |
+  </Accordion>
+</AccordionGroup>
+
+### `subprocess`
+
+| API | Support |
+| --- | --- |
+| `subprocess.run()` | ✓ |
+| `subprocess.Popen()` | ✓ |
+
+<AccordionGroup>
+  <Accordion title="Example: run a Mirage command" id="subprocess-example">
+    ```python
+    import subprocess
+
+    result = subprocess.run(
+        ["ls", "/data"], capture_output=True, text=True, check=True
+    )
+    print(result.stdout)
+    ```
+  </Accordion>
+  <Accordion title="Limitations" id="subprocess-limitations">
+    | API or behavior | Limitation |
+    | --- | --- |
+    | `subprocess.run()`, `subprocess.Popen()` | Runs a Mirage command, after pending writes land. |
+  </Accordion>
+</AccordionGroup>
+
+### `socket`
+
+Network connections are unavailable in this runtime.
+
+<Accordion title="Limitations" id="socket-limitations">
+  | API or behavior | Limitation |
+  | --- | --- |
+  | `socket` | Cannot connect (`ENETUNREACH`). |
+</Accordion>
+
+### `mmap`
+
+Unavailable in this runtime.
+
+<Accordion title="Limitations" id="mmap-limitations">
+  | API or behavior | Limitation |
+  | --- | --- |
+  | `mmap` | ✗ |
+</Accordion>
+
+## Notes
 
 Files written outside the mounts stay in memory and are lost when the run
 ends.

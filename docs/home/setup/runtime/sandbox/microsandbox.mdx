@@ -109,6 +109,17 @@ Mirage refuses commands if session rules restrict a guest mount it cannot
 enforce. Matching paths alone does not share data; configure both workspaces
 to use the same backend.
 
+## Runtime behavior
+
+| Capability | In the sandbox |
+| --- | --- |
+| Command | The captured program and its arguments, through `msb exec` |
+| Piped input | stdin |
+| Environment | The session's, over the config `env` |
+| Working directory | The shell's, unchanged |
+| Workspace files | By `mount_type`; see [above](#connecting-the-workspace) |
+| Disk and network | The sandbox's own |
+
 ## Notes
 
 - Keep the sandbox running while Mirage is connected. Reconnect after a restart.
