@@ -318,3 +318,25 @@ it('top-level lines cannot bypass the spawn process cap', async () => {
     await ws.close()
   }
 })
+
+// Twin of test_a_spawned_command_records_under_its_own_execution: the
+// child's file calls carry the execution id its handle bound, not the
+// spawning caller's.
+it("records a spawned command's reads under its own execution", async () => {
+  const ws = new Workspace(
+    { '/data': new RAMVFS() },
+    { mode: MountMode.WRITE, runtimes: [], shellParser: parser },
+  )
+  try {
+    await ws.vfs.write('/data/f', 'x\n')
+    ws.vfs.records.splice(0)
+    const child = ws.spawn({ argv: ['cat', '/data/f'] })
+    expect(new TextDecoder().decode((await child.communicate()).stdout)).toBe('x\n')
+    const info = await child.wait()
+    const reads = ws.vfs.records.filter((r) => r.path === '/data/f')
+    expect(reads.length).toBeGreaterThan(0)
+    expect(new Set(reads.map((r) => r.executionId))).toEqual(new Set([info.executionId]))
+  } finally {
+    await ws.close()
+  }
+})
