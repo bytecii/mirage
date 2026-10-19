@@ -74,9 +74,10 @@ Deny wins at equal depth.
 Here, `rm /data/review/note.txt` asks for approval despite the broader deny;
 `rm /data/other.txt` is denied. A multi-path command must pass each path's checks.
 
-Path entries are absolute paths or slashless name patterns such as `*.pem`,
-including inside mount sections. A literal path covers its subtree; glob
-patterns use `*`, `?` and `[`, and `*` can cross `/`. A rule naming only
+`paths.hide` and ask/deny path entries may be absolute paths or slashless
+name patterns such as `*.pem`, including inside mount sections.
+`paths.show` entries must be absolute paths. A literal path covers its subtree;
+glob patterns use `*`, `?` and `[`, and `*` can cross `/`. A rule naming only
 `paths` also applies to direct VFS operations.
 
 `paths.hide` makes a path appear absent; `paths.show` reopens a more specific
