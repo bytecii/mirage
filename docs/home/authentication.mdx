@@ -1,27 +1,22 @@
 ---
 title: Service credentials
 sidebarTitle: Service credentials
-description: Supply VFS and virtual CLI credentials from the environment, dotenv, AWS Secrets Manager, 1Password, or a custom source.
+description: Connect VFS and CLI credentials from the environment or a secret store.
 icon: key
 ---
 
-Service credentials let a VFS or virtual CLI connect to Slack, S3, GitHub,
-and other services. They are separate from the bearer tokens and JWTs that
-protect a Mirage server; see [HTTP server authentication](/home/access/http#configure-authentication)
-for those.
+Give each VFS or virtual CLI the credentials it needs to reach its service.
+These differ from the bearer tokens and JWTs protecting a Mirage server;
+see [HTTP authentication](/home/access/http#configure-authentication) for those.
 
-Start with an environment variable, then move the same pointer to a secret
-store when your deployment needs one.
+## Connect from the environment
 
-## Environment variables
-
-Set the credential in the process that starts Mirage:
+Set the credential in the environment of the process running Mirage, including
+on the server when your CLI connects remotely:
 
 ```bash
 export SLACK_BOT_TOKEN=xoxb-your-token
 ```
-
-Point the VFS field at it rather than copying the value into YAML:
 
 ```yaml workspace.yaml
 mounts:
@@ -33,19 +28,34 @@ mounts:
         key: SLACK_BOT_TOKEN
 ```
 
-Create the workspace and make one harmless read:
+See [Slack setup](/home/setup/slack) for the token and required scopes. Then
+create the workspace and check a read:
 
 ```bash
-mirage workspace create workspace.yaml --id credentials-demo
+mirage workspace create workspace.yaml --id credentials-demo &&
 mirage shell -w credentials-demo -c 'ls /slack | head'
 ```
 
-Use the provider's setup page, such as [Slack setup](/home/setup/slack), to
-create the credential and grant the scopes needed for that read.
+Remove the example workspace afterward with `mirage workspace delete credentials-demo`.
+The same pointer format works in credential fields for registered virtual CLIs.
 
-## Dotenv
+## Pointer fields
 
-Declare a named source when the credential is in a file:
+| Key | Meaning |
+| --- | --- |
+| `from` | A built-in source name or a named instance under `secrets`. |
+| `ref` | Source-specific address, such as a secret name or file path. Defaults to an empty string. |
+| `key` | Field selected from the secret. Required in mount, CLI and source config pointers. Managed `env` entries default it to the variable's name. |
+
+The `env` source uses only `key`, with no `ref`. A source needing settings is
+declared under `secrets`, and pointers use that instance's name in `from`.
+
+## Read a dotenv file
+
+Python needs the `dotenv` extra in the environment running Mirage. For the
+`uv tool` CLI, run `uv tool install 'mirage-ai[dotenv]'`. In a Python
+project, use `uv add 'mirage-ai[dotenv]'` and run its CLI with `uv run mirage`.
+The Node package includes dotenv support.
 
 ```dotenv .env
 SLACK_BOT_TOKEN=xoxb-your-token
@@ -53,7 +63,7 @@ SLACK_BOT_TOKEN=xoxb-your-token
 
 ```yaml workspace.yaml
 secrets:
-  project:
+  team:
     source: dotenv
     config:
       path: .env
@@ -63,274 +73,31 @@ mounts:
     vfs: slack
     config:
       token:
-        from: project
+        from: team
         key: SLACK_BOT_TOKEN
 ```
 
-Run the same `ls /slack | head` check. A non-empty `ref` on a dotenv pointer
-overrides the source's `path`; leave it out when the declaration already names
-the file.
+Use this config with the same workspace creation and read commands above.
+Relative dotenv paths use the Mirage process's working directory. A pointer's
+non-empty `ref` overrides the source's configured `path`.
 
-## How pointers work
+## Other credential sources
 
-Every credential pointer has the same three keys:
+| `from` | `ref` example | `key` example | Prerequisite |
+| --- | --- | --- | --- |
+| `aws-sm` | `mirage/slack` or a secret ARN | `SLACK_BOT_TOKEN` | AWS credentials and region in the SDK's normal environment. Python needs `mirage-ai[aws-sm]`; Node includes the source dependency. |
+| `1password` | `op://Engineering/Slack/credential` | `credential` | `OP_SERVICE_ACCOUNT_TOKEN` in the Mirage process environment. Python needs `mirage-ai[1password]`; Node needs `@1password/sdk`. |
 
-| Key | Meaning |
-| --- | --- |
-| `from` | A built-in source name, or an instance declared under `secrets`. |
-| `ref` | The source-specific address: an AWS secret name or ARN, a dotenv path, or an `op://` reference. It defaults to an empty string. |
-| `key` | The field to take from the fetched secret. It is required in mount, CLI, and source config pointers. In `env`, it defaults to the variable name. |
+Use these values in place of `from`, `ref` and `key` in the mount pointer above.
+Install source dependencies in the same environment that runs Mirage, using
+the tool or project installation method described for dotenv.
 
-Use a declared instance when a source needs configuration or when one
-workspace uses multiple accounts. With one ambient account, a pointer may use
-the built-in name directly and omit `secrets`.
+AWS reads `SecretString`, not `SecretBinary`. A JSON object with string values
+exposes its field names as keys; other text is available under `key: value`.
 
-Managed entries under the top-level [`env`](/home/configuration#environment-and-credential-pointers)
-block also accept `readonly` and `fetch`. Use them when a scripted CLI or a
-runtime should receive a credential as an environment variable.
+A 1Password field reference fetches that field. An item reference such as
+`op://Engineering/Slack` lets `key` select a field by its label.
 
-## AWS Secrets Manager
-
-Install the source's optional dependency in Python. It is included by the Node
-package:
-
-<CodeGroup>
-```bash Python
-uv add "mirage-ai[aws-sm]"
-```
-
-```bash TypeScript
-npm install @struktoai/mirage-node
-```
-</CodeGroup>
-
-Create a `SecretString` whose JSON object contains the VFS field you need:
-
-```bash
-aws secretsmanager create-secret \
-  --name mirage/slack \
-  --secret-string '{"SLACK_BOT_TOKEN":"xoxb-your-token"}'
-```
-
-Let the AWS SDK use its normal credentials and region, then point at the
-secret by name:
-
-```yaml workspace.yaml
-mounts:
-  /slack:
-    vfs: slack
-    config:
-      token:
-        from: aws-sm
-        ref: mirage/slack
-        key: SLACK_BOT_TOKEN
-```
-
-Verify with a read that uses the credential:
-
-```bash
-mirage workspace create workspace.yaml --id aws-credentials
-mirage shell -w aws-credentials -c 'ls /slack | head'
-```
-
-To choose a region, profile, or explicit AWS credentials, declare an instance:
-
-```yaml
-secrets:
-  production:
-    source: aws-sm
-    config:
-      region: us-east-1
-      aws_profile: production
-
-mounts:
-  /slack:
-    vfs: slack
-    config:
-      token:
-        from: production
-        ref: mirage/slack
-        key: SLACK_BOT_TOKEN
-```
-
-The source config accepts `region`, `aws_profile`, `aws_access_key_id`,
-`aws_secret_access_key`, and `aws_session_token`. Prefer the AWS SDK's ambient
-credential chain or bootstrap explicit values from `env` or `dotenv` rather
-than storing them as literals.
-
-AWS Secrets Manager currently reads `SecretString`, not `SecretBinary`. A JSON
-object whose values are all strings exposes those names as fields. A plain
-string, JSON list, or object containing non-string values is exposed as the
-single field `value`, so use `key: value` for that shape.
-
-## 1Password
-
-Create a [1Password service account](https://developer.1password.com/docs/service-accounts/)
-with read access to the vault, then put its token in the process environment:
-
-```bash
-export OP_SERVICE_ACCOUNT_TOKEN=ops_your_service_account_token
-```
-
-Install the 1Password SDK:
-
-<CodeGroup>
-```bash Python
-uv add "mirage-ai[1password]"
-```
-
-```bash TypeScript
-npm install @struktoai/mirage-node @1password/sdk
-```
-</CodeGroup>
-
-Copy an item's `op://` reference from 1Password and select one of its field
-labels:
-
-```yaml workspace.yaml
-mounts:
-  /slack:
-    vfs: slack
-    config:
-      token:
-        from: 1password
-        ref: op://Engineering/Slack/credential
-        key: credential
-```
-
-Then verify the connection:
-
-```bash
-mirage workspace create workspace.yaml --id op-credentials
-mirage shell -w op-credentials -c 'ls /slack | head'
-```
-
-The service-account token defaults to `OP_SERVICE_ACCOUNT_TOKEN`. To use a
-named instance, declare `source: 1password` and set `config.token` to a literal
-or an `env` / `dotenv` pointer.
-
-A field reference such as `op://Engineering/Slack/credential` fetches that
-field. An item reference such as `op://Engineering/Slack` fetches every field
-and lets `key` select one by its label. Item notes are available as
-`notesPlain`. Vault and item segments may be titles or IDs.
-
-## Custom source
-
-A custom source is a strict config model plus one async fetch function. The
-function receives the parsed source config and the pointer's opaque `ref`, and
-returns a flat map of string fields. Register it in the host before creating
-the workspace.
-
-<Tabs>
-  <Tab title="Python" icon="/images/python-logo.svg">
-    ```python
-    from pydantic import BaseModel, ConfigDict
-
-    from mirage import RAMVFS, Workspace, register_secrets
-    from mirage.secrets import ResolvedSecret
-
-    class DemoVaultConfig(BaseModel):
-        model_config = ConfigDict(extra="forbid", frozen=True)
-
-        records: dict[str, dict[str, str]]
-
-    async def fetch_demo(
-        config: DemoVaultConfig, ref: str
-    ) -> ResolvedSecret:
-        return ResolvedSecret(fields=config.records[ref])
-
-    register_secrets("demo-vault", DemoVaultConfig, fetch_demo)
-
-    ws = Workspace(
-        {"/": RAMVFS()},
-        secrets={
-            "team": {
-                "source": "demo-vault",
-                "config": {
-                    "records": {"slack": {"token": "example-token"}}
-                },
-            }
-        },
-        env={
-            "SLACK_BOT_TOKEN": {
-                "from": "team",
-                "ref": "slack",
-                "key": "token",
-            }
-        },
-    )
-
-    result = await ws.shell('test -n "$SLACK_BOT_TOKEN" && echo ready')
-    assert await result.stdout_str() == "ready\n"
-    await ws.close()
-    ```
-  </Tab>
-  <Tab title="TypeScript" icon="/images/typescript-logo.svg">
-    ```typescript
-    import { RAMVFS, Workspace, z } from '@struktoai/mirage-node'
-    import { registerSecrets } from '@struktoai/mirage-core/secrets/registry'
-    import type { ResolvedSecret } from '@struktoai/mirage-core/secrets/types'
-
-    const DemoVaultConfig = z.strictObject({
-      records: z.record(z.string(), z.record(z.string(), z.string())),
-    })
-    type DemoVaultConfig = z.infer<typeof DemoVaultConfig>
-
-    async function fetchDemo(
-      config: DemoVaultConfig,
-      ref: string,
-    ): Promise<ResolvedSecret> {
-      const fields = config.records[ref]
-      if (fields === undefined) throw new Error(`unknown secret: ${ref}`)
-      return { fields }
-    }
-
-    registerSecrets('demo-vault', DemoVaultConfig, fetchDemo)
-
-    const ws = new Workspace(
-      { '/': new RAMVFS() },
-      {
-        secrets: {
-          team: {
-            source: 'demo-vault',
-            config: {
-              records: { slack: { token: 'example-token' } },
-            },
-          },
-        },
-        env: {
-          SLACK_BOT_TOKEN: {
-            from: 'team',
-            ref: 'slack',
-            key: 'token',
-          },
-        },
-      },
-    )
-
-    const result = await ws.shell('test -n "$SLACK_BOT_TOKEN" && echo ready')
-    if (result.stdoutText !== 'ready\n') throw new Error('credential check failed')
-    await ws.close()
-    ```
-  </Tab>
-</Tabs>
-
-The in-memory records keep the example runnable; replace `fetch_demo` or
-`fetchDemo` with your credential store's client call. Registration is
-host-side. A separately running stock Mirage daemon cannot see a registration
-made in another process, so embed the server when YAML should name your custom
-source.
-
-## Source configuration and safety
-
-A source declaration has exactly two keys: required `source` and optional
-`config` (default `{}`). Values in `config` may be literals or pointers to the
-bootstrap sources `env` and `dotenv`. A source cannot bootstrap itself or
-another configured source because that would create an ambiguous dependency
-order.
-
-Mirage resolves a mount or registered CLI pointer before constructing that
-provider's config, and managed environment variables are fetched when a line
-first references them unless `fetch: eager` is set. Snapshots keep managed
-environment pointers. They redact validated credential fields in mounted VFS
-and registered CLI configs rather than storing the fetched values.
+Source declarations accept `source` and optional `config`. Pointers inside a
+source's config can read only from `env` or `dotenv`. Custom sources must be
+registered in the same process that creates the workspace.

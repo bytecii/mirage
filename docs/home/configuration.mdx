@@ -1,19 +1,17 @@
 ---
 title: Workspace configuration
-description: The complete portable reference for workspace.yaml files and their Python and TypeScript SDK equivalents.
+description: Configure workspace.yaml mounts, commands, runtimes, profiles and credentials.
 icon: sliders
 ---
 
-A workspace config describes the mounts, CLIs, runtimes, credentials and
-policies that make up one virtual terminal. The Python and TypeScript loaders
-accept the same YAML. Use the `snake_case` keys on this page even when the
-workspace will run in TypeScript; the TypeScript loader converts them to the
-SDK's `camelCase` option names.
+A workspace config describes one virtual terminal. Python and TypeScript use
+`snake_case` YAML keys. TypeScript constructor options use camelCase, such as
+`commandLimits`; provider and runtime guides show their SDK equivalents.
 
-## Smallest config
+## Start with RAM
 
-`mounts` is the only required top-level key. This workspace has one writable,
-in-memory mount:
+`mounts` is the only required top-level key. This config creates a writable,
+in-memory mount without credentials:
 
 ```yaml workspace.yaml
 mounts:
@@ -21,330 +19,83 @@ mounts:
     vfs: ram
 ```
 
-Create it and verify the mount:
+Create a workspace, check it, and remove it:
 
 ```bash
-mirage workspace create workspace.yaml --id demo
-mirage shell -w demo -c 'echo ready > /data/status && cat /data/status'
+mirage workspace create workspace.yaml --id config-demo &&
+mirage shell -w config-demo -c 'echo ready > /data/status && cat /data/status' &&
+mirage workspace delete config-demo
 ```
 
-The command prints `ready`. Continue with a [VFS setup guide](/home/setup/vfs)
-when you are ready to replace RAM with a service.
+The shell command prints `ready`. Replace RAM using a [VFS setup guide](/home/setup/vfs).
+YAML defaults `mode` to `write`; direct Python and TypeScript `Workspace`
+constructors default to `read`.
 
-## Complete shape
+## Workspace settings
 
-This example shows where every top-level key belongs. It is a reference shape,
-not a config to copy unchanged: names such as `slack`, `monty`, and `agent`
-must be installed or defined in your deployment.
-
-```yaml workspace.yaml
-mounts:
-  /data:
-    vfs: ram
-    mode: write
-    config: {}
-    command_limits: {}
-    backend: workspace
-    read: bounded
-    ttl: 600
-    write: unconditional
-    index:
-      type: ram
-      ttl: 600
-
-io:
-  buffer_bytes: 65536
-
-command_limits:
-  grep:
-    max_bytes: 1048576
-    max_lines: 1000
-    timeout_seconds: 30
-    on_exceed: truncate
-
-clis:
-  slack:
-    cli: slack
-    config:
-      token:
-        from: env
-        key: SLACK_BOT_TOKEN
-
-runtimes:
-  - monty
-  - name: workspace
-    captures: []
-    config: {}
-
-route_policy:
-  script: route.py
-  runtime: monty
-
-profiles:
-  agent:
-    cwd: /data
-    commands:
-      deny: [rm]
-profile: agent
-
-mode: write
-read: bounded
-write: unconditional
-default_session_id: agent
-workspace_id: demo
-
-cache:
-  type: ram
-  limit: 512MB
-  max_drain_bytes: null
-
-index:
-  type: ram
-  ttl: 600
-
-store:
-  type: ram
-
-console:
-  type: ram
-
-env:
-  APP_ENV: production
-  SLACK_BOT_TOKEN:
-    from: env
-    key: SLACK_BOT_TOKEN
-    readonly: true
-    fetch: lazy
-
-secrets: {}
-```
-
-Relative script paths and code references in a file are resolved from the
-directory containing that file. `${NAME}` placeholders are replaced from the
-host process environment before validation; a missing variable is an error.
-
-## Top-level keys
-
-| YAML key | Required / default | Python `Workspace` | TypeScript `Workspace` | Meaning |
-| --- | --- | --- | --- | --- |
-| `mounts` | required mapping | `mounts` | first constructor argument | Mount prefix to [mount block](#mounts). |
-| `io` | `{buffer_bytes: 65536}` | `io` | `io` | Capacity of each in-flight byte queue; `buffer_bytes` is an integer from 16 KiB through JavaScript's maximum safe integer. |
-| `command_limits` | none | `command_limits` | `commandLimits` | Per-command [output and time limits](#command-limits). |
-| `clis` | none | `clis` | `clis` | Installed [virtual CLIs](#clis). |
-| `runtimes` | SDK defaults | `runtimes` | `runtimes` | Ordered [runtime entries](#runtimes). |
-| `route_policy` | none | `route_policy` | `routePolicy` | One [route policy](/home/policy/route-runtime); `script` is required and `runtime` defaults to `monty`. |
-| `profiles` | none | `profiles` | `profiles` | Named [agent profile](/home/profiles) documents. |
-| `profile` | `default` when that profile exists; otherwise none | `profile` | `profile` | Profile assigned to a session that does not name one. It must name an entry in `profiles`. |
-| `mode` | `write` | `mode` | `mode` | Default mount mode: `read`, `write`, or `exec` (`r`, `rw`, and `rwx` are aliases). |
-| `read` | `bounded` with 600-second bound | `read` (`ReadSpec`) | `read` (`ReadSpec`) | Default read policy. `fresh` and `bounded` are usable; `pinned` is reserved and currently refused. |
-| `write` | `unconditional` | `write` | `write` | Default write policy. `unconditional` and supported `conditional` mounts are usable; `staged` is reserved and currently refused. |
-| `default_session_id` | generated | `session_id` | `sessionId` | Initial session id. |
-| `workspace_id` | generated | `workspace_id` | `workspaceId` | Durable workspace id. |
-| `cache` | RAM, `512MB` | `cache` | `cache` | Read-through [file cache](#cache-index-console-and-store). |
-| `index` | each mount's VFS default | `index` | `index` | Default directory and stat index; a mount can replace it. |
-| `store` | RAM | `store` | `store` | Control-plane state store. |
-| `console` | RAM | `console_factory` | `consoleFactory` | Background-job output store. |
-| `env` | empty | `env` | `env` | Literal or managed variables seeded into sessions. |
-| `secrets` | empty | `secrets` | `secrets` | Named [service credential sources](/home/authentication). |
-
-The YAML default for `mode` is deliberately `write`, which makes a config's
-mounts useful without repeating the key. A direct `Workspace(...)` or
-`new Workspace(...)` call defaults to `read`; pass the corresponding SDK
-option when you want the YAML behavior in code.
-
-Unknown keys are errors in both loaders. Provider-specific fields live under
-`mounts.<prefix>.config`, CLI-specific fields under `clis.<name>.config`, and
-runtime-specific fields under `runtimes[].config`. Their setup pages are the
-source of truth for those fields.
-
-Python code uses the YAML spellings for nested fields. TypeScript code uses
-their `camelCase` forms: for example, `bufferBytes`, `commandLimits`,
-`maxBytes`, `maxLines`, `timeoutSeconds`, `onExceed`, `maxDrainBytes`,
-`keyPrefix`, and `ttlSeconds`. The TypeScript YAML loader performs this
-translation; provider and runtime pages show the typed constructor forms for
-their own `config` blocks.
-
-## Mounts
-
-Each `mounts` key is an absolute virtual prefix. Its value accepts these keys:
-
-| Key | Required / default | Meaning |
-| --- | --- | --- |
-| `vfs` | required | Registered VFS name, or `./file.py:Class` / `./file.mjs:Class` for a custom VFS. |
-| `mode` | inherits top-level `mode` | `read`, `write`, or `exec`; aliases `r`, `rw`, `rwx` are accepted. |
-| `config` | `{}` | Fields owned by that VFS. See its [setup guide](/home/setup/vfs). |
-| `command_limits` | `{}` | Limits applied only when a command works on this mount. |
-| `backend` | `workspace` | `workspace`, `fuse`, or `fskit`. Kernel backends require their platform setup. |
-| `mountpoint` | none | Host path for `fuse` or `fskit`; ignored by `workspace`. |
-| `read` | inherits top-level `read` | `fresh` or `bounded`. An explicitly written `bounded` requires `ttl`. |
-| `ttl` | inherited bound | Positive whole seconds for an explicitly bounded mount. It is valid only with `read: bounded`. |
-| `write` | inherits top-level `write` | `unconditional` or `conditional`; the backend must support the selected policy. |
-| `index` | inherits the workspace index unless set | A complete RAM or Redis index block; this replaces rather than merges with the workspace block. |
-
-`fuse` and `fskit` are also exposed to the host kernel. See [FUSE setup](/home/setup/fuse)
-before selecting either backend.
-
-## CLIs
-
-The key under `clis` is the command installed in the workspace. Each block
-takes exactly one of `cli` or `script`:
-
-| Key | Required / default | Meaning |
-| --- | --- | --- |
-| `cli` | exactly one of `cli` / `script` | Registered CLI name, or a `source:EXPORT` code reference. |
-| `script` | exactly one of `cli` / `script` | Path to a `.py`, `.js`, or `.mjs` program embedded when the config loads. |
-| `runtime` | automatic | Runtime for `script`; it is invalid with `cli`. |
-| `config` | `{}` | Fields validated by the registered CLI. A scripted CLI should read credentials from managed `env` variables. |
-
-See [Virtual CLIs](/home/setup/clis) for the registered names and their fields.
-
-## Runtimes
-
-A runtime entry is either a registered name such as `monty`, or a mapping:
-
-```yaml
-runtimes:
-  - name: monty
-    captures: [python, python3]
-    config: {}
-```
-
-`name` is required in the mapping form. `captures` overrides the commands the
-runtime claims, and `config` contains runtime-specific fields. A name may also
-be a `source:Class` reference. See [Runtimes](/home/setup/runtime/overview) for
-the available names and their configuration.
-
-## Command limits
-
-Both top-level and per-mount `command_limits` map command names to the same
-block:
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `max_bytes` | unlimited | Non-negative output-byte limit, or `null`. |
-| `max_lines` | unlimited | Non-negative output-line limit, or `null`. |
-| `timeout_seconds` | unlimited | Non-negative execution time, or `null`. |
-| `on_exceed` | `truncate` | `truncate` or `error`. |
-
-## Cache, index, console and store
-
-### `cache`
-
-When the block is present, `type` is required.
-
-| `type` | Fields and defaults |
+| Key | Purpose |
 | --- | --- |
-| `ram` | `limit: 512MB`, `max_drain_bytes: null` |
-| `redis` | the RAM fields, plus `url: redis://localhost:6379/0`, `key_prefix: "mirage:cache:"` |
+| `mounts` | Map virtual prefixes to VFS configurations, described below. |
+| `mode` | Default mount access: `read`, `write` or `exec`. |
+| `read`, `write` | Default mount policies. Reads default to `bounded` with a 600-second bound; writes to `unconditional`. |
+| `clis` | Install [virtual CLIs](/home/setup/clis) by command name. |
+| `runtimes` | Ordered [runtimes](/home/setup/runtime/overview) for programs. |
+| `route_policy` | Choose runtimes with a [routing policy](/home/policy/route-runtime). |
+| `profiles`, `profile` | Define [agent profiles](/home/profiles) and select the default. |
+| `command_limits` | Set [output and execution limits](/home/core/output-limits). |
+| `env` | Seed literal or managed environment variables, described below. |
+| `secrets` | Declare named [credential sources](/home/authentication). |
+| `cache`, `index` | Configure cached file content and directory/stat metadata. |
+| `store`, `console` | Configure workspace state and background-job output storage. |
+| `io` | Set byte-queue capacity with `buffer_bytes`. |
+| `default_session_id`, `workspace_id` | Set explicit identifiers instead of generated ones. |
 
-`limit` is a byte count or a size string. `max_drain_bytes` is a byte count or
-`null`.
+Unknown keys are errors. Provider fields belong under `mounts.<prefix>.config`,
+CLI fields under `clis.<name>.config`, and runtime fields under `runtimes[].config`.
 
-### `index`
+## Mount settings
 
-When a workspace or mount index block is present, `type` is required.
+Each mount key is an absolute virtual prefix, such as `/data`.
 
-| `type` | Fields and defaults |
+| Key | Purpose |
 | --- | --- |
-| `ram` | `ttl: 600` |
-| `redis` | `ttl: 600`, `url: redis://localhost:6379/0`, `key_prefix: "mirage:index:"` |
-
-### `console`
-
-When the block is present, `type` is required.
-
-| `type` | Fields and defaults |
-| --- | --- |
-| `ram` | no additional fields |
-| `redis` | `url: redis://localhost:6379/0`, `key_prefix: "mirage:console:"`, `ttl_seconds: 86400` (`null` disables expiry) |
-
-### `store`
-
-The top-level store type is `ram` (default), `disk`, or `redis`. `disk` uses
-`root: ~/.mirage/state`; Redis uses `url: redis://localhost:6379/0` and
-`key_prefix: "mirage:"`.
-
-`namespace`, `observer`, and `workspace` can each replace one control-plane
-group with their own `ram`, `disk`, or `redis` block; each override requires
-`type`. The `workspace` group
-also accepts `type: s3`; S3 is not valid for the top-level, `namespace`, or
-`observer` store. Its fields are the [S3 fields](/home/setup/s3), plus
-`key_prefix` defaulting to `mirage/`.
+| `vfs` | Required registered VFS name, such as `ram` or `s3`. |
+| `config` | Provider-specific fields from its [setup guide](/home/setup/vfs). |
+| `mode` | Override the workspace's access mode. |
+| `read`, `ttl` | Override the read policy. An explicit `read: bounded` requires `ttl` in positive whole seconds. |
+| `write` | Override the write policy with one the backend supports. |
+| `command_limits` | Override limits for commands using this mount. |
+| `index` | Replace the workspace's index configuration for this mount. |
+| `backend`, `mountpoint` | Expose a local folder using [FUSE or FSKit](/home/setup/fuse). The default backend is `workspace`. |
 
 ## Environment and credential pointers
 
-A bare string is a literal, exported session variable:
+A string sets a literal exported variable. A pointer fetches a credential
+instead of storing its value in YAML:
 
 ```yaml
 env:
   APP_ENV: production
-```
-
-The long literal form adds `readonly` and `export`:
-
-```yaml
-env:
-  APP_ENV:
-    value: production
-    readonly: true
-    export: true
-```
-
-A managed variable points to a credential source:
-
-```yaml
-env:
   API_TOKEN:
-    from: team
-    ref: production/api
-    key: token
+    from: env
     readonly: true
-    fetch: lazy
 ```
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `value` | none | Literal value; mutually exclusive with `from`. |
-| `from` | none | Source or declared source-instance name; mutually exclusive with `value`. |
-| `ref` | `""` | Source-specific secret address. |
-| `key` | the environment variable's name | Field selected from the fetched secret. |
-| `readonly` | `false` | Prevent shell assignment and `unset`. |
-| `export` | `true` | Export a literal entry; managed entries are always exported. |
-| `fetch` | `lazy` | `lazy` waits for the first reference; `eager` fills the variable before the first top-level line. |
+Here `API_TOKEN` comes from the Mirage process environment. Managed entries
+default `key` to the variable's name and are always exported. `readonly`
+prevents shell assignment and `unset`. Fetching is lazy on first reference;
+`fetch: eager` requests it before execution even when the line does not name it.
 
-Credential pointers inside mount and registered CLI config use only `from`,
-`ref`, and required `key`. The [service credentials guide](/home/authentication)
-has complete source setup and verification examples.
+Pointers inside mount or registered CLI configs require an explicit `key` and
+are resolved before the provider is constructed. See [Service credentials](/home/authentication)
+for `from`, `ref` and `key` examples.
 
-## SDK loading
+## Values and paths
 
-The CLI and server load this schema for you. An application can load the same
-file and then construct a workspace:
+`${NAME}` placeholders are substituted from the host process environment when
+the config loads. A missing variable is an error. Use a credential pointer
+when the value should be fetched through a source instead.
 
-<Tabs>
-  <Tab title="Python" icon="/images/python-logo.svg">
-    ```python
-    from mirage import Workspace
-    from mirage.config import load_config, resolve_secrets
-
-    config = await resolve_secrets(load_config("workspace.yaml"))
-    ws = Workspace(**config.to_workspace_kwargs())
-    ```
-  </Tab>
-  <Tab title="TypeScript" icon="/images/typescript-logo.svg">
-    ```typescript
-    import {
-      Workspace,
-      configToWorkspaceArgs,
-      loadWorkspaceConfigFile,
-    } from '@struktoai/mirage-node'
-
-    const args = await configToWorkspaceArgs(loadWorkspaceConfigFile('workspace.yaml'))
-    const ws = new Workspace(args.mounts, args.options)
-    ```
-  </Tab>
-</Tabs>
-
-The loaders validate the portable YAML shape, resolve credentials used by
-mounts and registered CLIs, and translate it to the constructor options shown
-in the top-level table.
+Relative script paths and file-based code references resolve from the config
+file's directory. Relative dotenv paths resolve from the Mirage process's
+working directory.
