@@ -18,12 +18,11 @@ from mirage.accessor.lancedb import LanceDBAccessor
 from mirage.core.lancedb.search import files_containing as _files_containing
 from mirage.core.lancedb.tree import SEARCH, read, readdir, stat
 from mirage.errors.fs import enotsup
-from mirage.types import DirListing, FileStat, PathSpec, VFSName
+from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.utils.ranges import slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.lancedb.config import LanceDBConfig
 from mirage.vfs.lancedb.prompt import PROMPT
-from mirage.vfs.types import SearchQuery
 
 _REMOTE_SCHEMES = ("s3://", "gs://", "az://", "hf://", "db://")
 

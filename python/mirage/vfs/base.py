@@ -29,6 +29,7 @@ from mirage.types import (
     FileStat,
     ListingVersion,
     PathSpec,
+    SearchQuery,
 )
 from mirage.utils.glob_walk import DEFAULT_MAX_GLOB_MATCHES
 from mirage.vfs.call import vfs_call
@@ -36,7 +37,6 @@ from mirage.vfs.constants import DEFAULT_MAX_DU_ENTRIES
 from mirage.vfs.secrets import redacted_config_dump
 from mirage.vfs.types import (
     Effect,
-    SearchQuery,
     Target,
 )
 

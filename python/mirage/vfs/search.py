@@ -1,6 +1,6 @@
 import math
 
-from mirage.vfs.types import SearchQuery
+from mirage.types import SearchQuery
 
 
 def validate_options(query: SearchQuery, allowed: set[str]) -> None:

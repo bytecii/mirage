@@ -24,9 +24,9 @@ import {
   type ChromaConfigResolved,
 } from './config.ts'
 import { PROMPT } from './prompt.ts'
-import type { DirListing, PathSpec, FileStat } from '../../types.ts'
+import type { DirListing, PathSpec, FileStat, SearchQuery } from '../../types.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
-import type { Handed, SearchQuery } from '../types.ts'
+import type { Handed } from '../types.ts'
 import { CHROMA_TREE } from '../../core/chroma/tree.ts'
 import { read, readStream } from '../../core/chroma/read.ts'
 import { stat } from '../../core/chroma/stat.ts'

@@ -99,6 +99,7 @@ from mirage.types import (
     Producer,
     ReadPolicy,
     ReadSpec,
+    SearchQuery,
     WalkProbe,
     WritePolicy,
 )
@@ -113,7 +114,7 @@ from mirage.utils.ranges import is_unsatisfiable_range, slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.call import declared, declared_calls
 from mirage.vfs.constants import WRITE_EFFECTS
-from mirage.vfs.types import Effect, SearchQuery
+from mirage.vfs.types import Effect
 from mirage.view.types import StatPath
 from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.executor.command.handler import (

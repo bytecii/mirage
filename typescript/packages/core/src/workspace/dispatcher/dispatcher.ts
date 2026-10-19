@@ -81,7 +81,7 @@ import { ebusy, isMissingPath } from '../../errors/fs.ts'
 import type { BaseVFS } from '../../vfs/base.ts'
 import { declared } from '../../vfs/call.ts'
 import { WRITE_EFFECTS } from '../../vfs/constants.ts'
-import { Effect, type SearchQuery, Target, type VfsCall } from '../../vfs/types.ts'
+import { Effect, Target, type VfsCall } from '../../vfs/types.ts'
 import {
   type CacheFacts,
   type CapacityResult,
@@ -91,6 +91,7 @@ import {
   FileType,
   MountMode,
   PathSpec,
+  type SearchQuery,
   VFSName,
   WritePolicy,
 } from '../../types.ts'

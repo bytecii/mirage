@@ -60,6 +60,7 @@ from mirage.types import (
     MountMode,
     OnExceed,
     PathSpec,
+    SearchQuery,
     Visibility,
 )
 from mirage.utils.key_prefix import mounted_path
@@ -68,7 +69,7 @@ from mirage.utils.stat_view import ident
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
-from mirage.vfs.types import SearchQuery, VfsCall
+from mirage.vfs.types import VfsCall
 from mirage.workspace import Workspace
 from mirage.workspace.dispatcher.constants import (
     POLICY_WRITE_OPS,

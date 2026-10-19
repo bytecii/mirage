@@ -18,12 +18,11 @@ from mirage.accessor.qdrant import QdrantAccessor
 from mirage.core.qdrant.search import files_containing
 from mirage.core.qdrant.tree import SEARCH, read, readdir, stat
 from mirage.errors.fs import enotsup
-from mirage.types import DirListing, FileStat, PathSpec, VFSName
+from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.utils.ranges import slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.qdrant.config import QdrantConfig
 from mirage.vfs.qdrant.prompt import PROMPT
-from mirage.vfs.types import SearchQuery
 
 
 class QdrantVFS(BaseVFS):

@@ -5,14 +5,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mirage.commands.builtin.generic.search import search_resources
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.vfs.chroma import ChromaVFS
 from mirage.vfs.dify import DifyVFS
 from mirage.vfs.lancedb import LanceDBVFS
 from mirage.vfs.mem0 import Mem0VFS
 from mirage.vfs.qdrant import QdrantVFS
 from mirage.vfs.search import int_option
-from mirage.vfs.types import SearchQuery
 from tests.fixtures.vfs_io import vfs_over
 
 PATH = PathSpec(virtual="/data", directory="/", vfs_path="")

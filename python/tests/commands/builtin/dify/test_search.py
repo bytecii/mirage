@@ -6,10 +6,9 @@ from mirage.commands.builtin.dify import search as command_search
 from mirage.commands.config import Context
 from mirage.core.dify import search, tree
 from mirage.io.types import materialize
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.utils.key_prefix import mount_key
 from mirage.vfs.dify import DifyVFS
-from mirage.vfs.types import SearchQuery
 from mirage.workspace import Workspace
 from mirage.workspace.files import Files
 from tests.fixtures.mount_commands import command_files

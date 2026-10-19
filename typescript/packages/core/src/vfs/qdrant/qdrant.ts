@@ -25,9 +25,8 @@ import {
   type QdrantConfigResolved,
 } from './config.ts'
 import { PROMPT } from './prompt.ts'
-import type { PathSpec, FileStat } from '../../types.ts'
+import type { PathSpec, FileStat, SearchQuery } from '../../types.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
-import type { SearchQuery } from '../types.ts'
 import { readdir, read, stat, SEARCH } from '../../core/qdrant/tree.ts'
 import { filesContaining } from '../../core/qdrant/search.ts'
 

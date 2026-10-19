@@ -1,8 +1,5 @@
-from collections.abc import (
-    Awaitable,
-    Mapping,
-)
-from dataclasses import dataclass, field
+from collections.abc import Awaitable
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
@@ -12,7 +9,7 @@ from typing import (
     runtime_checkable,
 )
 
-from mirage.types import JsonValue, PathSpec
+from mirage.types import PathSpec, SearchQuery
 
 if TYPE_CHECKING:
     pass
@@ -68,20 +65,6 @@ class VfsCall(NamedTuple):
     target: Target
     creates: bool
     subtree: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class SearchQuery:
-    """A resource query and its backend-specific arguments.
-
-    Args:
-        query (str): the search text, interpreted by the resource.
-        options (Mapping[str, JsonValue]): filters, limits, or namespaced
-            integration options. The backend validates the keys it supports.
-    """
-
-    query: str
-    options: Mapping[str, JsonValue] = field(default_factory=dict)
 
 
 class SearchOp(Protocol):

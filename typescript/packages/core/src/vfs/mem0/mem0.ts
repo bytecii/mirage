@@ -5,9 +5,8 @@ import { redactMem0Config, type Mem0Config, type Mem0ConfigRedacted } from './co
 
 import { type DirListing, VFSName } from '../../types.ts'
 import { PROMPT } from './prompt.ts'
-import type { PathSpec, FileStat } from '../../types.ts'
+import type { PathSpec, FileStat, SearchQuery } from '../../types.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
-import type { SearchQuery } from '../types.ts'
 import { readdir } from '../../core/mem0/readdir.ts'
 import { read, readStream } from '../../core/mem0/read.ts'
 import { stat } from '../../core/mem0/stat.ts'

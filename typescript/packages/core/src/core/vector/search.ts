@@ -13,11 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Accessor } from '../../accessor/base.ts'
-import type { PathSpec } from '../../types.ts'
+import type { PathSpec, SearchQuery } from '../../types.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { floatOption, intOption, textOption, validateOptions } from '../../vfs/search.ts'
-import type { SearchOps, SearchQuery } from '../../vfs/types.ts'
+import type { SearchOps } from '../../vfs/types.ts'
 import type { VectorTree } from './types.ts'
 
 const DEC = new TextDecoder()

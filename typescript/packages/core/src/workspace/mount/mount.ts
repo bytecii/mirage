@@ -52,7 +52,7 @@ import {
 } from '../../core/generic/rewrite.ts'
 import { declared, declaredCalls, methodName } from '../../vfs/call.ts'
 import { WRITE_EFFECTS } from '../../vfs/constants.ts'
-import { Effect, type Handed, type SearchQuery } from '../../vfs/types.ts'
+import { Effect, type Handed } from '../../vfs/types.ts'
 import { isUnsatisfiableRange, sliceWindow } from '../../utils/ranges.ts'
 
 import { getExtension } from '../../utils/filetype.ts'
@@ -84,6 +84,7 @@ import {
   type Limit,
   type Producer,
   type ReadSpec,
+  type SearchQuery,
   type SetAttrFields,
   type WalkProbe,
   DEFAULT_READ_SPEC,

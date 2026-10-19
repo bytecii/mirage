@@ -9,12 +9,11 @@ from mirage.core.chroma.search import files_containing as _files_containing
 from mirage.core.chroma.search import search_many, search_resource
 from mirage.core.chroma.stat import stat as _stat
 from mirage.core.chroma.tree import CHROMA_TREE
-from mirage.types import DirListing, FileStat, PathSpec, VFSName
+from mirage.types import DirListing, FileStat, PathSpec, SearchQuery, VFSName
 from mirage.utils.ranges import slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.chroma.config import ChromaConfig
 from mirage.vfs.chroma.prompt import PROMPT
-from mirage.vfs.types import SearchQuery
 
 _readdir = CHROMA_TREE.readdir
 

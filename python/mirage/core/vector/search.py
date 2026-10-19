@@ -14,7 +14,7 @@
 
 from mirage.core.hierarchy.probe import A
 from mirage.core.vector.types import VectorTree
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.vfs.search import (
     float_option,
@@ -22,7 +22,7 @@ from mirage.vfs.search import (
     text_option,
     validate_options,
 )
-from mirage.vfs.types import SearchOps, SearchQuery
+from mirage.vfs.types import SearchOps
 
 
 def _target_table(pinned: str | None, paths: list[PathSpec]) -> str | None:

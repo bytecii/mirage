@@ -24,8 +24,8 @@ import {
   type DifyConfigResolved,
 } from './config.ts'
 import { PROMPT } from './prompt.ts'
-import type { DirListing, PathSpec, FileStat } from '../../types.ts'
-import type { Handed, SearchQuery } from '../types.ts'
+import type { DirListing, PathSpec, FileStat, SearchQuery } from '../../types.ts'
+import type { Handed } from '../types.ts'
 import { DIFY_TREE } from '../../core/dify/tree.ts'
 import { read, readStream } from '../../core/dify/read.ts'
 import { stat } from '../../core/dify/stat.ts'

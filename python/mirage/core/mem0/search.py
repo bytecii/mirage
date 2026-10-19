@@ -21,7 +21,7 @@ from mirage.core.mem0.client import search_memories
 from mirage.core.mem0.readdir import readdir
 from mirage.core.mem0.scope import detect_scope
 from mirage.errors.fs import enoent
-from mirage.types import PathSpec
+from mirage.types import PathSpec, SearchQuery
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.score import format_score
@@ -31,7 +31,6 @@ from mirage.vfs.search import (
     text_option,
     validate_options,
 )
-from mirage.vfs.types import SearchQuery
 
 
 def _validate(query: str, top_k: int, threshold: float) -> None:
