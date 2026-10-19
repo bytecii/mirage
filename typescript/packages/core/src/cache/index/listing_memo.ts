@@ -12,11 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { FileStat } from '../../types.ts'
 import type { ListResult } from './config.ts'
-import { LISTING_TRUST_WINDOW } from './constants.ts'
+import { LISTING_TRUST_WINDOW, ROW_READ_BATCH } from './constants.ts'
 import { soleCommandStarted } from './scope.ts'
 
 const WRITES_BY_PREFIX = new Map<string, number>()
+const ROW_WRITES_BY_PREFIX = new Map<string, number>()
 const HOLDERS_BY_PREFIX = new Map<string, number>()
 
 function copied(listing: ListResult): ListResult {
@@ -31,6 +33,8 @@ interface Read {
   readonly readAt: number
   readonly expiresAt: number
   readonly listing: ListResult
+  readonly rowWrites?: number
+  readonly rows?: Map<string, FileStat>
 }
 
 /**
@@ -39,7 +43,9 @@ interface Read {
  * A read is served again only to the command that made it, only while no
  * listing write to the key prefix has finished since the read began, for
  * under LISTING_TRUST_WINDOW seconds, and never past the listing's own
- * expiry. Each fill drops the oldest reads no command can be served any
+ * expiry. Row reads batch at most ROW_READ_BATCH siblings and share this
+ * lifetime; a row-only write drops rows without discarding directory
+ * membership. Each fill drops the oldest reads no command can be served any
  * more, so a read stays held for about one window. The key prefix's write
  * count lives while an open memo holds the prefix. On the fallback
  * storage, while more than one command is live, there is no sole stamp and
@@ -96,6 +102,45 @@ export class ListingMemo {
     return copied(listing)
   }
 
+  /** Batch a listed row with its siblings within the listing's lifetime. */
+  async row(
+    path: string,
+    fetch: (paths: readonly string[]) => Promise<Map<string, FileStat>>,
+  ): Promise<FileStat | null> {
+    const stamp = soleCommandStarted()
+    if (stamp === null) return null
+    const folder = path.slice(0, path.lastIndexOf('/')) || '/'
+    const key = `${String(stamp)}:${folder}`
+    const kept = this.reads.get(key)
+    if (kept === undefined || !this.live(kept)) return null
+    const writes = ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0
+    let rows = kept.rows
+    if (rows === undefined || kept.rowWrites !== writes) {
+      rows = new Map()
+    }
+    if (!rows.has(path)) {
+      const paths = kept.listing.entries ?? kept.listing.partialEntries ?? []
+      const position = paths.indexOf(path)
+      if (position < 0) return null
+      const start = Math.floor(position / ROW_READ_BATCH) * ROW_READ_BATCH
+      rows = new Map([...rows, ...(await fetch(paths.slice(start, start + ROW_READ_BATCH)))])
+      if (
+        this.live(kept) &&
+        (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) === writes &&
+        soleCommandStarted() === stamp
+      ) {
+        this.reads.set(key, { ...kept, rows, rowWrites: writes })
+      }
+    }
+    const row = rows.get(path)
+    return row === undefined ? null : new FileStat(structuredClone(row))
+  }
+
+  /** Count a finished row write without discarding directory membership. */
+  rowWrote(): void {
+    ROW_WRITES_BY_PREFIX.set(this.keyPrefix, (ROW_WRITES_BY_PREFIX.get(this.keyPrefix) ?? 0) + 1)
+  }
+
   /** Runs `fn` and counts a listing write once it is over, whether it threw or not. */
   async writing<T>(fn: () => Promise<T>): Promise<T> {
     try {
@@ -108,6 +153,7 @@ export class ListingMemo {
   /** Counts a finished listing write to the key prefix. */
   wrote(): void {
     WRITES_BY_PREFIX.set(this.keyPrefix, this.written() + 1)
+    this.rowWrote()
   }
 
   /**
@@ -126,5 +172,6 @@ export class ListingMemo {
     }
     HOLDERS_BY_PREFIX.delete(this.keyPrefix)
     WRITES_BY_PREFIX.delete(this.keyPrefix)
+    ROW_WRITES_BY_PREFIX.delete(this.keyPrefix)
   }
 }

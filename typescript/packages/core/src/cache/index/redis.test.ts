@@ -16,7 +16,7 @@ import { FileStat, FileType } from '../../types.ts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IndexDirectorySchema, LookupStatus } from './config.ts'
 import { CacheManager } from '../manager.ts'
-import { REGISTRY_PAGE } from './constants.ts'
+import { ENTRY_PREFIX, REGISTRY_PAGE } from './constants.ts'
 import { RedisIndexCacheStore, type RedisClientLike } from './redis.ts'
 import { runInCommandScope } from './scope.ts'
 import { storedStat } from '../../workspace/mount/listing.ts'
@@ -1474,6 +1474,39 @@ describe.skipIf(skip)('RedisIndexCacheStore listing reads in one command', () =>
     await store.clear()
     await store.close()
     await peer.close()
+  })
+
+  it.each(Object.keys(NOT_COUNTING) as (keyof typeof NOT_COUNTING)[])(
+    'refreshes row batches after own and peer %s writes',
+    async (method) => {
+      for (const writer of [store, peer]) {
+        await store.setDir('/d', LISTED)
+        const sent = await mGets()
+        await runInCommandScope(async () => {
+          await store.listDir('/d')
+          expect((await store.get('/d/a')).entry?.fingerprint).not.toBe('new')
+          await NOT_COUNTING[method](writer)
+          expect((await store.get('/d/a')).entry?.fingerprint).toBe('new')
+          await store.get('/d/b')
+        })
+        expect(sent.mock.calls).toHaveLength(3)
+        vi.restoreAllMocks()
+      }
+    },
+  )
+
+  it('reads external row changes at the next command', async () => {
+    await store.setDir('/d', LISTED)
+    await runInCommandScope(async () => {
+      await store.listDir('/d')
+      await store.get('/d/a')
+    })
+    const c = await redis()
+    await c.set(`${prefix}${ENTRY_PREFIX}/d/a`, JSON.stringify(row('a', 'external')))
+    await runInCommandScope(async () => {
+      await store.listDir('/d')
+      expect((await store.get('/d/a')).entry?.fingerprint).toBe('external')
+    })
   })
 
   async function redis(): Promise<RedisClientLike> {

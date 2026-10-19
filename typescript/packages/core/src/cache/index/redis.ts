@@ -843,6 +843,8 @@ export class RedisIndexCacheStore extends IndexCacheStore {
   async get(vfsPath: string): Promise<LookupResult> {
     await this.flushSeed()
     const c = await this.client()
+    const cached = await this.listings.row(vfsPath, (paths) => this.getMany(paths))
+    if (cached !== null) return { entry: cached }
     const raw = await c.get(this.entryKey(vfsPath))
     if (raw === null) return { status: LookupStatus.NOT_FOUND }
     return { entry: row(raw) }
@@ -872,7 +874,11 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       keys: [this.entryKey(vfsPath), this.tombstonePrefix + folder, this.pathsKey],
       arguments: [vfsPath, JSON.stringify(entry), folder],
     })
-    await pipe.exec()
+    try {
+      await pipe.exec()
+    } finally {
+      this.listings.rowWrote()
+    }
   }
 
   addEntry(vfsPath: string, entry: FileStat, expiredAt?: Date | null): Promise<void> {
@@ -926,10 +932,15 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const key = this.entryKey(path)
     const raw = await c.get(key)
     if (raw === null || JSON.stringify(row(raw)) !== predecessor) return false
-    const stored = entry
-    return (
-      (await c.eval(REPLACE_ENTRY, { keys: [key], arguments: [raw, JSON.stringify(stored)] })) === 1
-    )
+    try {
+      const stored = entry
+      return (
+        (await c.eval(REPLACE_ENTRY, { keys: [key], arguments: [raw, JSON.stringify(stored)] })) ===
+        1
+      )
+    } finally {
+      this.listings.rowWrote()
+    }
   }
 
   /**

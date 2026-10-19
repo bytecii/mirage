@@ -224,10 +224,9 @@ describe('S3 cache consistency (mocked)', () => {
     },
   )
 
-  it.skipIf(process.env.REDIS_URL === undefined)(
-    'a warm long listing reads its folder once',
-    async () => {
-      const rows = 50
+  it.skipIf(process.env.REDIS_URL === undefined).each([50, 1000])(
+    'batches a warm long listing of %i rows',
+    async (rows) => {
       for (let n = 0; n < rows; n++) {
         mock.store.set(BUCKET, `d/${String(n).padStart(2, '0')}.txt`, ENC.encode('x'))
       }
@@ -253,7 +252,9 @@ describe('S3 cache consistency (mocked)', () => {
         const get = vi.spyOn(client, 'get')
         const warm = await ws.shell('ls -l /s3/d')
         expect(DEC.decode(warm.stdout)).toBe(listed)
-        expect(mGet.mock.calls.length + get.mock.calls.length).toBeLessThanOrEqual(rows + 4)
+        expect(mGet.mock.calls.length + get.mock.calls.length).toBeLessThanOrEqual(
+          Math.ceil(rows / 256) + 4,
+        )
         mGet.mockRestore()
         get.mockRestore()
         const made = await ws.shell('mkdir -p /s3/m/a/b && ls /s3/m/a')

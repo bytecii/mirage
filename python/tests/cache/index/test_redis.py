@@ -294,3 +294,39 @@ async def test_a_missing_or_expired_listing_is_read_each_time(store, mgets):
             for _ in range(2):
                 assert (await store.list_dir(folder)).status is status
     assert len(mgets) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", sorted(NOT_COUNTING))
+@pytest.mark.parametrize("writer", ["self", "peer"])
+async def test_row_batches_see_row_writes_without_reloading_membership(
+    store, peer, mgets, method, writer
+):
+    await store.set_dir("/d", LISTED)
+    mgets.clear()
+    async with command_scope():
+        await store.list_dir("/d")
+        assert (await store.get("/d/a")).entry.fingerprint != "new"
+        await NOT_COUNTING[method](store if writer == "self" else peer)
+        assert (await store.get("/d/a")).entry.fingerprint == "new"
+        await store.get("/d/b")
+    assert len(mgets) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_new_command_reads_rows_changed_outside_the_process(
+    store, mgets
+):
+    await store.set_dir("/d", LISTED)
+    async with command_scope():
+        await store.list_dir("/d")
+        await store.get("/d/a")
+    await store._client.set(
+        store._entry_key("/d/a"),
+        _row("a")
+        .model_copy(update={"fingerprint": "external"})
+        .model_dump_json(),
+    )
+    async with command_scope():
+        await store.list_dir("/d")
+        assert (await store.get("/d/a")).entry.fingerprint == "external"

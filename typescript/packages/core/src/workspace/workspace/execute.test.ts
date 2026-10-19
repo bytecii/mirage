@@ -39,6 +39,27 @@ const PROBE_SPEC = new CommandSpec({})
 
 const open: Workspace[] = []
 
+it('logs an unexpected execution failure and keeps the shell result', async () => {
+  const error = new TypeError('broken routing invariant')
+  const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+  const ws = new Workspace(
+    { '/ram': new RAMVFS() },
+    {
+      shellParser: await getTestParser(),
+      routePolicy: () => {
+        throw error
+      },
+    },
+  )
+  open.push(ws)
+  const result = await ws.shell('echo ok')
+  expect(result.exitCode).toBe(1)
+  expect(result.stderrText).toBe('broken routing invariant\n')
+  expect(result.stdoutText).toBe('')
+  expect(debug).toHaveBeenCalledWith('workspace execution failed:', error)
+  expect(ws.getSession(ws.defaultSessionId).lastExitCode).toBe(1)
+})
+
 it('links a pipeline CLI and operation history to the admitted execution', async () => {
   const ws = await makeWs()
   const seen: (string | null)[] = []

@@ -62,7 +62,8 @@
             "group": "Getting Started",
             "pages": [
               "home/introduction",
-              "home/install"
+              "home/install",
+              "home/docs-mcp"
             ]
           },
           {

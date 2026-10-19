@@ -1,6 +1,9 @@
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
+from typing import cast
 
 from opendal.exceptions import NotFound
+from opendal.file import AsyncFile
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.core.nextcloud.constants import DEFAULT_CHUNK_SIZE
@@ -19,7 +22,9 @@ async def read_stream(
     op = accessor.operator()
     rec = record_stream("read", path.virtual, "nextcloud")
     try:
-        async with await op.open(key, "rb") as f:
+        async with cast(
+            AbstractAsyncContextManager[AsyncFile], await op.open(key, "rb")
+        ) as f:
             while True:
                 chunk = await f.read(chunk_size)
                 if not chunk:

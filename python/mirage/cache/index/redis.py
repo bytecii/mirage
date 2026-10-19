@@ -921,6 +921,9 @@ class RedisIndexCacheStore(IndexCacheStore):
 
     async def get(self, vfs_path: str) -> LookupResult:
         await self._flush_seed()
+        cached = await self._listings.row(vfs_path, self.get_many)
+        if cached is not None:
+            return LookupResult(entry=cached)
         raw = await self._client.get(self._entry_key(vfs_path))
         if raw is None:
             return LookupResult(status=LookupStatus.NOT_FOUND)
@@ -955,7 +958,10 @@ class RedisIndexCacheStore(IndexCacheStore):
             entry.model_dump_json(),
             folder,
         )
-        await pipe.execute()
+        try:
+            await pipe.execute()
+        finally:
+            self._listings.row_wrote()
 
     @_counts_listing_write
     async def add_entry(
@@ -1008,13 +1014,16 @@ class RedisIndexCacheStore(IndexCacheStore):
         raw = await self._client.get(key)
         if raw is None or _row(raw).model_dump() != json.loads(predecessor):
             return False
-        result = await cast(
-            Awaitable[int],
-            self._client.eval(
-                _REPLACE_ENTRY, 1, key, raw, entry.model_dump_json()
-            ),
-        )
-        return result == 1
+        try:
+            result = await cast(
+                Awaitable[int],
+                self._client.eval(
+                    _REPLACE_ENTRY, 1, key, raw, entry.model_dump_json()
+                ),
+            )
+            return result == 1
+        finally:
+            self._listings.row_wrote()
 
     async def list_dir(self, vfs_path: str) -> ListResult:
         """A folder's listing, read from Redis at most once per command.

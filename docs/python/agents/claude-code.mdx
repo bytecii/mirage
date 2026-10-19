@@ -22,6 +22,20 @@ uv tool install 'mirage-ai[fuse]'
 
 Install [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) separately.
 
+## Plugin
+
+Install the Mirage plugin from Claude Code:
+
+```text
+/plugin marketplace add strukto-ai/mirage
+/plugin install mirage@mirage
+```
+
+The plugin bundles filesystem and VFS authoring skills with a workspace MCP
+launcher. The launcher runs `npx -y @struktoai/mirage-cli mcp`, so it needs Node.js
+and a configured Mirage workspace. See [MCP access](/home/access/mcp) to select
+a workspace or connect to a remote server.
+
 ## Workspace
 
 ```yaml workspace.yaml

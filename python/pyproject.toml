@@ -348,7 +348,6 @@ warn_return_any = true
 # never add one. A new module is checked the day it lands.
 [[tool.mypy.overrides]]
 module = [
-    "mirage.accessor.nextcloud",
     "mirage.agents.agno.toolkit",
     "mirage.agents.openai_agents.runner",
     "mirage.agents.openai_agents.shell",
@@ -400,7 +399,6 @@ module = [
     "mirage.core.mongodb.client",
     "mirage.core.mongodb._sampler",
     "mirage.core.mongodb.stream",
-    "mirage.core.nextcloud.read",
     "mirage.core.nextcloud.readdir",
     "mirage.core.nextcloud.search.query",
     "mirage.core.notion.read",
@@ -412,7 +410,6 @@ module = [
     "mirage.core.ssh.stream",
     "mirage.core.trello.stat",
     "mirage.fuse.darwin",
-    "mirage.fuse.fs",
     "mirage.fuse.mount",
     "mirage.mount.core",
     "mirage.observe.context",

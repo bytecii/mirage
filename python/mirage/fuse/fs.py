@@ -14,12 +14,12 @@
 
 import asyncio
 import errno
-import inspect
 import logging
 import os
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar
 
 from mirage.bridge.sync import run_async_from_sync
 from mirage.fuse.constants import XATTR_CREATE, XATTR_REPLACE
@@ -32,6 +32,8 @@ from mirage.workspace.files import Files
 from mirage.workspace.session.session import SessionState
 
 logger = logging.getLogger(__name__)
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 def stat_dict(attrs: MountAttrs) -> dict[str, Any]:
@@ -82,7 +84,9 @@ class MirageFS:
         self._loop = asyncio.new_event_loop()
         threading.Thread(target=self._loop.run_forever, daemon=True).start()
 
-    def _call(self, fn: Callable[..., Any], *args: Any) -> Any:
+    def _call(
+        self, fn: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
         """Run a core call, translating failures into FUSE error codes.
 
         Every exception is translated rather than propagated: an exception
@@ -92,17 +96,15 @@ class MirageFS:
         leaves a trace instead of silently reading as "I/O error".
 
         Args:
-            fn (Callable): the MountCore method to invoke.
-            *args (Any): arguments to forward to it.
+            fn (Callable[P, Awaitable[T]]): the async MountCore method.
+            *args (P.args): positional arguments to forward.
+            **kwargs (P.kwargs): keyword arguments to forward.
 
         Returns:
-            Any: whatever the core method returns.
+            T: whatever the core method returns.
         """
         try:
-            result = fn(*args)
-            if inspect.isawaitable(result):
-                return run_async_from_sync(result, self._loop)
-            return result
+            return run_async_from_sync(fn(*args, **kwargs), self._loop)
         except Exception as err:
             code = classify_error(err)
             if code == errno.EIO and not isinstance(
@@ -116,7 +118,7 @@ class MirageFS:
     def getattr(self, path: str, fh: int | None = None) -> dict[str, Any]:
         return stat_dict(self._call(self.core.fgetattr, path, fh))
 
-    def readdir(self, path: str, fh: int) -> list[Any]:
+    def readdir(self, path: str, fh: int) -> list[str]:
         return self._call(self.core.readdir, path)
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
@@ -170,12 +172,12 @@ class MirageFS:
         size = changes.get("size")
         if isinstance(size, int):
             self._call(self.core.truncate, path, size)
-        fields = [
+        mode, uid, gid, atime, mtime = (
             value if isinstance(value := changes.get(key), int) else None
             for key in ("mode", "uid", "gid", "acctime", "modtime")
-        ]
-        if any(field is not None for field in fields):
-            self._call(self.core.setattr, path, *fields)
+        )
+        if any(field is not None for field in (mode, uid, gid, atime, mtime)):
+            self._call(self.core.setattr, path, mode, uid, gid, atime, mtime)
         elif not isinstance(size, int):
             self._call(self.core.getattr, path)
         return 0
