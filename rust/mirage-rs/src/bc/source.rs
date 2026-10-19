@@ -2,6 +2,30 @@ use std::collections::VecDeque;
 
 use super::common::Budget;
 
+/// A line number carries the index of its source above these bits, so
+/// lines stay ordered across sources and the low bits count within one.
+pub(super) const LINE_BITS: u32 = 32;
+
+/// bc reads bytes: one that is not part of a whole UTF-8 character rides
+/// as a character of its own among the last 128 code points, so it reaches
+/// the output and the diagnostics as the byte it was.
+const RAW: u32 = 0x10_ff00;
+
+fn raw(byte: u8) -> char {
+    char::from_u32(RAW + u32::from(byte)).expect("a raw byte maps to a code point")
+}
+
+/// The bytes `character` stands for.
+pub(super) fn bytes_of(character: char, buffer: &mut [u8; 4]) -> &[u8] {
+    match u32::from(character).checked_sub(RAW + 0x80) {
+        Some(offset) => {
+            buffer[0] = 0x80 + offset as u8;
+            &buffer[..1]
+        }
+        None => character.encode_utf8(buffer).as_bytes(),
+    }
+}
+
 pub(super) struct Line {
     pub(super) chars: Vec<char>,
     pub(super) lines: Vec<u64>,
@@ -44,9 +68,16 @@ pub(super) struct Source {
     quotes: Vec<usize>,
     eof: bool,
     ended: bool,
+    origin: u64,
+    received: u64,
+    taken: u64,
+    /// Where each file ended so far stops, counted in bytes from the first.
+    starts: VecDeque<u64>,
 }
 
 impl Source {
+    /// A source reading files ahead of standard input, as one program: a
+    /// statement or block comment a file leaves open runs on into the next.
     pub(super) fn new() -> Self {
         Self {
             line: 1,
@@ -54,10 +85,38 @@ impl Source {
         }
     }
 
+    fn at(&self) -> u64 {
+        (self.origin << LINE_BITS) | self.line
+    }
+
+    fn at_boundary(&self) -> bool {
+        self.starts
+            .front()
+            .is_some_and(|start| *start <= self.taken)
+    }
+
+    /// Move to the next source; it counts its lines from one.
+    fn cross(&mut self) {
+        self.starts.pop_front();
+        self.origin += 1;
+        self.line = 1;
+    }
+
+    fn pop(&mut self) {
+        self.bytes.pop_front();
+        self.taken += 1;
+    }
+
     pub(super) fn feed(&mut self, input: &[u8]) {
         if !self.eof && !self.ended {
             self.bytes.extend(input);
+            self.received += input.len() as u64;
         }
+    }
+
+    /// The file being fed has ended; the next byte is the next source's.
+    pub(super) fn end_file(&mut self) {
+        self.starts.push_back(self.received);
     }
 
     pub(super) fn finish(&mut self) {
@@ -69,19 +128,20 @@ impl Source {
             && (!self.quote_copy.is_empty()
                 || !self.replay.is_empty()
                 || !self.bytes.is_empty()
+                || self.at_boundary()
                 || self.eof)
     }
 
     fn append(&mut self, character: char) {
         self.chars.push(character);
-        self.lines.push(self.line);
+        self.lines.push(self.at());
     }
 
     fn take_line(&mut self) -> Line {
         Line {
             chars: std::mem::take(&mut self.chars),
             lines: std::mem::take(&mut self.lines),
-            end_line: self.line,
+            end_line: self.at(),
             quotes: std::mem::take(&mut self.quotes),
         }
     }
@@ -92,21 +152,26 @@ impl Source {
         }
         let first = *self.bytes.front()?;
         if first < 0x80 {
-            self.bytes.pop_front();
+            self.pop();
             return Some(char::from(first));
         }
         let length = match first {
             0xc2..=0xdf => 2,
             0xe0..=0xef => 3,
             0xf0..=0xf4 => 4,
-            _ => {
-                self.bytes.pop_front();
-                return Some('\u{fffd}');
-            }
+            _ => 0,
         };
         let mut value = u32::from(first & (0x7f >> length));
         let mut consumed = 1;
+        // A character never runs on into the next file.
+        let room = self
+            .starts
+            .front()
+            .map_or(u64::MAX, |start| start.saturating_sub(self.taken));
         while consumed < length {
+            if consumed as u64 >= room {
+                break;
+            }
             let Some(&next) = self.bytes.get(consumed) else {
                 if !self.eof {
                     return None;
@@ -126,14 +191,19 @@ impl Source {
             value = (value << 6) | u32::from(next & 0x3f);
             consumed += 1;
         }
-        for _ in 0..consumed {
-            self.bytes.pop_front();
+        let whole = (length != 0 && consumed == length)
+            .then(|| char::from_u32(value))
+            .flatten()
+            .filter(|character| u32::from(*character) < RAW + 0x80);
+        if let Some(character) = whole {
+            for _ in 0..consumed {
+                self.pop();
+            }
+            return Some(character);
         }
-        Some(if consumed == length {
-            char::from_u32(value).unwrap_or('\u{fffd}')
-        } else {
-            '\u{fffd}'
-        })
+        // Not a whole character: its first byte stands alone.
+        self.pop();
+        Some(raw(first))
     }
 
     pub(super) fn advance(&mut self, budget: &mut Budget) -> FrontStep {
@@ -146,6 +216,31 @@ impl Source {
                 if character == '\n' {
                     self.line = self.line.saturating_add(1);
                 }
+                continue;
+            }
+            if self.replay.is_empty() && self.at_boundary() {
+                // bc's scanner ends every token with its file: an open
+                // string or `/` is an illegal character or an operator
+                // there, and a `#` comment ends; only a block comment runs
+                // on into the next file.
+                match std::mem::take(&mut self.mode) {
+                    Mode::Quote(mut pending) => {
+                        self.append('"');
+                        pending.pop_front();
+                        self.replay = pending;
+                        continue;
+                    }
+                    mode @ (Mode::Block | Mode::BlockStar) => self.mode = mode,
+                    mode => {
+                        if matches!(mode, Mode::Slash) {
+                            self.append('/');
+                        }
+                        if !self.chars.is_empty() {
+                            self.append(' ');
+                        }
+                    }
+                }
+                self.cross();
                 continue;
             }
             let Some(character) = self.decode() else {
@@ -220,6 +315,13 @@ impl Source {
                     '"' => self.mode = Mode::Quote(VecDeque::from(['"'])),
                     '/' => self.mode = Mode::Slash,
                     '#' => self.mode = Mode::Hash,
+                    // A backslash before a newline continues the line; the
+                    // compiler reads the pair as a space, or within a number
+                    // as nothing.
+                    '\n' if self.chars.last() == Some(&'\\') => {
+                        self.append('\n');
+                        self.line = self.line.saturating_add(1);
+                    }
                     '\n' => {
                         let line = self.take_line();
                         self.line = self.line.saturating_add(1);
@@ -278,12 +380,22 @@ mod tests {
     }
 
     #[test]
-    fn malformed_utf8_uses_replacement_maximal_subparts() {
-        let input = b"\xe0\x80\x80 \xed\xa0\x80 \xf4\x90\x80\x80 \xe2\x82x \xf0\x9f";
-        let expected = "��� ��� ���� �x �";
+    fn bytes_outside_whole_characters_come_back_one_by_one() {
+        // é and 中, then sequences that are not whole characters, the last
+        // spelling a code point the raw bytes ride on.
+        let input: &[u8] =
+            b"\xc3\xa9 \xe4\xb8\xad\xe0\x80\x80 \xed\xa0\x80 \xf4\x90\x80\x80 \xe2\x82x \xf0\x9f \xf4\x8f\xbe\x80";
         for width in 1..=input.len() {
             let lines = scan(input, width);
-            assert_eq!(lines[0].chars.iter().collect::<String>(), expected);
+            let mut buffer = [0; 4];
+            let kept: Vec<u8> = lines[0]
+                .chars
+                .iter()
+                .flat_map(|c| bytes_of(*c, &mut buffer).to_vec())
+                .collect();
+            assert_eq!(kept, input);
+            assert_eq!(lines[0].chars[..3], ['\u{e9}', ' ', '\u{4e2d}']);
+            assert_eq!(lines[0].chars.len(), 3 + input.len() - 6);
         }
     }
 

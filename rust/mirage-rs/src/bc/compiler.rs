@@ -1,5 +1,5 @@
 use super::common::{BinaryOp, Budget, Builtin, MathFunction};
-use super::source::Line;
+use super::source::{LINE_BITS, Line, bytes_of};
 
 #[derive(Clone, Debug)]
 pub(super) enum Place {
@@ -61,9 +61,32 @@ pub(super) struct Program {
 pub(super) enum CompileResult {
     Program(Program),
     Refused {
-        diagnostics: Vec<String>,
+        diagnostics: Vec<Diagnostic>,
         quits: bool,
     },
+}
+
+/// A refused statement: the line it is blamed on and why.
+#[derive(Debug)]
+pub(super) struct Diagnostic {
+    line: u64,
+    reason: String,
+}
+
+impl Diagnostic {
+    /// The message, naming the line's source from `names` (one per file,
+    /// then standard input) and its line within that source. A name is
+    /// written as its bytes.
+    pub(super) fn render(&self, names: &[Vec<u8>]) -> Vec<u8> {
+        let source = usize::try_from(self.line >> LINE_BITS).unwrap_or(usize::MAX);
+        let name = names
+            .get(source)
+            .map_or(&b"(standard_in)"[..], Vec::as_slice);
+        let line = self.line & ((1 << LINE_BITS) - 1);
+        let mut message = name.to_vec();
+        message.extend_from_slice(format!(" {line}: {}\n", self.reason).as_bytes());
+        message
+    }
 }
 
 #[derive(Debug)]
@@ -72,13 +95,15 @@ enum TokenKind {
     Number { text: String, valid: bool },
     Text { raw: String, printed: String },
     Symbol(String),
-    Illegal(char),
 }
 
 #[derive(Debug)]
 struct Token {
     kind: TokenKind,
     line: u64,
+    /// Where the token starts in its line's characters, which orders its
+    /// syntax error among the illegal characters around it.
+    offset: usize,
 }
 
 fn reserved(name: &str) -> bool {
@@ -135,6 +160,7 @@ enum Lexing {
     Boundary {
         line: u64,
         final_line: bool,
+        at: usize,
     },
     Name {
         text: String,
@@ -175,6 +201,8 @@ struct Statement {
     start: usize,
     end: usize,
     incomplete_line: u64,
+    /// Where the `;` or the end of the line that ends it sits.
+    boundary: usize,
 }
 
 pub(super) struct Compiler {
@@ -184,6 +212,8 @@ pub(super) struct Compiler {
     tokens: Vec<Token>,
     statements: Vec<Statement>,
     token_start: usize,
+    /// Where the token being lexed starts.
+    started: usize,
     quote_index: usize,
     lexed: bool,
     quits: bool,
@@ -191,7 +221,10 @@ pub(super) struct Compiler {
     pos: usize,
     tasks: Vec<Task>,
     instructions: Vec<LocatedInstruction>,
-    diagnostics: Vec<String>,
+    /// Each diagnostic with where in the line it was found: bc reports an
+    /// illegal character as it scans, and a syntax error at the token it
+    /// could not take.
+    diagnostics: Vec<(usize, Diagnostic)>,
 }
 
 impl Compiler {
@@ -203,6 +236,7 @@ impl Compiler {
             tokens: Vec::new(),
             statements: Vec::new(),
             token_start: 0,
+            started: 0,
             quote_index: 0,
             lexed: false,
             quits: false,
@@ -215,43 +249,63 @@ impl Compiler {
     }
 
     fn token(&mut self, kind: TokenKind, line: u64) {
+        let offset = self.started;
         if matches!(&kind, TokenKind::Name(name) if name == "quit") {
             self.quits = true;
             if self.token_start != self.tokens.len() {
-                self.tokens.push(Token { kind, line });
+                self.tokens.push(Token { kind, line, offset });
             }
             self.offset = self.source.chars.len();
         } else {
-            self.tokens.push(Token { kind, line });
+            self.tokens.push(Token { kind, line, offset });
         }
+    }
+
+    /// A character bc cannot read: reported where it stands, one diagnostic
+    /// per byte, and left out of the statement around it.
+    fn illegal(&mut self, character: char, line: u64) {
+        let mut buffer = [0; 4];
+        for &byte in bytes_of(character, &mut buffer) {
+            let shown = match byte {
+                0..=0x1f => format!("^{}", char::from(byte + 0x40)),
+                0x7f.. => format!("\\{byte:o}"),
+                _ => char::from(byte).to_string(),
+            };
+            self.diagnostics.push((
+                self.started,
+                Diagnostic {
+                    line,
+                    reason: format!("illegal character: {shown}"),
+                },
+            ));
+        }
+    }
+
+    /// Whether the characters at `offset` are a backslash and a newline,
+    /// which bc reads as a space, or within a number as nothing.
+    fn continues(&self, offset: usize) -> bool {
+        self.source.chars.get(offset) == Some(&'\\')
+            && self.source.chars.get(offset + 1) == Some(&'\n')
     }
 
     fn lex_step(&mut self) {
         let current = self.source.chars.get(self.offset).copied();
         match std::mem::take(&mut self.lexing) {
-            Lexing::Boundary { line, final_line } => {
-                if self.tokens.len() > self.token_start
-                    && matches!(
-                        self.tokens.last(),
-                        Some(Token {
-                            kind: TokenKind::Illegal('\r' | '\x0b' | '\x0c'),
-                            ..
-                        })
-                    )
-                {
-                    self.tokens.pop();
-                    self.lexing = Lexing::Boundary { line, final_line };
-                } else {
-                    if self.token_start < self.tokens.len() {
-                        self.statements.push(Statement {
-                            start: self.token_start,
-                            end: self.tokens.len(),
-                            incomplete_line: line,
-                        });
-                    }
-                    self.token_start = self.tokens.len();
-                    self.lexed = final_line;
+            Lexing::Boundary {
+                line,
+                final_line,
+                at,
+            } => {
+                if self.token_start < self.tokens.len() {
+                    self.statements.push(Statement {
+                        start: self.token_start,
+                        end: self.tokens.len(),
+                        incomplete_line: line,
+                        boundary: at,
+                    });
                 }
+                self.token_start = self.tokens.len();
+                self.lexed = final_line;
             }
             Lexing::Name { mut text, line } => {
                 if current.is_some_and(is_name) {
@@ -267,7 +321,10 @@ impl Compiler {
                 line,
                 mut dots,
             } => {
-                if current.is_some_and(is_number) {
+                if self.continues(self.offset) {
+                    self.offset += 2;
+                    self.lexing = Lexing::Number { text, line, dots };
+                } else if current.is_some_and(is_number) {
                     let character = current.unwrap();
                     text.push(character);
                     dots = dots.saturating_add(u32::from(character == '.'));
@@ -313,7 +370,7 @@ impl Compiler {
                         };
                     }
                 } else {
-                    self.token(TokenKind::Illegal('"'), line);
+                    self.illegal('"', line);
                 }
             }
             Lexing::Start => {
@@ -321,21 +378,25 @@ impl Compiler {
                     self.lexing = Lexing::Boundary {
                         line: self.source.end_line.saturating_add(1),
                         final_line: true,
+                        at: self.offset,
                     };
                     return;
                 };
                 let line = self.source.lines[self.offset];
+                if self.continues(self.offset) {
+                    self.offset += 2;
+                    return;
+                }
+                self.started = self.offset;
                 self.offset += 1;
-                if matches!(character, ' ' | '\t')
-                    || (matches!(character, '\r' | '\x0b' | '\x0c')
-                        && self.tokens.len() == self.token_start)
-                {
+                if matches!(character, ' ' | '\t') {
                     return;
                 }
                 if character == ';' {
                     self.lexing = Lexing::Boundary {
                         line,
                         final_line: false,
+                        at: self.started,
                     };
                 } else if character.is_ascii_lowercase() {
                     self.lexing = Lexing::Name {
@@ -366,7 +427,7 @@ impl Compiler {
                             line,
                         };
                     } else {
-                        self.token(TokenKind::Illegal(character), line);
+                        self.illegal(character, line);
                     }
                 } else {
                     let mut symbol = character.to_string();
@@ -378,10 +439,10 @@ impl Compiler {
                         symbol.push(self.source.chars[self.offset]);
                         self.offset += 1;
                     }
-                    if ".+-*/%^=<>!()[]{},\\#".contains(character) {
+                    if ".+-*/%^=<>!()[]{},#".contains(character) {
                         self.token(TokenKind::Symbol(symbol), line);
                     } else {
-                        self.token(TokenKind::Illegal(character), line);
+                        self.illegal(character, line);
                     }
                 }
             }
@@ -430,20 +491,23 @@ impl Compiler {
         } else {
             self.line()
         };
-        let mut reason = "syntax error".to_owned();
         if let Some((at_line, use_incomplete)) = at {
             if !use_incomplete || !incomplete {
                 line = at_line;
             }
-        } else if let Some(Token {
-            kind: TokenKind::Illegal(character),
-            ..
-        }) = self.tokens.get(self.pos).filter(|_| !incomplete)
-        {
-            reason = format!("illegal character: {character}");
         }
-        self.diagnostics
-            .push(format!("(standard_in) {line}: {reason}\n"));
+        let found = if incomplete {
+            self.statements[self.statement].boundary
+        } else {
+            self.tokens[self.pos].offset
+        };
+        self.diagnostics.push((
+            found,
+            Diagnostic {
+                line,
+                reason: "syntax error".to_owned(),
+            },
+        ));
         self.tasks.clear();
         self.statement += 1;
     }
@@ -688,15 +752,20 @@ impl Compiler {
         false
     }
 
-    pub(super) fn finish(self) -> CompileResult {
+    pub(super) fn finish(mut self) -> CompileResult {
         if self.diagnostics.is_empty() {
             CompileResult::Program(Program {
                 instructions: self.instructions,
                 quits: self.quits,
             })
         } else {
+            self.diagnostics.sort_by_key(|(found, _)| *found);
             CompileResult::Refused {
-                diagnostics: self.diagnostics,
+                diagnostics: self
+                    .diagnostics
+                    .into_iter()
+                    .map(|(_, diagnostic)| diagnostic)
+                    .collect(),
                 quits: self.quits,
             }
         }
@@ -722,6 +791,13 @@ mod tests {
     use super::*;
     use crate::bc::source::{FrontEvent, FrontStep, Source};
 
+    fn rendered(diagnostics: &[Diagnostic]) -> Vec<String> {
+        diagnostics
+            .iter()
+            .map(|diagnostic| String::from_utf8_lossy(&diagnostic.render(&[])).into_owned())
+            .collect()
+    }
+
     fn compile(input: &str) -> CompileResult {
         let mut source = Source::new();
         source.feed(input.as_bytes());
@@ -745,7 +821,7 @@ mod tests {
         };
         assert!(!quits);
         assert_eq!(
-            diagnostics,
+            rendered(&diagnostics),
             [
                 "(standard_in) 1: syntax error\n",
                 "(standard_in) 2: syntax error\n"
@@ -771,6 +847,6 @@ mod tests {
         let CompileResult::Refused { diagnostics, .. } = compile("1+1;halt;1 2\n") else {
             panic!("expected refusal")
         };
-        assert_eq!(diagnostics, ["(standard_in) 1: syntax error\n"]);
+        assert_eq!(rendered(&diagnostics), ["(standard_in) 1: syntax error\n"]);
     }
 }

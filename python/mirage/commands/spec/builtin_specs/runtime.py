@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.spec.constants import (
+    PATHS_OPERAND,
     REMAINDER_OPERAND,
     TEXT_OPERAND,
     TEXTS_OPERAND,
@@ -201,7 +202,7 @@ SPECS: dict[str, CommandSpec] = {
             Argument(
                 "-q", action="store_true", help="Suppress the welcome banner."
             ),
-            TEXTS_OPERAND,
+            PATHS_OPERAND,
         ),
     ),
     "expr": CommandSpec(

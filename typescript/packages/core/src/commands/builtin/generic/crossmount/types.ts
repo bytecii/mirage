@@ -72,6 +72,7 @@ export enum Cmd {
   DIFF = 'diff',
   CMP = 'cmp',
   AWK = 'awk',
+  BC = 'bc',
   PASTE = 'paste',
   COMM = 'comm',
   JOIN = 'join',

@@ -64,12 +64,12 @@ async def run_relay(
     its primitive mode, so output matches the single-mount commands. wc is
     the one whose operands are counted by their own mount's command, since
     a mount can count without reading; only its layout spans the line.
-    awk runs once on its first file's mount, reading the rest through
-    the dispatcher, so every operand keeps its own name.
+    awk and bc run once on their first file's mount, reading the rest
+    through the dispatcher, so every operand keeps its own name.
 
     Args:
         cmd_name (str): One of cp, mv, diff, cmp, paste, comm, join, tar,
-            tee, unzip, zip, ls, sort, wc, awk, sed, realpath.
+            tee, unzip, zip, ls, sort, wc, awk, bc, sed, realpath.
         scopes (list[PathSpec]): Path operands in command-line order.
         text_args (list[str]): Positional text operands (tar's member
             selectors, cmp's skips; empty for the transfer and merge
@@ -98,6 +98,19 @@ async def run_relay(
         raise ValueError(f"Unsupported cross-mount relay command: {cmd_name}")
     if cmd_name == Cmd.AWK:
         return await run_awk(scopes, text_args, flag_kwargs, run_single, stdin)
+    if cmd_name == Cmd.BC:
+        # bc runs its files, then standard input, as one program: once, on
+        # its first file's mount, reading the rest through the dispatcher.
+        # Only that file names the mount, so none of the others is checked
+        # against a backend that does not hold it.
+        return await run_single(
+            Cmd.BC,
+            scopes,
+            text_args,
+            flag_kwargs,
+            stdin=stdin,
+            resolve_hint=scopes[0],
+        )
     if cmd_name == Cmd.SED:
         return await run_sed(
             scopes,

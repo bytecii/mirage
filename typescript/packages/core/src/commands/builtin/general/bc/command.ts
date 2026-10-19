@@ -13,14 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Accessor } from '../../../../accessor/base.ts'
+import { encodeText } from '../../../../shell/bytes.ts'
+import { isEisdir, isFsError } from '../../../../errors/fs.ts'
 import { chunks } from '../../../../io/cooperative.ts'
 import { OutputStream, closeQuietly } from '../../../../io/stream.ts'
-import { IOResult } from '../../../../io/types.ts'
+import { type ByteSource, IOResult } from '../../../../io/types.ts'
 import { YieldBudget } from '../../../../io/yield_budget.ts'
 import { openStream, type OpenStream } from '../../../../rs/stream.ts'
-import type { PathSpec } from '../../../../types.ts'
+import { FileType, type PathSpec } from '../../../../types.ts'
 import { concat } from '../../../../utils/bytes.ts'
 import { command, type CommandFnResult, type Context } from '../../../config.ts'
+import { commandFiles } from '../../generic_bind/files.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 
@@ -62,6 +65,35 @@ export async function* drained(
   }
 }
 
+/**
+ * One operand bc runs ahead of standard input, or what it says when it
+ * cannot read it.
+ */
+export async function readFile(path: PathSpec, ctx: Context): Promise<[Uint8Array, string | null]> {
+  const unreadable = `${path.rawPath} 1: read() in flex scanner failed\n`
+  try {
+    if (ctx.vfs === undefined) return [new Uint8Array(), `File ${path.rawPath} is unavailable.\n`]
+    // bc opens a directory and fails reading it; asked first, since a store
+    // may answer a directory's read as missing, or with bytes.
+    if ((await ctx.vfs.stat(path)).type === FileType.DIRECTORY)
+      return [new Uint8Array(), unreadable]
+    return [await ctx.vfs.read(path), null]
+  } catch (err) {
+    if (isEisdir(err)) return [new Uint8Array(), unreadable]
+    if (isFsError(err)) return [new Uint8Array(), `File ${path.rawPath} is unavailable.\n`]
+    throw err
+  }
+}
+
+/**
+ * bc's file operands with their globs expanded, as the shell would have; a
+ * word that matches nothing stays as typed, and bc cannot open it.
+ */
+export async function expanded(paths: PathSpec[], ctx: Context): Promise<PathSpec[]> {
+  if (ctx.vfs === undefined || paths.every((path) => path.resolved)) return paths
+  return commandFiles(ctx, paths).resolveGlob(paths)
+}
+
 export function bc(
   _accessor: Accessor,
   paths: PathSpec[],
@@ -69,9 +101,10 @@ export function bc(
   ctx: Context,
 ): Promise<CommandFnResult> {
   const fl = new FlagView(ctx.flags, specOf('bc'))
-  const config = {
+  const config: { math_mode: boolean; line_length: string | null; files: string[] } = {
     math_mode: fl.asBool('args_l'),
     line_length: ctx.env?.BC_LINE_LENGTH ?? null,
+    files: [],
   }
   const source = ctx.stdin ?? new Uint8Array()
   const io = new IOResult()
@@ -88,14 +121,41 @@ export function bc(
           },
         }
   async function* output(): AsyncGenerator<Uint8Array> {
+    // GNU bc runs the files in order, then standard input, as one program.
+    // It opens a file once the ones before it have run, so quit or halt
+    // leaves the rest unread, and a file it cannot read ends the run there,
+    // exit 1.
+    const operands = await expanded(paths, ctx)
+    // A name is bytes, which travel one character each.
+    config.files = operands.map((path) => String.fromCharCode(...encodeText(path.rawPath)))
     const stream = await openStream('bc', config)
     const budget = new YieldBudget(ctx.signal)
-    try {
-      for await (const chunk of chunks(input, ctx.signal)) {
+    async function* fed(piece: ByteSource): AsyncGenerator<Uint8Array> {
+      for await (const chunk of chunks(piece, ctx.signal)) {
         await budget.run()
         yield* drained(stream, stream.feed(chunk), io, budget, errors)
-        if (stream.done()) break
+        if (stream.done()) return
       }
+    }
+    let refusal: string | null = null
+    try {
+      for (const [index, path] of operands.entries()) {
+        if (stream.done()) break
+        const [data, refused] = await readFile(path, ctx)
+        refusal = refused
+        if (refusal !== null) break
+        yield* fed(data)
+        yield* drained(stream, stream.endInput(index), io, budget, errors)
+      }
+      if (refusal !== null) {
+        // bc stops at the file it cannot open: a statement or comment the
+        // files before it left open never runs.
+        errors.push(encodeText(refusal))
+        io.stderr = new Diagnostics(errors, errors.length)
+        io.exitCode = 1
+        return
+      }
+      if (!stream.done()) yield* fed(input)
       yield* drained(stream, stream.finish(), io, budget, errors)
     } finally {
       // Snapshots serve reads while output drains; once it stops, the

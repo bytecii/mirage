@@ -170,6 +170,7 @@ LINES = [
     "grep -rE 'conn.*refused' /d",
     "grep -r --exclude-dir=sub ada /d",
     "grep -r -C1 ada /d",
+    "grep -rP 'ada\\s' /d",
     "grep -rv ada /d",
     "grep -ra ada /d",
     "grep -rh ada /d /d/w.bin",
@@ -254,6 +255,7 @@ EVERY = "a.txt b.txt c.txt sub/d.txt z.txt"
         ("rg -lw ada /d", "files", "a.txt sub/d.txt", "ada -w", None),
         ("rg -x bob /d", "files", "b.txt", "bob -w", None),
         ("grep -rE 'conn.*refused' /d", "files", "b.txt", "refused", None),
+        ("grep -rP 'conn.*refused' /d", "files", "b.txt", "refused", None),
         # -a reads the binary-extension file no search vouches for, asking
         # the mount first, and a named file is read whatever the search said
         # (twice, as GNU does).

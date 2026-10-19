@@ -5,6 +5,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::common::{Budget, NumericError, OutputBase};
 use super::numbers::{Number, power_ten};
+use super::source::bytes_of;
 
 const BASE_DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -83,7 +84,9 @@ impl Output {
                 .chars()
                 .next()
                 .expect("cursor starts on UTF-8 boundary");
-            let width = char.len_utf8();
+            let mut buffer = [0; 4];
+            let bytes = bytes_of(char, &mut buffer);
+            let width = bytes.len();
             if char == '\n' {
                 self.column = 0;
             } else {
@@ -96,8 +99,8 @@ impl Output {
                 }
                 self.column += width;
             }
-            out.extend_from_slice(&cursor.text.as_bytes()[cursor.offset..cursor.offset + width]);
-            cursor.offset += width;
+            out.extend_from_slice(bytes);
+            cursor.offset += char.len_utf8();
         }
         ControlFlow::Break(())
     }

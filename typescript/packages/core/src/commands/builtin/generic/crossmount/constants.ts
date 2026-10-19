@@ -53,6 +53,7 @@ export const RELAY_COMMANDS = new Set<string>([
   Cmd.ZIP,
   Cmd.LS,
   Cmd.SED,
+  Cmd.BC,
   ...[...DISPATCH_BUILDERS.keys()].filter(
     (name) => !STREAM_COMMANDS.has(name) && !FANOUT_COMMANDS.has(name),
   ),

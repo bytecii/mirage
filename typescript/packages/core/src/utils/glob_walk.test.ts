@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { runWithSession } from '../context/session_context.ts'
 import { FileStat, FileType, PathSpec } from '../types.ts'
 import { SessionState } from '../workspace/session/session.ts'
-import { enoent } from '../errors/fs.ts'
+import { eacces, enoent } from '../errors/fs.ts'
 import {
   escapeGlob,
   expandPattern,
@@ -260,6 +260,20 @@ describe('resolveGlobWith', () => {
     expect(out[0]?.virtual).toBe('/notion/pages/*.nope')
     expect(out[0]?.pattern).toBeNull()
     expect(out[0]?.resolved).toBe(true)
+  })
+
+  it('keeps the literal word under a directory that refuses its listing', async () => {
+    // bash skips a directory it cannot open: the word stays as typed.
+    const refusing = (accessor: null, path: PathSpec): Promise<string[]> =>
+      rstripSlash(path.virtual) === '/alpha'
+        ? Promise.reject(eacces(path))
+        : fakeReaddir(accessor, path)
+    const words = [typedSpec('/alpha/*', '/alpha/*'), typedSpec('/al*/*', '/al*/*')]
+    const out = await resolveGlobWith(refusing, null, words, undefined)
+    expect(out.map((m) => [m.virtual, m.rawPath, m.pattern])).toEqual([
+      ['/alpha/*', '/alpha/*', null],
+      ['/al*/*', '/al*/*', null],
+    ])
   })
 
   it('dir-shaped zero match stays empty', async () => {

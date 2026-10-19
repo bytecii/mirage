@@ -80,8 +80,8 @@ const rm: CommandFn = async (_accessor, paths, _texts, ctx) => {
           const listing = (dir: PathSpec): Promise<string[]> => files.readdir(dir)
           const probe = (spec: PathSpec): Promise<FileStat> => files.stat(spec)
           // -v names each entry before the tree goes in one call; a tree it
-          // cannot list whole goes entry by entry, as does one the
-          // dispatcher declines for the caller's view.
+          // cannot list whole goes entry by entry, as does one on a mount
+          // without rm_r or one the dispatcher declines for the caller's view.
           const unlisted: string[] = []
           let listed = verbose
             ? (await walk(listing, probe, p, 'rm', unlisted)).map(({ path, kind }) => ({
@@ -89,7 +89,7 @@ const rm: CommandFn = async (_accessor, paths, _texts, ctx) => {
                 isDir: kind === FileType.DIRECTORY,
               }))
             : []
-          let declined = unlisted.length > 0
+          let declined = unlisted.length > 0 || !files.answers('rm_r')
           if (!declined) {
             try {
               await files.rmR(p)

@@ -89,8 +89,8 @@ async def rm(
                 if recursive:
                     # -v names each entry before the tree goes in one
                     # call; a tree it cannot list whole goes entry by
-                    # entry, as does one the dispatcher declines for
-                    # the caller's view.
+                    # entry, as does one on a mount without rm_r or one
+                    # the dispatcher declines for the caller's view.
                     unlisted: list[str] = []
                     listed = (
                         [
@@ -102,7 +102,7 @@ async def rm(
                         if v
                         else []
                     )
-                    declined = bool(unlisted)
+                    declined = bool(unlisted) or not files.answers("rm_r")
                     if not declined:
                         try:
                             await files.rm_r(p)

@@ -318,6 +318,330 @@ fn separate_invocations_isolate_variables_registers_and_diagnostics() {
     assert_output(run(false, 70, &[b"scale\n"]), b"0\n", b"", 0);
 }
 
+/// Feed `files` ahead of `stdin` one byte at a time, as the hosts feed a
+/// `files` config, so every source boundary falls inside a call.
+fn run_files(files: &[(&str, &[u8])], stdin: &[u8]) -> Output {
+    let names: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
+    let config = serde_json::json!({ "files": names });
+    let mut stream = open("bc", config.to_string().as_bytes()).expect("bc stream opens");
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut remaining = MAX_DRAIN_STEPS;
+    let inputs = files.iter().map(|(_, bytes)| *bytes).chain([stdin]);
+    'inputs: for (index, bytes) in inputs.enumerate() {
+        for byte in bytes {
+            if stream.done() {
+                break 'inputs;
+            }
+            stream
+                .feed(&[*byte], &mut stdout)
+                .expect("bc feed succeeds");
+            drain(stream.as_mut(), &mut stdout, &mut remaining);
+        }
+        if index < files.len() {
+            stream
+                .end_input(index, &mut stdout)
+                .expect("bc ends a file");
+            drain(stream.as_mut(), &mut stdout, &mut remaining);
+        }
+    }
+    stream.finish(&mut stdout).expect("bc finish succeeds");
+    drain(stream.as_mut(), &mut stdout, &mut remaining);
+    stream.take_stderr(&mut stderr);
+    Output {
+        stdout,
+        stderr,
+        status: stream.status(),
+    }
+}
+
+#[test]
+fn files_run_ahead_of_standard_input_as_one_program() {
+    // Pinned against bc 1.07.1 on Debian 13.
+    let one: &[u8] = b"a=2\n3*a\n";
+    for (files, stdin, stdout, stderr) in [
+        (
+            &[("one.bc", one), ("two.bc", &b"a+1\n"[..])][..],
+            &b"10\n"[..],
+            &b"6\n3\n10\n"[..],
+            &b""[..],
+        ),
+        (
+            &[("bad.bc", &b"1+\n5\n"[..]), ("one.bc", one)],
+            b"10\n",
+            b"5\n6\n10\n",
+            b"bad.bc 2: syntax error\n",
+        ),
+        (
+            &[("one.bc", one)],
+            b"1+\n",
+            b"6\n",
+            b"(standard_in) 2: syntax error\n",
+        ),
+        (
+            &[("tail.bc", &b"x=\n"[..])],
+            b"10\n",
+            b"10\n",
+            b"tail.bc 2: syntax error\n",
+        ),
+        (&[("nonl.bc", &b"1+"[..])], b"2\n", b"3\n", b""),
+        (&[("com.bc", &b"/* open\n"[..])], b"*/ 4\n", b"4\n", b""),
+        (
+            &[("one.bc", one)],
+            b"/* open",
+            b"6\n",
+            b"EOF encountered in a comment.\n",
+        ),
+        (&[("q.bc", &b"7\nquit\n8\n"[..])], b"10\n", b"7\n", b""),
+    ] {
+        assert_output(run_files(files, stdin), stdout, stderr, 0);
+    }
+}
+
+#[test]
+fn a_file_is_named_by_its_bytes() {
+    // Pinned against bc 1.07.1 on Debian 13. A name travels one character
+    // per byte, so `\u{ff}` is the byte 0xff, which no UTF-8 name holds.
+    assert_output(
+        run_files(&[("a.bc", b"1+1\n"), ("\u{ff}.bc", b"2+\n")], b""),
+        b"2\n",
+        b"\xff.bc 2: syntax error\n",
+        0,
+    );
+}
+
+#[test]
+fn a_token_ends_with_its_file() {
+    // Pinned against bc 1.07.1 on Debian 13: no string, number, name,
+    // operator or `#` comment runs on into the next file; a block comment
+    // does.
+    for (files, stdin, stdout, stderr) in [
+        (
+            &[("a.bc", &b"print \"hello\n"[..]), ("b.bc", b"world\"\n1+\n")][..],
+            &b""[..],
+            &b""[..],
+            &b"a.bc 1: illegal character: \"\nb.bc 1: illegal character: \"\nb.bc 3: syntax error\n"[..],
+        ),
+        (
+            &[("a.bc", b"x=\"q\n\n"), ("b.bc", b"w\"\n\n1+\n")],
+            b"",
+            b"",
+            b"a.bc 1: illegal character: \"\nb.bc 1: illegal character: \"\nb.bc 4: syntax error\n",
+        ),
+        (
+            &[("a.bc", b"\"abc\n1+2\n"), ("b.bc", b"3\n")],
+            b"",
+            b"3\n3\n",
+            b"a.bc 1: illegal character: \"\n",
+        ),
+        (
+            &[("a.bc", b"print \"x"), ("b.bc", b"y\"\n")],
+            b"",
+            b"",
+            b"a.bc 1: illegal character: \"\nb.bc 1: syntax error\nb.bc 1: illegal character: \"\n",
+        ),
+        (
+            &[("a.bc", b"print \"a\nb")],
+            b"c\"\n2+\n",
+            b"",
+            b"a.bc 1: illegal character: \"\n(standard_in) 1: syntax error\n(standard_in) 1: illegal character: \"\n(standard_in) 3: syntax error\n",
+        ),
+        (
+            &[("a.bc", b"1+\\"), ("b.bc", b"\n2\n")],
+            b"",
+            b"2\n",
+            b"a.bc 1: illegal character: \\\nb.bc 2: syntax error\n",
+        ),
+        (
+            &[("a.bc", b"print \"s\n")],
+            b"t\"\n2+\n",
+            b"",
+            b"a.bc 1: illegal character: \"\n(standard_in) 1: illegal character: \"\n(standard_in) 3: syntax error\n",
+        ),
+        (&[("q.bc", b"print \"q\"")], b"\n7\n", b"q7\n", b""),
+        (&[("a.bc", b"12"), ("b.bc", b"3\n")], b"", b"", b"b.bc 1: syntax error\n"),
+        (&[("a.bc", b"12")], b"3\n", b"", b"(standard_in) 1: syntax error\n"),
+        (
+            &[("a.bc", b"ab"), ("b.bc", b"c=2\nabc\nab\n")],
+            b"",
+            b"0\n0\n",
+            b"b.bc 1: syntax error\n",
+        ),
+        (
+            &[("a.bc", b"x=1\nx+"), ("b.bc", b"+\nx\n")],
+            b"",
+            b"1\n",
+            b"b.bc 1: syntax error\n",
+        ),
+        (
+            &[("a.bc", b"8/"), ("b.bc", b"*2\n5\n")],
+            b"",
+            b"5\n",
+            b"b.bc 1: syntax error\n",
+        ),
+        (
+            &[("a.bc", b"1+2 # c"), ("b.bc", b"3\n")],
+            b"",
+            b"",
+            b"b.bc 1: syntax error\n",
+        ),
+        (&[("a.bc", b"1+ # c"), ("b.bc", b"2\n")], b"", b"3\n", b""),
+        (&[("a.bc", b"/* a *"), ("b.bc", b"/ 4\n")], b"", b"4\n", b""),
+        (&[("a.bc", b"\n"), ("b.bc", b"")], b"5\n", b"5\n", b""),
+        (&[("a.bc", b"1+"), ("b.bc", b"")], b"2\n", b"3\n", b""),
+    ] {
+        assert_output(run_files(files, stdin), stdout, stderr, 0);
+    }
+}
+
+fn standard_in(diagnostics: &[(u32, &str)]) -> Vec<u8> {
+    diagnostics
+        .iter()
+        .map(|(line, reason)| format!("(standard_in) {line}: {reason}\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+#[test]
+fn bc_reports_each_illegal_character_where_it_scans_it() {
+    // Pinned against bc 1.07.1 on Debian 13. An illegal character is
+    // reported as bc scans it and left out of its statement; any error
+    // discards its line; each statement still gets one syntax error, and
+    // the reports come in the order bc finds them.
+    const AT: &str = "illegal character: @";
+    const SYNTAX: &str = "syntax error";
+    for (input, stdout, stderr) in [
+        (
+            &b"print \"x y\n"[..],
+            &b""[..],
+            &[(1, "illegal character: \""), (1, SYNTAX)][..],
+        ),
+        (b"1 @ 2 3\n", b"", &[(1, AT), (1, SYNTAX)]),
+        (b"@ @\n", b"", &[(1, AT), (1, AT)]),
+        (b"1 2 @\n", b"", &[(1, SYNTAX), (1, AT)]),
+        (b"print 7; @\n", b"", &[(1, AT)]),
+        (b"@; print 7\n", b"", &[(1, AT)]),
+        (b"1+ ; @ 2\n", b"", &[(1, SYNTAX), (1, AT)]),
+        (b"\"a\" @\n", b"", &[(1, AT)]),
+        (b"x=5 @\nx\n", b"0\n", &[(1, AT)]),
+        (b"@\n5\n", b"5\n", &[(1, AT)]),
+        (
+            b"1 2 @ 3 4; 5 6\n",
+            b"",
+            &[(1, SYNTAX), (1, AT), (1, SYNTAX)],
+        ),
+        (b"1 @ 2; 3\n", b"", &[(1, AT), (1, SYNTAX)]),
+        (b"print \"a\", @ 2\n", b"", &[(1, AT)]),
+        (b"(1 @ + 2)\n", b"", &[(1, AT)]),
+        (b"@@@\n", b"", &[(1, AT), (1, AT), (1, AT)]),
+        (b"quit @\n", b"", &[]),
+        (b"@ quit\n", b"", &[(1, AT)]),
+    ] {
+        assert_output(run(false, 70, &[input]), stdout, &standard_in(stderr), 0);
+    }
+}
+
+#[test]
+fn bc_shows_an_illegal_byte_as_a_caret_or_in_octal() {
+    // Pinned against bc 1.07.1 on Debian 13: a carriage return, vertical
+    // tab or form feed is illegal wherever it stands, and each byte of a
+    // character outside ASCII is reported on its own.
+    const CR: &str = "illegal character: ^M";
+    for (input, stdout, stderr) in [
+        (&b"7\r\n"[..], &b""[..], &[(1, CR)][..]),
+        (b"\r7\n", b"", &[(1, CR)]),
+        (b"7 \r 8\n", b"", &[(1, CR), (1, "syntax error")]),
+        (b"7\r\r\n", b"", &[(1, CR), (1, CR)]),
+        (b"\r\n9\n", b"9\n", &[(1, CR)]),
+        (b"7;\r\n", b"", &[(1, CR)]),
+        (b"\r;7\n", b"", &[(1, CR)]),
+        (b"x\r=1\nx\n", b"0\n", &[(1, CR)]),
+        (b"1 2\r\n", b"", &[(1, "syntax error"), (1, CR)]),
+        (b"7 @ \r\n", b"", &[(1, "illegal character: @"), (1, CR)]),
+        (b"7\x0b\n", b"", &[(1, "illegal character: ^K")]),
+        (b"7\x0c\n", b"", &[(1, "illegal character: ^L")]),
+        (b"\x00\n", b"", &[(1, "illegal character: ^@")]),
+        (b"\x01\n", b"", &[(1, "illegal character: ^A")]),
+        (b"7\x1b\n", b"", &[(1, "illegal character: ^[")]),
+        (b"\x1f\n", b"", &[(1, "illegal character: ^_")]),
+        (b"\x7f\n", b"", &[(1, "illegal character: \\177")]),
+        (b"\x80\n", b"", &[(1, "illegal character: \\200")]),
+        (b"\xff\n", b"", &[(1, "illegal character: \\377")]),
+        (
+            b"\xc3\xa9\n",
+            b"",
+            &[
+                (1, "illegal character: \\303"),
+                (1, "illegal character: \\251"),
+            ],
+        ),
+        (
+            b"\xef\xbb\xbf2+2\n3+3\n",
+            b"6\n",
+            &[
+                (1, "illegal character: \\357"),
+                (1, "illegal character: \\273"),
+                (1, "illegal character: \\277"),
+            ],
+        ),
+    ] {
+        assert_output(run(false, 70, &[input]), stdout, &standard_in(stderr), 0);
+    }
+}
+
+#[test]
+fn a_backslash_continues_the_line_or_is_illegal() {
+    // Pinned against bc 1.07.1 on Debian 13: a backslash before a newline
+    // reads as a space, or within a number as nothing, and the next line
+    // counts on; anywhere else it is an illegal character. Strings keep it.
+    const BACKSLASH: &str = "illegal character: \\";
+    for (input, stdout, stderr) in [
+        (&b"1+\\ 2\n"[..], &b""[..], &[(1, BACKSLASH)][..]),
+        (b"3 \\ \n", b"", &[(1, BACKSLASH)]),
+        (b"1 \\ 2\n", b"", &[(1, BACKSLASH), (1, "syntax error")]),
+        (b"\\\\\n", b"", &[(1, BACKSLASH)]),
+        (b"1 \\  \n2\n", b"2\n", &[(1, BACKSLASH)]),
+        (b"1+\\\n2\n", b"3\n", &[]),
+        (b"1+\\\n\\\n2\n", b"3\n", &[]),
+        (b"\\\n7\n", b"7\n", &[]),
+        (b"7\\\n\n", b"7\n", &[]),
+        (b"1 \\\n+ 2\n", b"3\n", &[]),
+        (b"x\\\n=3\nx\n", b"3\n", &[]),
+        (b"1;\\\n2\n", b"1\n2\n", &[]),
+        (b"12\\\n34\n", b"1234\n", &[]),
+        (b"12\\\n.5\n", b"12.5\n", &[]),
+        (b"1.\\\n5\n", b"1.5\n", &[]),
+        (b"ab\\\nc=5\nabc\n", b"0\n", &[(2, "syntax error")]),
+        (b"1+\\\n2 3\n", b"", &[(2, "syntax error")]),
+        (b"1/\\\n*c*/2\n", b"", &[(2, "syntax error")]),
+        (b"+\\\n+\n", b"", &[(1, "syntax error")]),
+        (b"1+ \\\n# c\n2\n", b"2\n", &[(3, "syntax error")]),
+        (b"1 # c \\\n+2\n", b"1\n", &[(2, "syntax error")]),
+        (b"print \"a\\\nb\"\n", b"ab", &[]),
+        (b"\"a\\\nb\"\n", b"a\\\nb", &[]),
+        (b"\"a\"\\\n\n", b"a", &[]),
+    ] {
+        assert_output(run(false, 70, &[input]), stdout, &standard_in(stderr), 0);
+    }
+}
+
+#[test]
+fn strings_keep_their_bytes_and_wrap_by_bytes() {
+    // Pinned against bc 1.07.1 on Debian 13.
+    assert_output(
+        run(false, 70, &[b"print \"a\x80\xffb\\n\"\n\"\xc3\xa9\x80\"\n"]),
+        b"a\x80\xffb\n\xc3\xa9\x80",
+        b"",
+        0,
+    );
+    assert_output(
+        run(false, 6, &[b"\"\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\"\n"]),
+        b"\xc3\xa9\xc3\xa9\\\n\xc3\xa9\xc3\xa9",
+        b"",
+        0,
+    );
+}
+
 #[test]
 fn syntax_errors_precede_runtime_errors_and_discard_line_effects() {
     let program = b"x=5;print 7;1/0;1 2\nx;last\n1/0;halt;3 4\n2+2\n";
@@ -435,18 +759,18 @@ fn nesting_does_not_depend_on_the_native_or_wasm_call_stack() {
 }
 
 #[test]
-fn malformed_utf8_matches_host_replacement_across_chunks() {
+fn malformed_utf8_is_printed_as_its_bytes_across_chunks() {
+    // Pinned against bc 1.07.1 on Debian 13, which reads bytes.
     for program in [
         &b"print \"\xf4\x90\x80\x80\"\n"[..],
         &b"print \"\xed\xa0\x80\"\n"[..],
         &b"print \"\xc3(\"\n"[..],
     ] {
         let content = &program[7..program.len() - 2];
-        let expected = String::from_utf8_lossy(content);
         for split in 0..=program.len() {
             assert_output(
                 run(false, 0, &[&program[..split], &program[split..]]),
-                expected.as_bytes(),
+                content,
                 b"",
                 0,
             );

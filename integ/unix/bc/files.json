@@ -1,0 +1,391 @@
+{
+  "cases": [
+    {
+      "id": "bc_files_run_before_stdin",
+      "seq": 14100005,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf1 && printf 'a=2\\n3*a\\n' > /data/bcf1/one.bc && printf 'a+1\\n' > /data/bcf1/two.bc && echo 10 | bc /data/bcf1/one.bc /data/bcf1/two.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "6\n3\n10\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "bc_file_error_names_the_file",
+      "seq": 14100006,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf2 && printf '1+\\n5\\n' > /data/bcf2/bad.bc && cd /data/bcf2 && echo 10 | bc bad.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "5\n10\n",
+        "stderr": "bad.bc 2: syntax error\n"
+      }
+    },
+    {
+      "id": "bc_unreadable_file_ends_the_run",
+      "seq": 14100007,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf3 && printf 'a=2\\n3*a\\n' > /data/bcf3/one.bc && echo 10 | bc /data/bcf3/one.bc /data/bcf3/missing.bc",
+      "expect": {
+        "exit": 1,
+        "stdout": "6\n",
+        "stderr": "File /data/bcf3/missing.bc is unavailable.\n"
+      }
+    },
+    {
+      "id": "bc_directory_operand",
+      "seq": 14100008,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf4 && printf 1 > /data/bcf4/f && echo 10 | bc /data/bcf4",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "/data/bcf4 1: read() in flex scanner failed\n"
+      }
+    },
+    {
+      "id": "bc_quit_in_a_file_ends_the_run",
+      "seq": 14100009,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf5 && printf '7\\nquit\\n8\\n' > /data/bcf5/q.bc && echo 10 | bc /data/bcf5/q.bc /data/bcf5/missing.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "7\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "bc_file_runs_on_into_stdin",
+      "seq": 14100010,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf6 && printf '1+' > /data/bcf6/nonl.bc && echo 2 | bc /data/bcf6/nonl.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "3\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "bc_a_string_ends_with_its_file",
+      "seq": 14100012,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf7 && printf 'print \"hello\\n' > /data/bcf7/a.bc && printf 'world\"\\n1+\\n' > /data/bcf7/b.bc && cd /data/bcf7 && printf '' | bc a.bc b.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "a.bc 1: illegal character: \"\nb.bc 1: illegal character: \"\nb.bc 3: syntax error\n"
+      }
+    },
+    {
+      "id": "bc_a_number_ends_with_its_file",
+      "seq": 14100013,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf8 && printf '12' > /data/bcf8/a.bc && printf '3\\n' > /data/bcf8/b.bc && cd /data/bcf8 && echo 5 | bc a.bc b.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "5\n",
+        "stderr": "b.bc 1: syntax error\n"
+      }
+    },
+    {
+      "id": "bc_file_operands_from_a_glob",
+      "seq": 14100014,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcf9 && printf '1+1\\n' > /data/bcf9/a.bc && printf '2+2\\n' > /data/bcf9/b.bc && echo 3+3 | bc /data/bcf9/*.bc; bc /data/bcf9/none*.bc",
+      "expect": {
+        "exit": 1,
+        "stdout": "2\n4\n6\n",
+        "stderr": "File /data/bcf9/none*.bc is unavailable.\n"
+      }
+    },
+    {
+      "id": "bc_relative_glob_names_its_files_as_matched",
+      "seq": 14100015,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcfa && printf '1+1\\n' > /data/bcfa/a.bc && printf '2+\\n' > /data/bcfa/b.bc && cd /data/bcfa && echo 5 | bc *.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n5\n",
+        "stderr": "b.bc 2: syntax error\n"
+      }
+    },
+    {
+      "id": "bc_an_unreadable_file_leaves_open_input_unrun",
+      "seq": 14100017,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/bcfc && printf 7 > /data/bcfc/a.bc && printf '/* open' > /data/bcfc/c.bc && printf '1+' > /data/bcfc/p.bc && printf '7\\n' > /data/bcfc/n.bc && cd /data/bcfc && for f in a c p n; do echo 5 | bc $f.bc missing.bc; echo rc=$?; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=1\nrc=1\n7\nrc=1\n",
+        "stderr": "File missing.bc is unavailable.\nFile missing.bc is unavailable.\nFile missing.bc is unavailable.\nFile missing.bc is unavailable.\n"
+      }
+    },
+    {
+      "id": "bc_a_file_is_named_by_its_bytes",
+      "seq": 14100016,
+      "targets": [
+        "ram"
+      ],
+      "command": "mkdir -p /data/bcfb && printf '1+1\\n' > /data/bcfb/a.bc && printf '2+\\n' > /data/bcfb/$'\\xff.bc' && cd /data/bcfb && bc a.bc $'\\xff.bc' $'\\xfe.bc' 2>err; echo $?; od -An -tx1 err",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n1\n ff 2e 62 63 20 32 3a 20 73 79 6e 74 61 78 20 65\n 72 72 6f 72 0a 46 69 6c 65 20 fe 2e 62 63 20 69\n 73 20 75 6e 61 76 61 69 6c 61 62 6c 65 2e 0a\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

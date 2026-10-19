@@ -24,12 +24,11 @@ from mirage.errors.fs import eexist, einval, eisdir, enotsup
 from mirage.io.cooperative import chunks
 from mirage.io.spool import ByteSpool
 from mirage.io.types import ByteSource
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.types import FileStat, FileType, PathSpec, StatFn
 from mirage.utils.ranges import splice_window
 
 ReadFn = Callable[[PathSpec], Awaitable[bytes]]
 WriteFn = Callable[[PathSpec, bytes], Awaitable[FileStat | None]]
-StatFn = Callable[[PathSpec], Awaitable[FileStat]]
 
 
 async def append_by_rewrite(

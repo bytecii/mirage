@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +32,7 @@ from mirage.utils.glob_walk import (
 )
 from mirage.view.types import SessionView
 from mirage.workspace.evaluation import EvaluationContext
+from mirage.workspace.executor.command.routing import command_tree
 from mirage.workspace.expand.classify import classify_parts
 from mirage.workspace.expand.globs import glob_options, resolve_globs
 from mirage.workspace.expand.parts import expand_words
@@ -176,7 +177,13 @@ async def expand_argv(
     # hands the script `data/in.csv` and a `/tmp/q.txt` beside a script
     # on /workspace names no second mount.
     in_process = consumer is Consumer.SESSION and name in INTERPRETER_NAMES
-    program = native or in_process
+    # And so does a command tree a mount serves, as the same tree
+    # installed as a CLI does: no backend takes its patterns.
+    tree = (
+        consumer is Consumer.MOUNT
+        and command_tree(registry, name, session.cwd) is not None
+    )
+    program = native or in_process or tree
     spec: CommandSpec | None = None
     word_kinds: list[ValueType | None] | None = None
     word_bases: list[str | None] | None = None
@@ -228,6 +235,14 @@ async def expand_argv(
             "path" if has_glob(word) else kind for kind, word in zip(own, tail)
         ]
         word_kinds = names + globbed
+        # The shell searches the working directory: an option that bases
+        # the program's operands (`-C dir`) bases what matched, which
+        # _program_words reads under it, never where the glob looks.
+        if word_bases is not None:
+            word_bases = [
+                None if has_glob(word) else base
+                for word, base in zip(expanded[1:], word_bases)
+            ]
 
     classified = classify_parts(
         expanded,
@@ -243,6 +258,7 @@ async def expand_argv(
     glob_opts = glob_options(session)
     if not refused and (
         policy is WordPolicy.SHELL
+        or tree
         or glob_opts.needs_shell
         or scopes_paths(session.commands, name)
         or any(
@@ -274,7 +290,13 @@ async def expand_argv(
         ]
     if program and spec:
         words = _program_words(
-            words, spec, name, consumed, registry, session.cwd
+            words,
+            spec,
+            name,
+            consumed,
+            registry,
+            session.cwd,
+            env_snapshot(session),
         )
     # The text view renders words as typed (raw_path): bash hands
     # programs their words unchanged, so `echo sub/file.txt` prints the
@@ -296,6 +318,7 @@ def _program_words(
     consumed: int,
     registry: MountRegistry,
     cwd: str,
+    env: Mapping[str, str],
 ) -> list[str | PathSpec]:
     """Classify a program's words for the argv it receives.
 
@@ -317,11 +340,13 @@ def _program_words(
         consumed (int): how many leading words form the name.
         registry (MountRegistry): mount registry for classification.
         cwd (str): working directory the line was typed under.
+        env (Mapping[str, str]): the session environment, which fills
+            an option the spec reads from it.
     """
     literal = [mark_globs(word_text(w)) for w in words]
     kinds: list[ValueType | None] = ["str"] * (consumed - 1)
-    kinds += spec_word_kinds(spec, literal[consumed:], name)
-    bases = spec_word_bases(spec, literal[consumed:], cwd, name)
+    kinds += spec_word_kinds(spec, literal[consumed:], name, env)
+    bases = spec_word_bases(spec, literal[consumed:], cwd, name, env)
     head: list[str | None] = [None] * (consumed - 1)
     reread = classify_parts(
         literal,
@@ -335,7 +360,29 @@ def _program_words(
         if not (isinstance(word, PathSpec) and word.pattern):
             out.append(literal_word(fresh))
         elif kind in (None, "path"):
-            out.append(word)
+            out.append(_based(word, fresh))
         else:
             out.append(literal_word(word_text(word)))
     return out
+
+
+def _based(word: PathSpec, fresh: str | PathSpec) -> PathSpec:
+    """A glob word that matched nothing, under the program's own base.
+
+    The shell searched the working directory and left the word as typed,
+    so the program reads it where it reads a match: under ``-C dir``
+    when the spec bases its operands. It stays a pattern, which a
+    push-down reads as no entity name.
+
+    Args:
+        word (PathSpec): the unmatched word, resolved at the working
+            directory.
+        fresh (str | PathSpec): the same word read for its slot, base
+            applied.
+    """
+    based = literal_word(fresh)
+    if not isinstance(based, PathSpec) or based.virtual == word.virtual:
+        return word
+    return dataclasses.replace(
+        based, pattern=word.pattern, resolved=word.resolved
+    )

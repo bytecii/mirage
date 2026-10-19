@@ -119,4 +119,9 @@ pub(super) struct Config {
     pub(super) math_mode: bool,
     #[serde(default)]
     pub(super) line_length: Option<String>,
+    /// The names of the files read ahead of standard input, one character
+    /// per byte, since a file name need not be UTF-8; their bytes are fed
+    /// first, each ended with `end_input`.
+    #[serde(default, deserialize_with = "crate::latin1_list")]
+    pub(super) files: Vec<Vec<u8>>,
 }

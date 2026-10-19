@@ -49,6 +49,16 @@ FANOUT_COMMANDS = frozenset(
     }
 )
 RELAY_COMMANDS = frozenset(
-    {Cmd.CP, Cmd.MV, Cmd.TEE, Cmd.TAR, Cmd.UNZIP, Cmd.ZIP, Cmd.LS, Cmd.SED}
+    {
+        Cmd.CP,
+        Cmd.MV,
+        Cmd.TEE,
+        Cmd.TAR,
+        Cmd.UNZIP,
+        Cmd.ZIP,
+        Cmd.LS,
+        Cmd.SED,
+        Cmd.BC,
+    }
 ) | (DISPATCH_BUILDERS.keys() - STREAM_COMMANDS - FANOUT_COMMANDS)
 CROSS_MOUNT_COMMANDS = STREAM_COMMANDS | FANOUT_COMMANDS | RELAY_COMMANDS

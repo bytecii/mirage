@@ -33,16 +33,12 @@ export const PROMPT = `{prefix}
   With start_time/end_time, listings cover that scope; messages and their
   attachments outside it are absent, including through direct paths.
   Users and channel metadata remain available as context.
-  A time-scoped mount does not search through Discord: grep and rg read
-  the in-scope files, so grep needs -r to search a directory.
+  grep and rg read the files they reach, so grep needs -r to search a
+  directory; under a channel that reads every listed day, attachments
+  included (downloaded from the CDN; binary ones such as JPG or PDF
+  produce noise).
   Messages are JSONL; use jq to extract fields like .content, .author.username,
-  .attachments.
-  grep / rg at channel or guild scope uses Discord's \`/messages/search\` API
-  and ONLY searches message text. It does NOT index attachment content
-  (unlike Slack's \`search.files\`). To search inside text attachments
-  (.txt, .md, .log), target the date dir, files/ dir, or specific blob path
-  so grep falls back to per-file scan via CDN download. Binary attachments
-  (JPG, PDF) will produce noise.`
+  .attachments.`
 
 export const WRITE_PROMPT = `  Writes go through the discord CLI if installed:
     discord send --channel <channel-id> --text "message"

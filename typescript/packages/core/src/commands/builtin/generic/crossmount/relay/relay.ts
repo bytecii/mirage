@@ -67,6 +67,12 @@ export async function runRelay(
   if (!RELAY_COMMANDS.has(cmdName))
     throw new Error(`Unsupported cross-mount relay command: ${cmdName}`)
   if (cmdName === 'awk') return runAwk(scopes, textArgs, flagKwargs, runSingle, stdin)
+  // bc runs its files, then standard input, as one program: once, on its
+  // first file's mount, reading the rest through the dispatcher. Only that
+  // file names the mount, so none of the others is checked against a backend
+  // that does not hold it.
+  if (cmdName === 'bc')
+    return runSingle('bc', scopes, textArgs, flagKwargs, { stdin, resolveHint: scopes[0] ?? null })
   if (cmdName === 'sed')
     return runSed(scopes, textArgs, flagKwargs, dispatch, stdin, cwd, argv, sessionView?.snapshot())
   if (cmdName === 'wc') return runWc(scopes, flagKwargs, dispatch, runSingle, cwd, vfs, stdin)

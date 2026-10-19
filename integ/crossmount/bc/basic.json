@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "id": "xm_bc",
+      "seq": 14100011,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/xbc /data2/xbc && printf 'a=2\\n3*a\\n' > /data/xbc/one.bc && printf 'a*3\\n' > /data2/xbc/two.bc && echo a+1 | bc /data/xbc/one.bc /data2/xbc/two.bc",
+      "expect": {
+        "exit": 0,
+        "stdout": "6\n6\n3\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

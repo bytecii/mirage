@@ -1272,6 +1272,27 @@ describe('a command tree a mount serves', () => {
     }
   })
 
+  it('leaves an unmatched glob as typed above a child mount below its base', async () => {
+    // The shell found no q*.md in /n and left the word as typed; -C bases
+    // it, and the child mount below /n/b must not expand it a second time.
+    const ws = new Workspace(
+      { '/n/': new RAMVFS(), '/n/b/sub/': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      ws.mount('/n/').registerCommands([NOTES])
+      await ws.shell('mkdir -p /n/b && echo Q > /n/b/q1.md')
+      const io = await ws.shell('cd /n && notes show -C /n/b q*.md')
+      expect([io.exitCode, io.stdoutText, io.stderrText]).toEqual([
+        1,
+        '',
+        'notes show: /n/b/q*.md: No such file or directory\n',
+      ])
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('runs like an installed CLI on its mount', async () => {
     const vfs = new RAMVFS()
     ;(vfs as unknown as { cachesReads: boolean }).cachesReads = true
@@ -1298,9 +1319,20 @@ describe('a command tree a mount serves', () => {
       // One spelling, two files: each operand keeps its own -C.
       await ws.shell('mkdir a b && echo A > a/f && echo B > b/f')
       expect((await ws.shell('notes show -C /n/a f -C /n/b f')).stdoutText).toBe('f: A\nf: B\n')
+      // A glob resolves before the walk, as an installed CLI's does.
+      expect((await ws.shell('notes show /n/*/f')).stdoutText).toBe('/n/a/f: A\n/n/b/f: B\n')
+      // So does one in a text slot; a quoted one stays as typed.
+      await ws.shell('touch x.tag y.tag && notes add b/f *.tag "*.tag"')
+      expect(dec.decode(vfs.store.files.get('/b/f'))).toBe('tags: x.tag y.tag *.tag\n')
       // An option's value spelled like the operand stays the option's.
       await ws.shell('echo AA > a/a')
       expect((await ws.shell('notes show -C a a')).stdoutText).toBe('a: AA\n')
+      // The glob searches the working directory; -C bases what matched.
+      await ws.shell('echo B-a > b/a.md && echo B-z > b/z.md')
+      expect((await ws.shell('notes show -C /n/b [az].md')).stdoutText).toBe('a.md: B-a\n')
+      // Matching nothing there, the word stays as typed, read under -C.
+      await ws.shell("echo Q > 'b/q*.md'")
+      expect((await ws.shell('notes show -C /n/b q*.md')).stdoutText).toBe('q*.md: Q\n')
       // The leaf keys /n/'s accessor, so another mount's file is refused.
       const foreign = await ws.shell('notes add /o/a.md work')
       expect([foreign.exitCode, foreign.stderrText]).toEqual([

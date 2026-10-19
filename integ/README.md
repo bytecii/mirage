@@ -104,7 +104,7 @@ outside them fails explicitly rather than falling into one:
 | --------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Stream    | cat, nl, cut                                                                                          | One command stream over the operands in order.                                |
 | Fanout    | rev, head, tail, file, md5, the `sha*sum`s, stat, strings, tac, find, rm, rmdir, unlink, touch, mkdir | Each operand runs on its own mount; diagnostics and status combine.           |
-| Relay     | cp, mv, tee, tar, unzip, zip, ls, sed, and every other generic builder (`DISPATCH_BUILDERS`)          | One generic sees every operand and reaches each mount through the dispatcher. |
+| Relay     | cp, mv, tee, tar, unzip, zip, ls, sed, bc, and every other generic builder (`DISPATCH_BUILDERS`)      | One generic sees every operand and reaches each mount through the dispatcher. |
 | Namespace | chmod, chown, chgrp, getfattr, setfattr, ln, readlink                                                 | Answered above the backends, with no cross-mount implementation of its own.   |
 
 `runners/tools/check_crossmount_coverage.py --selftest` requires, for every

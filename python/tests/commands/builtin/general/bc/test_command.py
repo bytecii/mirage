@@ -26,7 +26,9 @@ from mirage.accessor.base import NOOPAccessor
 from mirage.commands.builtin.general.bc.command import bc
 from mirage.commands.config import Context
 from mirage.io.stream import close_quietly
-from mirage.io.types import ByteSource, materialize
+from mirage.io.types import ByteSource, IOResult, materialize
+from mirage.types import FileStat, FileType, PathSpec
+from mirage.workspace.files import Files
 
 
 async def invoke(source: ByteSource):
@@ -69,6 +71,29 @@ async def test_stop_drains_output_and_closes_input_without_another_pull(stop):
     assert await materialize(output) == b"1\n" * 2000
     assert closed
     assert await materialize(io.stderr) == b""
+    assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_quit_in_a_file_leaves_the_files_after_it_unread():
+    # GNU bc opens a file once the ones before it have run.
+    touched: list[tuple[str, str]] = []
+
+    async def dispatch(name: str, path: PathSpec, /, **_kw):
+        touched.append((name, path.virtual))
+        if name == "stat":
+            return FileStat(name="q.bc", type=FileType.FILE), IOResult()
+        return b"7\nquit\n", IOResult()
+
+    output, io = await bc.__wrapped__(
+        NOOPAccessor(),
+        [PathSpec.from_str_path("/q.bc"), PathSpec.from_str_path("/later.bc")],
+        [],
+        Context(stdin=b"8\n", vfs=Files([], dispatch, ledger=False)),
+    )
+    assert output is not None and not isinstance(output, bytes)
+    assert await materialize(output) == b"7\n"
+    assert touched == [("stat", "/q.bc"), ("read", "/q.bc")]
     assert io.exit_code == 0
 
 

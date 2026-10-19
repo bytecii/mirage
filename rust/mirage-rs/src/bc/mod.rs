@@ -18,8 +18,12 @@ const ACTIONS_PER_CALL: u32 = 4096;
 
 pub(super) fn open(config: &[u8]) -> Result<Box<dyn Stream>, StreamError> {
     let config: Config = parse_config(config)?;
+    let mut names = config.files;
+    names.push(b"(standard_in)".to_vec());
     Ok(Box::new(Bc {
         source: Source::new(),
+        names,
+        files_ended: 0,
         compiler: None,
         vm: Vm::new(config.math_mode, config.line_length.as_deref()),
         stderr: Vec::new(),
@@ -31,6 +35,9 @@ pub(super) fn open(config: &[u8]) -> Result<Box<dyn Stream>, StreamError> {
 
 struct Bc {
     source: Source,
+    /// The files' names, then standard input's.
+    names: Vec<Vec<u8>>,
+    files_ended: usize,
     compiler: Option<Compiler>,
     vm: Vm,
     stderr: Vec<u8>,
@@ -65,7 +72,8 @@ impl Bc {
                     CompileResult::Refused { diagnostics, quits } => {
                         self.stopped |= quits;
                         for diagnostic in diagnostics {
-                            self.stderr.extend_from_slice(diagnostic.as_bytes());
+                            self.stderr
+                                .extend_from_slice(&diagnostic.render(&self.names));
                         }
                     }
                 }
@@ -104,6 +112,19 @@ impl Stream for Bc {
             self.source.feed(input);
             self.needs_input = false;
         }
+        self.advance(output);
+        Ok(())
+    }
+
+    /// File `index` has ended; the host feeds the files in order and then
+    /// standard input, reading each only once bc still runs.
+    fn end_input(&mut self, index: usize, output: &mut Vec<u8>) -> Result<(), StreamError> {
+        if index != self.files_ended || index + 1 >= self.names.len() {
+            return Err(StreamError::new("bc files end in order"));
+        }
+        self.files_ended += 1;
+        self.source.end_file();
+        self.needs_input = false;
         self.advance(output);
         Ok(())
     }
