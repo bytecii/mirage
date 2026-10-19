@@ -9,6 +9,7 @@ permissions:
     paths:
       - rust/**
       - scripts/gen_unicode_width.py
+      - scripts/gen_unicode_classes.py
       - scripts/gen_rust_notices.py
       - scripts/check_mirage_rs_wheel.py
       - licenses/third_party/**
@@ -21,6 +22,7 @@ permissions:
     paths:
       - rust/**
       - scripts/gen_unicode_width.py
+      - scripts/gen_unicode_classes.py
       - scripts/gen_rust_notices.py
       - licenses/third_party/**
       - typescript/packages/core/THIRD_PARTY_NOTICES
@@ -74,8 +76,8 @@ jobs:
           manifest-path: rust/Cargo.toml
           arguments: --all-features
           command: check licenses bans sources
-      # Both generators still write what is committed: the notices from the
-      # locked tree, the width table from the pinned Unicode data.
+      # The generators still write what is committed: the notices from the
+      # locked tree, the width and class tables from the pinned Unicode data.
       - name: Install cargo-about
         run: cargo about --version 2> /dev/null | grep -qx 'cargo-about 0.9.2' || cargo install --locked --features cli cargo-about@0.9.2
       - name: Regenerate the generated files
@@ -83,6 +85,7 @@ jobs:
         run: |
           python3 scripts/gen_rust_notices.py
           python3 scripts/gen_unicode_width.py
+          python3 scripts/gen_unicode_classes.py
           git diff --exit-code
 
   # Every wheel platform is built and run on main, and by the release

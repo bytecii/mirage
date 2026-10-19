@@ -17,6 +17,12 @@ import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
+from mirage.utils.generated.iconv_data import (
+    ICONV_EXCLUDED,
+    ICONV_ONE_WAY,
+    ICONV_REMAPPED,
+)
+
 logger = logging.getLogger(__name__)
 
 ILLEGAL = -1
@@ -237,30 +243,33 @@ def gb18030_step(raw: bytes, at: int, table: Table) -> Decoded:
 
 @dataclass(frozen=True, slots=True)
 class MultibyteSpec:
-    """One multi-byte charset: glibc's grammar over a host-seeded table.
+    """One multi-byte charset: its byte grammar over a host-seeded table.
 
     The table is what the host's own decoder (a python codec here, the
     platform ``TextDecoder`` in TypeScript) answers for every sequence
-    in ``blocks``, then corrected to glibc 2.41: ``remapped`` sets the
-    sequences where a host disagrees with glibc, ``excluded`` drops the
-    ranges a host decodes and glibc does not, and a private-use answer
-    is dropped unless glibc maps into that area. The corrections cover
-    CPython's codecs, ICU's (Node) and WHATWG's (browsers), so every
-    host builds the same table. Measured byte for byte on
-    debian:stable-slim. A sequence is its bytes read big-endian.
+    in ``blocks``, corrected to the charset's standard mapping table:
+    ``remapped`` sets the sequences where a host disagrees with it,
+    ``excluded`` drops the ranges a host decodes and it leaves unmapped,
+    and a private-use answer is dropped unless the standard maps into
+    that area. scripts/gen_iconv_multibyte.py derives the corrections
+    from the published tables for CPython's codecs, ICU's (Node) and
+    WHATWG's (browsers), so every host builds the same table, and the
+    pinned image's iconv agrees with it byte for byte. A sequence is
+    its bytes read big-endian.
 
     Args:
-        name (str): glibc's name for the charset.
+        name (str): the charset, as ``iconv -l`` names it.
         codec (str): the host decoder that seeds the table.
         step (StepFn): reads one character.
         blocks (tuple[Block, ...]): the sequences the table holds, as
             per-byte ranges.
-        remapped (tuple[tuple[int, int], ...]): sequence, glibc's code
-            point.
+        remapped (tuple[tuple[int, int], ...]): sequence, the standard's
+            code point.
         excluded (tuple[tuple[int, int], ...]): first and last sequence
-            of a range glibc leaves unmapped.
-        private_use (bool): whether glibc maps sequences into U+E000-F8FF.
-        one_way (tuple[tuple[int, int], ...]): code points glibc encodes
+            of a range the standard leaves unmapped.
+        private_use (bool): whether the standard maps sequences into
+            U+E000-F8FF.
+        one_way (tuple[tuple[int, int], ...]): code points iconv encodes
             to a sequence that decodes to another one, and that sequence.
         supplementary (bool): whether planes 1-16 are counted out by
             four-byte sequences (GB18030).
@@ -285,22 +294,9 @@ GBK = MultibyteSpec(
         (((0x81, 0xFD),), GBK_TRAIL),
         (((0xFE, 0xFE),), ((0x40, 0x7E), (0x80, 0xA0))),
     ),
-    excluded=(
-        (0xA2E3, 0xA2E3),
-        (0xA3A0, 0xA3A0),
-        (0xA6D9, 0xA6DF),
-        (0xA6EC, 0xA6ED),
-        (0xA6F3, 0xA6F3),
-        (0xA8BC, 0xA8BC),
-        (0xA8BF, 0xA8BF),
-        (0xA989, 0xA995),
-        (0xFE50, 0xFE50),
-        (0xFE54, 0xFE6B),
-        (0xFE6D, 0xFE75),
-        (0xFE77, 0xFE7E),
-        (0xFE80, 0xFE90),
-        (0xFE92, 0xFEA0),
-    ),
+    remapped=ICONV_REMAPPED["GBK"],
+    excluded=ICONV_EXCLUDED["GBK"],
+    one_way=ICONV_ONE_WAY["GBK"],
 )
 
 EUC_CN = MultibyteSpec(
@@ -308,13 +304,9 @@ EUC_CN = MultibyteSpec(
     codec="gb2312",
     step=euc_cn_step,
     blocks=((((0xA1, 0xF7),), EUC_BYTE),),
-    remapped=((0xA1A4, 0x30FB), (0xA1AA, 0x2015)),
-    excluded=(
-        (0xA2A1, 0xA2AA),
-        (0xA2E3, 0xA2E3),
-        (0xA6D9, 0xA6F5),
-        (0xA8BB, 0xA8C0),
-    ),
+    remapped=ICONV_REMAPPED["EUC-CN"],
+    excluded=ICONV_EXCLUDED["EUC-CN"],
+    one_way=ICONV_ONE_WAY["EUC-CN"],
 )
 
 GB18030 = MultibyteSpec(
@@ -327,49 +319,11 @@ GB18030 = MultibyteSpec(
         (((0x84, 0x84),), ((0x30, 0x30),), FOUR_LETTER, FOUR_DIGIT),
         (((0x84, 0x84),), ((0x31, 0x31),), ((0x81, 0xA4),), FOUR_DIGIT),
     ),
-    remapped=(
-        (0x8135F437, 0xE7C7),
-        (0x82359037, 0xE81E),
-        (0x82359038, 0xE826),
-        (0x82359039, 0xE82B),
-        (0x82359130, 0xE82C),
-        (0x82359131, 0xE832),
-        (0x82359132, 0xE843),
-        (0x82359133, 0xE854),
-        (0x82359134, 0xE864),
-        (0x84318236, 0xE78D),
-        (0x84318237, 0xE78F),
-        (0x84318238, 0xE78E),
-        (0x84318239, 0xE790),
-        (0x84318330, 0xE791),
-        (0x84318331, 0xE792),
-        (0x84318332, 0xE793),
-        (0x84318333, 0xE794),
-        (0x84318334, 0xE795),
-        (0x84318335, 0xE796),
-        (0xA3A0, 0xE5E5),
-        (0xA6D9, 0xFE10),
-        (0xA6DA, 0xFE12),
-        (0xA6DB, 0xFE11),
-        (0xA6DC, 0xFE13),
-        (0xA6DD, 0xFE14),
-        (0xA6DE, 0xFE15),
-        (0xA6DF, 0xFE16),
-        (0xA6EC, 0xFE17),
-        (0xA6ED, 0xFE18),
-        (0xA6F3, 0xFE19),
-        (0xA8BC, 0x1E3F),
-        (0xFE59, 0x9FB4),
-        (0xFE61, 0x9FB5),
-        (0xFE66, 0x9FB6),
-        (0xFE67, 0x9FB7),
-        (0xFE6D, 0x9FB8),
-        (0xFE7E, 0x9FB9),
-        (0xFE90, 0x9FBA),
-        (0xFEA0, 0x9FBB),
-    ),
     private_use=True,
     supplementary=True,
+    remapped=ICONV_REMAPPED["GB18030"],
+    excluded=ICONV_EXCLUDED["GB18030"],
+    one_way=ICONV_ONE_WAY["GB18030"],
 )
 
 EUC_KR = MultibyteSpec(
@@ -377,13 +331,9 @@ EUC_KR = MultibyteSpec(
     codec="euc_kr",
     step=euc_kr_step,
     blocks=((EUC_BYTE, EUC_BYTE),),
-    remapped=(
-        (0xA2E6, 0x20AC),
-        (0xA2E7, 0xAE),
-        (0xA2E8, 0x327E),
-        (0xA4D4, 0x3164),
-    ),
-    one_way=((0x20A9, 0xA3DC),),
+    remapped=ICONV_REMAPPED["EUC-KR"],
+    excluded=ICONV_EXCLUDED["EUC-KR"],
+    one_way=ICONV_ONE_WAY["EUC-KR"],
 )
 
 SJIS = MultibyteSpec(
@@ -394,27 +344,9 @@ SJIS = MultibyteSpec(
         (((0x81, 0x9F),), SJIS_TRAIL),
         (((0xE0, 0xEA),), SJIS_TRAIL),
     ),
-    remapped=(
-        (0x8160, 0x301C),
-        (0x8161, 0x2016),
-        (0x817C, 0x2212),
-        (0x8191, 0xA2),
-        (0x8192, 0xA3),
-        (0x81CA, 0xAC),
-    ),
-    excluded=(
-        (0x8740, 0x875D),
-        (0x875F, 0x8775),
-        (0x877E, 0x877E),
-        (0x8780, 0x879C),
-    ),
-    one_way=(
-        (0x5C, 0x5C),
-        (0x7E, 0x7E),
-        (0xFFE0, 0x8191),
-        (0xFFE1, 0x8192),
-        (0xFFE2, 0x81CA),
-    ),
+    remapped=ICONV_REMAPPED["SJIS"],
+    excluded=ICONV_EXCLUDED["SJIS"],
+    one_way=ICONV_ONE_WAY["SJIS"],
 )
 
 EUC_JP = MultibyteSpec(
@@ -426,26 +358,9 @@ EUC_JP = MultibyteSpec(
         (((0x8E, 0x8E),), ((0xA1, 0xDF),)),
         (((0x8F, 0x8F),), ((0xA2, 0xED),), EUC_BYTE),
     ),
-    remapped=(
-        (0x8FA2B7, 0xFF5E),
-        (0xA1C1, 0x301C),
-        (0xA1C2, 0x2016),
-        (0xA1DD, 0x2212),
-        (0xA1F1, 0xA2),
-        (0xA1F2, 0xA3),
-        (0xA2CC, 0xAC),
-    ),
-    excluded=(
-        (0xADA1, 0xADBE),
-        (0xADC0, 0xADD6),
-        (0xADDF, 0xADFC),
-        (0xF9A1, 0xF9FE),
-        (0xFAA1, 0xFAFE),
-        (0xFBA1, 0xFBFE),
-        (0xFCA1, 0xFCEE),
-        (0xFCF1, 0xFCFE),
-    ),
-    one_way=((0xA5, 0x5C), (0x203E, 0x7E)),
+    remapped=ICONV_REMAPPED["EUC-JP"],
+    excluded=ICONV_EXCLUDED["EUC-JP"],
+    one_way=ICONV_ONE_WAY["EUC-JP"],
 )
 
 MULTIBYTE_CHARSETS: dict[str, MultibyteSpec] = {

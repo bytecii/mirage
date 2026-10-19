@@ -131,6 +131,49 @@ describe('sed operands after a directory (GNU sed 4.9)', () => {
   })
 })
 
+// Twin of Python's test_an_r_file_that_fails_to_read_fails_where_it_is_read.
+describe('an r file that fails to read (GNU sed 4.9)', () => {
+  const enc = (text: string): Uint8Array => new TextEncoder().encode(text)
+  const eio = (): Error => Object.assign(new Error('Input/output error'), { code: 'EIO' })
+
+  it.each([
+    ['1r /r', false, 4],
+    ['1R /r', false, 4],
+    ['/none/r /r', false, 0],
+    ['1r /r', true, 4],
+    ['1R /r', true, 4],
+    ['/none/r /r', true, 0],
+  ] as const)('fails where %s reads it (in place: %s)', async (script, inPlace, code) => {
+    const files = new Map([['/f', enc('one\ntwo\n')]])
+    const ctx = {
+      stdin: null,
+      flags: { i: inPlace },
+      cwd: PathSpec.fromStrPath('/'),
+      vfs: { kind: 'ram' } as never,
+    } as Context
+    const result = await sedGeneric(
+      [PathSpec.fromStrPath('/f')],
+      [script],
+      ctx,
+      async function* (p) {
+        await Promise.resolve()
+        if (p.virtual === '/r') throw eio()
+        yield* yieldBytes(files.get(p.virtual) ?? new Uint8Array())
+      },
+      async (p, data) => {
+        files.set(p.virtual, await materialize(data))
+      },
+    )
+    if (result === null) throw new Error('sed returned nothing')
+    if (result[0] !== null) await materialize(result[0])
+    const io = result[1]
+    const stderr = io.stderr === null ? '' : DEC.decode(await materialize(io.stderr))
+    expect(io.exitCode).toBe(code)
+    expect(stderr).toBe(code === 0 ? '' : 'sed: read error on /r: Input/output error\n')
+    if (code === 0) expect(DEC.decode(files.get('/f'))).toBe('one\ntwo\n')
+  })
+})
+
 it.each([
   ['w /saved', 0],
   ['w /saved\nq7', 7],

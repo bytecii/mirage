@@ -21,7 +21,7 @@
         "ram",
         "disk"
       ],
-      "command": "getconf -a | wc -l; getconf -a | head -1; getconf -a /data/no-such-dir | head -1",
+      "command": "getconf -a | wc -l; getconf -a | grep '^LINK_MAX '; getconf -a /data/no-such-dir | grep '^LINK_MAX '",
       "expect": {
         "exit": 0,
         "stdout": "322\nLINK_MAX                           127\nLINK_MAX                           \n",

@@ -39,7 +39,14 @@ import {
   type SedProgram,
   type SedScriptPiece,
 } from '../sed_script.ts'
-import { SED_LINE_LENGTH, SedMachine, type SedFileContent, type SedInput } from '../sed_exec.ts'
+import {
+  SED_LINE_LENGTH,
+  SedMachine,
+  readFailed,
+  unreadableFile,
+  type SedFileContent,
+  type SedInput,
+} from '../sed_exec.ts'
 import { byteView, decodeText, encodeText, fromByteView, utf8Locale } from '../../../shell/bytes.ts'
 import { posixPhrase } from '../../../errors/posix.ts'
 import { dispatchOf } from '../utils/links.ts'
@@ -140,9 +147,9 @@ async function openWriteFiles(
 }
 
 // Read the files `r` or `R` names: a file that cannot be opened reads as
-// empty, as POSIX asks, and a directory opens and then fails to read,
-// which GNU reports and exits 4 on when it gets there. `utf8` reads them as
-// text, under a UTF-8 locale.
+// empty, as POSIX asks; any other failure, a directory's included, is a read
+// error GNU reports and exits 4 on when it gets there, whether the file
+// streams or is read here. `utf8` reads them as text, under a UTF-8 locale.
 async function readScriptFiles(
   names: readonly string[],
   access: ScriptFiles,
@@ -158,12 +165,8 @@ async function readScriptFiles(
     try {
       files.set(name, { text: byteView(await access.read(name), utf8) })
     } catch (err) {
-      if (!isFsError(err)) throw err
-      const code = (err as { code?: string }).code
-      files.set(
-        name,
-        code === 'EISDIR' ? { error: `sed: read error on ${name}: Is a directory\n` } : null,
-      )
+      if (!readFailed(err)) throw err
+      files.set(name, unreadableFile(name, err))
     }
   }
   return files

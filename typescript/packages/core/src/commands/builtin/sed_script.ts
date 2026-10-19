@@ -694,6 +694,12 @@ class Compiler {
       if (src.peek() === '\n') src.get()
       else if (src.peek() === null) return null
     }
+    // A script that ends on a backslash no other escapes (an odd run, counted
+    // with the one-line form's own backslash where it touches it) leaves text
+    // that runs to that end as written, unescaped, that backslash dropped.
+    // After an even run, a backslash the text is left with at the end is
+    // dropped too.
+    const tail = src.text.length - src.text.replace(/\\+$/, '').length
     const out: string[] = []
     let read = false
     let recursive = false
@@ -706,9 +712,7 @@ class Compiler {
         continue
       }
       const next = src.peek()
-      // Text that runs to the end of the script on a backslash goes out as
-      // written, that backslash dropped.
-      if (next === null) return this.view(src.text.slice(start, src.pos - 1)) + '\n'
+      if (next === null) break
       src.get()
       if (next === '\n') {
         out.push('\n')
@@ -737,6 +741,15 @@ class Compiler {
       }
       out.push(found[0])
       src.pos = found[1]
+    }
+    if (tail % 2 === 1 && src.peek() === null) {
+      // The backslash that carries it from one piece to the next goes as
+      // well, its newline staying.
+      let raw = ''
+      for (let i = start; i < src.text.length - 1; i++) {
+        if (!src.joins.has(i + 1)) raw += src.text[i] ?? ''
+      }
+      return this.view(raw) + '\n'
     }
     if (recursive) throw this.fail(RECURSIVE)
     if (!read) return null

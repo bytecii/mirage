@@ -22,8 +22,10 @@ pub(crate) type Spans = Vec<Option<(usize, usize)>>;
 /// One POSIX expression over a whole subject, as regexec answers it: the
 /// leftmost match and the longest there, its groups placed by the first
 /// way of matching that text, trying a repetition's longer counts and an
-/// alternation's earlier branches first, and never an iteration that
-/// consumes nothing.
+/// alternation's earlier branches first, and never an iteration of `*`,
+/// `+` or `{m,}` that consumes nothing. An optional iteration of `{m,n}`
+/// may consume nothing, where regexec takes one through an empty branch
+/// but not one that ends on an anchor (`(a|b|$){1,3}` against `ab`).
 pub(crate) struct Posix {
     /// The text a pattern of literal units alone spells, found by a
     /// substring search: a long fixed interval (`a\{32767\}`) makes an
@@ -31,6 +33,11 @@ pub(crate) struct Posix {
     literal: Option<Vec<u8>>,
     automata: Option<Automata>,
     program: Program,
+    /// The program `test` runs when it reads the pattern otherwise: a
+    /// search that asks for no groups lets each `$` read a newline the
+    /// match consumes, in a pattern with groups too, unless a
+    /// back-reference needs them.
+    tester: Option<Program>,
     backrefs: bool,
     groups: usize,
     scratch: Scratch,
@@ -53,8 +60,18 @@ impl Posix {
             consumed_newlines: options.dialect != Dialect::Grep && !options.multiline,
             dot_skips_nul: options.dialect == Dialect::Posix,
         };
-        let program = Program::new(ast, options.word, false, shape)?;
+        // Placing groups, regexec holds every `$` of a pattern that has
+        // any to the end of the subject: `b$.` matches across a line,
+        // `(b$.)` and `b$.(a)` do not, unless only a yes or no is asked
+        // and no back-reference reads a group (`(b)$.\1` never does).
         let backrefs = ast.has_backref();
+        let crossing = groups > 0 && shape.consumed_newlines && !ast.anchors_at_edges();
+        let held = crossing.then(|| ast.held_ends()).filter(|held| held != ast);
+        let program = Program::new(held.as_ref().unwrap_or(ast), options.word, false, shape)?;
+        let tester = match held {
+            Some(_) if !backrefs => Some(Program::new(ast, options.word, false, shape)?),
+            _ => None,
+        };
         // The automata know ASCII's word characters only, match a stray
         // byte inside a character, and read an anchor by the subject alone.
         let automata = if backrefs
@@ -75,6 +92,7 @@ impl Posix {
                 &[lower.pattern(ast, options.word, false)],
                 b'\n',
                 true,
+                false,
             )?)
         };
         // A raw byte under UTF-8 could be found inside a character, where
@@ -89,6 +107,7 @@ impl Posix {
             literal,
             automata,
             program,
+            tester,
             backrefs,
             groups,
             scratch: Scratch::default(),
@@ -160,6 +179,17 @@ impl Posix {
             }
         }
         Some(spans)
+    }
+
+    /// Whether the pattern matches anywhere in `hay`, as sed's addresses
+    /// ask.
+    pub(crate) fn test(&mut self, hay: &[u8]) -> bool {
+        let Some(tester) = &self.tester else {
+            return self.extent(hay, 0).is_some();
+        };
+        let mut budget = u64::MAX;
+        let found = tester.find(hay, 0, hay.len(), 0, false, &mut self.scratch, &mut budget);
+        matches!(found, Step::Done(Some(_)))
     }
 
     /// Every match a global substitution replaces, as sed walks them: each
@@ -528,6 +558,26 @@ mod tests {
         assert_eq!(starts, [(0, 0), (1, 4), (5, 5)]);
         let mut regex = compile("b*", true, "");
         assert_eq!(regex.all(b"abc").len(), 3);
+    }
+
+    #[test]
+    fn a_dollar_reads_a_newline_unless_groups_are_placed() {
+        let found = |pattern: &str| compile(pattern, true, "").search(b"b\na", 0);
+        assert_eq!(found("b$.").unwrap()[0], Some((0, 2)));
+        for pattern in ["(b$.)", "b$.(a)", "(b)$.", "(b$|x)."] {
+            assert_eq!(found(pattern), None, "{pattern}");
+            assert!(compile(pattern, true, "").test(b"b\na"), "{pattern}");
+        }
+        assert!(!compile("(b$)a", true, "").test(b"b\na"));
+        assert!(!compile("(b)$.\\1", true, "").test(b"b\nb"));
+        assert!(!compile("(a|b)$.\\1", true, "").test(b"b\nb"));
+    }
+
+    #[test]
+    fn a_class_that_takes_a_newline_finds_no_match_that_is_not_there() {
+        let mut regex = compile("\\w[^x]*[ab][a-]", true, "");
+        assert_eq!(regex.search(b"aaxcx", 0), None);
+        assert_eq!(groups("\\w[^x]*[ab][a-]", "xaab-"), ["xaab-"]);
     }
 
     #[test]

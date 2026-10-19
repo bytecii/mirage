@@ -127,7 +127,13 @@ function negativeNumberChild(node: TSNodeLike): TSNodeLike | null {
   return null
 }
 
-/** Build a structured condition tree from a `[[ ... ]]` node. */
+/**
+ * Build a structured condition tree from a `[[ ... ]]` node.
+ *
+ * tree-sitter nests the expression by its own precedence (`=~` looser than
+ * `||`, `!` tighter than `=~`), so its tokens are read again as bash parses
+ * them; a shape that reading refuses keeps tree-sitter's tree.
+ */
 export async function expandDoubleBracket(
   node: TSNodeLike,
   context: EvaluationContext,
@@ -137,7 +143,215 @@ export async function expandDoubleBracket(
 ): Promise<CondNode> {
   const first = node.namedChildren[0]
   if (first === undefined) return { kind: 'word', value: '' }
-  return buildCond(first, context, executeFn, cs, view)
+  let tree: CondTree
+  try {
+    const tokens: CondToken[] = []
+    condTokens(node, tokens)
+    tree = new CondParser(tokens).parse()
+  } catch (error) {
+    if (!(error instanceof CondSyntax)) throw error
+    console.debug(`[[ ]] keeps tree-sitter's reading: ${String(error)}`)
+    return buildCond(first, context, executeFn, cs, view)
+  }
+  return condNode(tree, context, executeFn, cs, view)
+}
+
+/**
+ * One token of a `[[ ]]` expression: an operator's text, or an operand node
+ * (`negative` for a `-N` tree-sitter split into `-` and N).
+ */
+interface CondToken {
+  readonly op: string | null
+  readonly operand: TSNodeLike | null
+  readonly negative: boolean
+}
+
+/** A parsed `[[ ]]` expression. */
+type CondTree =
+  | { kind: 'and' | 'or'; left: CondTree; right: CondTree }
+  | { kind: 'not' | 'group'; inner: CondTree }
+  | { kind: 'unary'; op: string; operand: CondToken }
+  | { kind: 'binary'; op: string; left: CondToken; right: CondToken }
+  | { kind: 'word'; operand: CondToken }
+
+/** The tokens are no expression the `[[ ]]` grammar reads. */
+class CondSyntax extends Error {}
+
+const COND_BINARY_TOKENS = new Set(['=', '==', '!=', '=~', '<', '>'])
+
+/** Append the tokens of a `[[ ]]` node to `out` in source order. */
+function condTokens(node: TSNodeLike, out: CondToken[]): void {
+  for (const child of node.children) {
+    const ctype = child.type
+    if (ctype === '[[' || ctype === ']]') continue
+    if (ctype === NT.ERROR) throw new CondSyntax()
+    if (child.isNamed !== true) {
+      out.push({ op: ctype, operand: null, negative: false })
+    } else if (ctype === NT.TEST_OPERATOR) {
+      out.push({ op: child.text, operand: null, negative: false })
+    } else if (CONTAINER_TYPES.has(ctype)) {
+      const negative = negativeNumberChild(child)
+      if (negative !== null) out.push({ op: null, operand: negative, negative: true })
+      else condTokens(child, out)
+    } else {
+      out.push({ op: null, operand: child, negative: false })
+    }
+  }
+}
+
+/**
+ * bash's `[[ ]]` grammar over the flat tokens, loosest first: `||`, `&&`,
+ * then a term. A term is any run of `!` (each one toggles a single
+ * inversion, so `! !` inverts nothing) before a parenthesized expression, a
+ * unary test, a binary test or a word.
+ */
+class CondParser {
+  private at = 0
+
+  constructor(private readonly tokens: CondToken[]) {}
+
+  private op(ahead = 0): string | null {
+    return this.tokens[this.at + ahead]?.op ?? null
+  }
+
+  private operand(ahead = 0): boolean {
+    return this.tokens[this.at + ahead]?.op === null
+  }
+
+  private take(): CondToken {
+    const token = this.tokens[this.at]
+    if (token === undefined) throw new CondSyntax()
+    this.at++
+    return token
+  }
+
+  parse(): CondTree {
+    const tree = this.either()
+    if (this.at !== this.tokens.length) throw new CondSyntax()
+    return tree
+  }
+
+  private either(): CondTree {
+    let tree = this.both()
+    while (this.op() === '||') {
+      this.at++
+      tree = { kind: 'or', left: tree, right: this.both() }
+    }
+    return tree
+  }
+
+  private both(): CondTree {
+    let tree = this.term()
+    while (this.op() === '&&') {
+      this.at++
+      tree = { kind: 'and', left: tree, right: this.term() }
+    }
+    return tree
+  }
+
+  private term(): CondTree {
+    let inverted = false
+    while (this.op() === '!') {
+      this.at++
+      inverted = !inverted
+    }
+    let tree: CondTree
+    if (this.op() === '(') {
+      this.at++
+      tree = { kind: 'group', inner: this.either() }
+      if (this.op() !== ')') throw new CondSyntax()
+      this.at++
+    } else {
+      tree = this.test()
+    }
+    return inverted ? { kind: 'not', inner: tree } : tree
+  }
+
+  private test(): CondTree {
+    const op = this.op()
+    if (op !== null && op.startsWith('-') && this.operand(1)) {
+      this.at++
+      return { kind: 'unary', op, operand: this.take() }
+    }
+    if (!this.operand()) throw new CondSyntax()
+    const binary = this.op(1)
+    if (
+      binary !== null &&
+      (COND_BINARY_TOKENS.has(binary) || binary.startsWith('-')) &&
+      this.operand(2)
+    ) {
+      const left = this.take()
+      this.at++
+      return { kind: 'binary', op: binary, left, right: this.take() }
+    }
+    return { kind: 'word', operand: this.take() }
+  }
+}
+
+/** Expand one parsed `[[ ]]` tree into a CondNode. */
+async function condNode(
+  tree: CondTree,
+  context: EvaluationContext,
+  executeFn: ExecuteFn,
+  cs: CallStack | null,
+  view?: SessionView,
+): Promise<CondNode> {
+  switch (tree.kind) {
+    case 'and':
+    case 'or': {
+      // Expansion is part of evaluating an operand, so skipped branches cannot
+      // run substitutions or observe state before the left side.
+      const { left, right } = tree
+      const first: CondNode = {
+        kind: 'lazy',
+        expand: () => condNode(left, context, executeFn, cs, view),
+      }
+      const second: CondNode = {
+        kind: 'lazy',
+        expand: () => condNode(right, context, executeFn, cs, view),
+      }
+      return { kind: tree.kind, left: first, right: second }
+    }
+    case 'not':
+      return { kind: 'not', inner: await condNode(tree.inner, context, executeFn, cs, view) }
+    case 'group':
+      return condNode(tree.inner, context, executeFn, cs, view)
+    case 'unary':
+      return {
+        kind: 'unary',
+        op: tree.op,
+        operand: await tokenText(tree.operand, context, executeFn, cs, view),
+      }
+    case 'binary': {
+      const leftText = await tokenText(tree.left, context, executeFn, cs, view)
+      const right = tree.right
+      if (right.negative || right.operand === null) {
+        const rightText = await tokenText(right, context, executeFn, cs, view)
+        return {
+          kind: 'binary',
+          left: leftText,
+          op: tree.op,
+          right: rightText,
+          rightLiteral: false,
+        }
+      }
+      return comparison(tree.op, leftText, right.operand, context, executeFn, cs, view)
+    }
+    case 'word':
+      return { kind: 'word', value: await tokenText(tree.operand, context, executeFn, cs, view) }
+  }
+}
+
+async function tokenText(
+  token: CondToken,
+  context: EvaluationContext,
+  executeFn: ExecuteFn,
+  cs: CallStack | null,
+  view?: SessionView,
+): Promise<string> {
+  if (token.operand === null) return ''
+  const text = await expandNode(token.operand, context, executeFn, cs, view)
+  return token.negative ? '-' + text : text
 }
 
 /** Recursively translate one expression node into a CondNode. */
@@ -242,6 +456,19 @@ async function buildBinary(
     return { kind: 'word', value: textParts.join(' ') }
   }
   const leftText = await expandNode(left, context, executeFn, cs, view)
+  return comparison(op, leftText, right, context, executeFn, cs, view)
+}
+
+/** A binary test, its right operand expanded as `op` reads it. */
+async function comparison(
+  op: string,
+  leftText: string,
+  right: TSNodeLike,
+  context: EvaluationContext,
+  executeFn: ExecuteFn,
+  cs: CallStack | null,
+  view?: SessionView,
+): Promise<CondNode> {
   if (op === '=~' && right.type === NT.REGEX) {
     const raw = right.text
     // After =~ tree-sitter lexes even a quoted operand as one regex

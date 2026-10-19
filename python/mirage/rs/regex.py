@@ -207,6 +207,17 @@ class PosixRegex:
         subject = _Subject(text, self.utf8)
         return _words(self._ask(subject, {"op": "contains"}))[0]
 
+    def matches(self, text: str) -> bool:
+        """Whether the expression matches anywhere in ``text``, as sed's
+        addresses ask: with no groups to place, a ``$`` reads a newline
+        the match goes on to consume even in a pattern with groups.
+
+        Args:
+            text (str): the subject as a byte view.
+        """
+        subject = _Subject(text, self.utf8)
+        return _words(self._ask(subject, {"op": "test"}))[0] == 1
+
 
 @lru_cache(maxsize=_CACHE_SIZE)
 def posix_regex(

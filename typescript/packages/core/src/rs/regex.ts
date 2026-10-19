@@ -214,6 +214,15 @@ export class PosixRegex {
   contains(text: string): number {
     return this.ask(new Subject(text, this.utf8), { op: 'contains' })[0] ?? 0
   }
+
+  /**
+   * Whether the expression matches anywhere in `text`, as sed's addresses
+   * ask: with no groups to place, a `$` reads a newline the match goes on to
+   * consume even in a pattern with groups.
+   */
+  matches(text: string): boolean {
+    return this.ask(new Subject(text, this.utf8), { op: 'test' })[0] === 1
+  }
 }
 
 const CACHE_SIZE = 256

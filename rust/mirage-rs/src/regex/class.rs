@@ -1,10 +1,11 @@
 use std::sync::OnceLock;
 
 use regex_syntax::hir::{
-    Class as HirClass, ClassBytes, ClassBytesRange, ClassUnicode, ClassUnicodeRange, Hir, HirKind,
+    Class as HirClass, ClassBytes, ClassBytesRange, ClassUnicode, ClassUnicodeRange, Hir,
 };
 
 use super::parse::{Class, Item, Set, Unit};
+use crate::generated::unicode_classes as classes;
 
 /// What a set, `.` or a caseless literal matches: bytes outside a UTF-8
 /// locale, characters in one, where a byte that is no part of a character
@@ -15,68 +16,33 @@ pub(crate) enum Members {
     Chars(ClassUnicode),
 }
 
-/// A Unicode property set, read through regex-syntax's tables.
-fn property(source: &str) -> ClassUnicode {
-    let hir = regex_syntax::ParserBuilder::new()
-        .build()
-        .parse(source)
-        .expect("a valid property class");
-    match hir.into_kind() {
-        HirKind::Class(HirClass::Unicode(class)) => class,
-        _ => ClassUnicode::empty(),
-    }
-}
-
-/// A class's members under a UTF-8 locale, from Unicode's properties as
-/// the C.UTF-8 locale draws them:
-/// - alpha takes the decimal digits of other scripts;
-/// - the no-break spaces are no space or blank, and NEL is no space;
-/// - the line and paragraph separators are controls;
-/// - graph and print take private use and format characters;
-/// - a letter with a case mapping is upper or lower (so the titlecase
-///   letters are upper, and the Latin ones lower too).
-///
-/// Digits stay ASCII, as POSIX asks of `digit` and `xdigit`.
+/// A class's members under a UTF-8 locale: the Unicode 16.0 tables
+/// scripts/gen_unicode_classes.py draws from Unicode's properties as the
+/// C.UTF-8 locale does.
 fn unicode_class(class: Class) -> &'static ClassUnicode {
     static TABLES: [OnceLock<ClassUnicode>; 12] = [const { OnceLock::new() }; 12];
-    let (index, source) = match class {
-        Class::Alnum => (0, r"[\p{Alphabetic}\p{Nd}]"),
-        Class::Alpha => (1, r"[[\p{Alphabetic}\p{Nd}]--0-9]"),
-        Class::Blank => (2, r"[[\t\p{Zs}]--\x{A0}\x{2007}\x{202F}]"),
-        Class::Cntrl => (3, r"[\p{Cc}\p{Zl}\p{Zp}]"),
-        Class::Digit => (4, r"[0-9]"),
-        Class::Graph => (5, r"[[^\p{Cc}\p{Cn}\p{Z}]\x{A0}\x{2007}\x{202F}]"),
-        Class::Lower => (6, r"\p{Lowercase}"),
-        Class::Print => (7, r"[^\p{Cc}\p{Cn}\p{Zl}\p{Zp}]"),
-        Class::Punct => (
-            8,
-            r"[[[^\p{Cc}\p{Cn}\p{Z}]\x{A0}\x{2007}\x{202F}]--[\p{Alphabetic}\p{Nd}]]",
-        ),
-        Class::Space => (9, r"[\p{White_Space}--\x{85}\x{A0}\x{2007}\x{202F}]"),
-        Class::Upper => (10, r"\p{Uppercase}"),
-        Class::Xdigit => (11, r"[0-9A-Fa-f]"),
+    let (index, table) = match class {
+        Class::Alnum => (0, classes::ALNUM),
+        Class::Alpha => (1, classes::ALPHA),
+        Class::Blank => (2, classes::BLANK),
+        Class::Cntrl => (3, classes::CNTRL),
+        Class::Digit => (4, classes::DIGIT),
+        Class::Graph => (5, classes::GRAPH),
+        Class::Lower => (6, classes::LOWER),
+        Class::Print => (7, classes::PRINT),
+        Class::Punct => (8, classes::PUNCT),
+        Class::Space => (9, classes::SPACE),
+        Class::Upper => (10, classes::UPPER),
+        Class::Xdigit => (11, classes::XDIGIT),
     };
     TABLES[index].get_or_init(|| {
-        let mut members = property(source);
-        match class {
-            Class::Lower => members.union(&mapped(char::to_uppercase)),
-            Class::Upper => members.union(&mapped(char::to_lowercase)),
-            _ => {}
-        }
-        members
+        ClassUnicode::new(table.iter().filter_map(|&(low, high)| {
+            Some(ClassUnicodeRange::new(
+                char::from_u32(low)?,
+                char::from_u32(high)?,
+            ))
+        }))
     })
-}
-
-/// The characters a case mapping takes to one other character.
-fn mapped<I: Iterator<Item = char>>(map: fn(char) -> I) -> ClassUnicode {
-    let mut class = ClassUnicode::empty();
-    for c in ('\0'..=char::MAX).filter(|&c| {
-        let mut to = map(c);
-        matches!((to.next(), to.next()), (Some(other), None) if other != c)
-    }) {
-        class.push(ClassUnicodeRange::new(c, c));
-    }
-    class
 }
 
 /// `[[:alnum:]_]`, the characters a word is made of.

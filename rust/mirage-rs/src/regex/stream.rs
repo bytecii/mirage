@@ -53,7 +53,7 @@ enum Operation {
     Search,
     /// Every match a global substitution replaces.
     All,
-    /// Whether the line matches.
+    /// Whether the line, or a POSIX expression's subject, matches.
     Test,
     /// Each match grep -o prints from the line.
     Extents,
@@ -214,6 +214,9 @@ impl RegexStream {
             (Matcher::Posix(regex), Operation::Contains) => {
                 put(out, Some(regex.contains(hay)));
             }
+            (Matcher::Posix(regex), Operation::Test) => {
+                put(out, Some(usize::from(regex.test(hay))));
+            }
             (Matcher::Lines { regex, .. }, Operation::Test) => {
                 let mut line = hay.to_vec();
                 line.push(b'\n');
@@ -332,6 +335,8 @@ mod tests {
         assert!(out.is_empty());
         let out = ask(stream.as_mut(), r#"{"op":"all"}"#, b"ab");
         assert_eq!(words(&out).len(), 12);
+        assert_eq!(words(&ask(stream.as_mut(), r#"{"op":"test"}"#, b"xb")), [1]);
+        assert_eq!(words(&ask(stream.as_mut(), r#"{"op":"test"}"#, b"xy")), [0]);
     }
 
     #[test]

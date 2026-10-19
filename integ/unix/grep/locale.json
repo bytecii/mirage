@@ -123,6 +123,16 @@
         "stdout": "0\né\nx\n0\n0\n1\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "grep_locale_utf8_classes_take_unicode_16",
+      "seq": 9970049,
+      "command": "( export LC_ALL=C.UTF-8; u() { printf '\\341\\262\\211\\n\\341\\262\\212\\n\\315\\243\\n\\360\\220\\265\\220\\n\\360\\220\\265\\260\\n\\352\\237\\213\\n\\360\\237\\257\\213\\n'; }; for c in upper lower alpha punct; do printf '%s:' \"$c\"; u | grep -n \"^[[:$c:]]\\$\" | cut -d: -f1 | tr '\\n' ' '; echo; done; u | sed -n 's/^[[:upper:]]$/U/p' )",
+      "expect": {
+        "exit": 0,
+        "stdout": "upper:1 4 6 \nlower:2 5 \nalpha:1 2 3 4 5 6 \npunct:7 \nU\nU\nU\n",
+        "stderr": ""
+      }
     }
   ]
 }

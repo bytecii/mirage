@@ -1419,6 +1419,40 @@
       "flags": [
         "E"
       ]
+    },
+    {
+      "id": "sed_regex_a_dollar_reads_a_newline_unless_groups_are_placed",
+      "seq": 9970051,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'b\\na\\n' | sed -E 'N;s/b$./X/'; printf 'b\\na\\n' | sed -E 'N;s/b$.(a)/X/'; printf 'b\\na\\n' | sed -nE 'N;/(b)$./p'; v=$(printf 'b\\na'); [[ $v =~ (b$.) ]]; echo rc=$?; printf 'b\\nb\\n' | sed -nE 'N;/(b)$.\\1/!s/^/no /p'",
+      "expect": {
+        "exit": 0,
+        "stdout": "Xa\nb\na\nb\na\nrc=1\nno b\nb\n",
+        "stderr": ""
+      }
     }
   ]
 }

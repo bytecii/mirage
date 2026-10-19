@@ -12,6 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import {
+  ICONV_EXCLUDED,
+  ICONV_ONE_WAY,
+  ICONV_REMAPPED,
+} from '../../../utils/generated/iconv_data.ts'
 import { toHex } from '../../../utils/hex.ts'
 
 /** Opt in before conversion by assigning a debug sink; tables are cached after first use. */
@@ -177,19 +182,20 @@ function gb18030Step(raw: Uint8Array, at: number, table: Table): Decoded {
 }
 
 /**
- * One multi-byte charset: glibc's grammar over a host-seeded table.
+ * One multi-byte charset: its byte grammar over a host-seeded table.
  *
  * The table is what the host's own decoder (the platform `TextDecoder`
- * here, a codec in Python) answers for every sequence in `blocks`, then
- * corrected to glibc 2.41: `remapped` sets the sequences where a host
- * disagrees with glibc, `excluded` drops the ranges a host decodes and
- * glibc does not, and a private-use answer is dropped unless glibc maps
- * into that area. The corrections cover CPython's codecs, ICU's (Node) and
- * WHATWG's (browsers), so every host builds the same table. Measured byte
- * for byte on debian:stable-slim. `oneWay` holds the code points glibc
- * encodes to a sequence that decodes to another one, and `supplementary`
- * counts planes 1-16 out by four-byte sequences (GB18030). A sequence is
- * its bytes read big-endian.
+ * here, a codec in Python) answers for every sequence in `blocks`, corrected
+ * to the charset's standard mapping table: `remapped` sets the sequences
+ * where a host disagrees with it, `excluded` drops the ranges a host decodes
+ * and it leaves unmapped, and a private-use answer is dropped unless the
+ * standard maps into that area. scripts/gen_iconv_multibyte.py derives the
+ * corrections from the published tables for CPython's codecs, ICU's (Node)
+ * and WHATWG's (browsers), so every host builds the same table, and the
+ * pinned image's iconv agrees with it byte for byte. `oneWay` holds the code
+ * points iconv encodes to a sequence that decodes to another one, and
+ * `supplementary` counts planes 1-16 out by four-byte sequences (GB18030). A
+ * sequence is its bytes read big-endian.
  */
 export interface MultibyteSpec {
   readonly name: string
@@ -231,22 +237,9 @@ export const GBK = multibyteSpec({
       ],
     ],
   ],
-  excluded: [
-    [0xa2e3, 0xa2e3],
-    [0xa3a0, 0xa3a0],
-    [0xa6d9, 0xa6df],
-    [0xa6ec, 0xa6ed],
-    [0xa6f3, 0xa6f3],
-    [0xa8bc, 0xa8bc],
-    [0xa8bf, 0xa8bf],
-    [0xa989, 0xa995],
-    [0xfe50, 0xfe50],
-    [0xfe54, 0xfe6b],
-    [0xfe6d, 0xfe75],
-    [0xfe77, 0xfe7e],
-    [0xfe80, 0xfe90],
-    [0xfe92, 0xfea0],
-  ],
+  remapped: ICONV_REMAPPED.GBK ?? [],
+  excluded: ICONV_EXCLUDED.GBK ?? [],
+  oneWay: ICONV_ONE_WAY.GBK ?? [],
 })
 
 export const EUC_CN = multibyteSpec({
@@ -254,16 +247,9 @@ export const EUC_CN = multibyteSpec({
   codec: 'gb2312',
   step: eucCnStep,
   blocks: [[[[0xa1, 0xf7]], EUC_BYTE]],
-  remapped: [
-    [0xa1a4, 0x30fb],
-    [0xa1aa, 0x2015],
-  ],
-  excluded: [
-    [0xa2a1, 0xa2aa],
-    [0xa2e3, 0xa2e3],
-    [0xa6d9, 0xa6f5],
-    [0xa8bb, 0xa8c0],
-  ],
+  remapped: ICONV_REMAPPED['EUC-CN'] ?? [],
+  excluded: ICONV_EXCLUDED['EUC-CN'] ?? [],
+  oneWay: ICONV_ONE_WAY['EUC-CN'] ?? [],
 })
 
 export const GB18030 = multibyteSpec({
@@ -276,49 +262,11 @@ export const GB18030 = multibyteSpec({
     [[[0x84, 0x84]], [[0x30, 0x30]], FOUR_LETTER, FOUR_DIGIT],
     [[[0x84, 0x84]], [[0x31, 0x31]], [[0x81, 0xa4]], FOUR_DIGIT],
   ],
-  remapped: [
-    [0x8135f437, 0xe7c7],
-    [0x82359037, 0xe81e],
-    [0x82359038, 0xe826],
-    [0x82359039, 0xe82b],
-    [0x82359130, 0xe82c],
-    [0x82359131, 0xe832],
-    [0x82359132, 0xe843],
-    [0x82359133, 0xe854],
-    [0x82359134, 0xe864],
-    [0x84318236, 0xe78d],
-    [0x84318237, 0xe78f],
-    [0x84318238, 0xe78e],
-    [0x84318239, 0xe790],
-    [0x84318330, 0xe791],
-    [0x84318331, 0xe792],
-    [0x84318332, 0xe793],
-    [0x84318333, 0xe794],
-    [0x84318334, 0xe795],
-    [0x84318335, 0xe796],
-    [0xa3a0, 0xe5e5],
-    [0xa6d9, 0xfe10],
-    [0xa6da, 0xfe12],
-    [0xa6db, 0xfe11],
-    [0xa6dc, 0xfe13],
-    [0xa6dd, 0xfe14],
-    [0xa6de, 0xfe15],
-    [0xa6df, 0xfe16],
-    [0xa6ec, 0xfe17],
-    [0xa6ed, 0xfe18],
-    [0xa6f3, 0xfe19],
-    [0xa8bc, 0x1e3f],
-    [0xfe59, 0x9fb4],
-    [0xfe61, 0x9fb5],
-    [0xfe66, 0x9fb6],
-    [0xfe67, 0x9fb7],
-    [0xfe6d, 0x9fb8],
-    [0xfe7e, 0x9fb9],
-    [0xfe90, 0x9fba],
-    [0xfea0, 0x9fbb],
-  ],
   privateUse: true,
   supplementary: true,
+  remapped: ICONV_REMAPPED.GB18030 ?? [],
+  excluded: ICONV_EXCLUDED.GB18030 ?? [],
+  oneWay: ICONV_ONE_WAY.GB18030 ?? [],
 })
 
 export const EUC_KR = multibyteSpec({
@@ -326,13 +274,9 @@ export const EUC_KR = multibyteSpec({
   codec: 'euc-kr',
   step: eucKrStep,
   blocks: [[EUC_BYTE, EUC_BYTE]],
-  remapped: [
-    [0xa2e6, 0x20ac],
-    [0xa2e7, 0xae],
-    [0xa2e8, 0x327e],
-    [0xa4d4, 0x3164],
-  ],
-  oneWay: [[0x20a9, 0xa3dc]],
+  remapped: ICONV_REMAPPED['EUC-KR'] ?? [],
+  excluded: ICONV_EXCLUDED['EUC-KR'] ?? [],
+  oneWay: ICONV_ONE_WAY['EUC-KR'] ?? [],
 })
 
 export const SJIS = multibyteSpec({
@@ -343,27 +287,9 @@ export const SJIS = multibyteSpec({
     [[[0x81, 0x9f]], SJIS_TRAIL],
     [[[0xe0, 0xea]], SJIS_TRAIL],
   ],
-  remapped: [
-    [0x8160, 0x301c],
-    [0x8161, 0x2016],
-    [0x817c, 0x2212],
-    [0x8191, 0xa2],
-    [0x8192, 0xa3],
-    [0x81ca, 0xac],
-  ],
-  excluded: [
-    [0x8740, 0x875d],
-    [0x875f, 0x8775],
-    [0x877e, 0x877e],
-    [0x8780, 0x879c],
-  ],
-  oneWay: [
-    [0x5c, 0x5c],
-    [0x7e, 0x7e],
-    [0xffe0, 0x8191],
-    [0xffe1, 0x8192],
-    [0xffe2, 0x81ca],
-  ],
+  remapped: ICONV_REMAPPED.SJIS ?? [],
+  excluded: ICONV_EXCLUDED.SJIS ?? [],
+  oneWay: ICONV_ONE_WAY.SJIS ?? [],
 })
 
 export const EUC_JP = multibyteSpec({
@@ -375,29 +301,9 @@ export const EUC_JP = multibyteSpec({
     [[[0x8e, 0x8e]], [[0xa1, 0xdf]]],
     [[[0x8f, 0x8f]], [[0xa2, 0xed]], EUC_BYTE],
   ],
-  remapped: [
-    [0x8fa2b7, 0xff5e],
-    [0xa1c1, 0x301c],
-    [0xa1c2, 0x2016],
-    [0xa1dd, 0x2212],
-    [0xa1f1, 0xa2],
-    [0xa1f2, 0xa3],
-    [0xa2cc, 0xac],
-  ],
-  excluded: [
-    [0xada1, 0xadbe],
-    [0xadc0, 0xadd6],
-    [0xaddf, 0xadfc],
-    [0xf9a1, 0xf9fe],
-    [0xfaa1, 0xfafe],
-    [0xfba1, 0xfbfe],
-    [0xfca1, 0xfcee],
-    [0xfcf1, 0xfcfe],
-  ],
-  oneWay: [
-    [0xa5, 0x5c],
-    [0x203e, 0x7e],
-  ],
+  remapped: ICONV_REMAPPED['EUC-JP'] ?? [],
+  excluded: ICONV_EXCLUDED['EUC-JP'] ?? [],
+  oneWay: ICONV_ONE_WAY['EUC-JP'] ?? [],
 })
 
 export const MULTIBYTE_CHARSETS: Readonly<Record<string, MultibyteSpec>> = {
