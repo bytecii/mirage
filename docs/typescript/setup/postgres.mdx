@@ -18,12 +18,17 @@ pnpm add @struktoai/mirage-node pg
 import { MountMode, PostgresVFS, Workspace } from '@struktoai/mirage-node'
 
 const pg = new PostgresVFS({
-  dsn: process.env.PG_DSN!,
+  dsn: process.env.DATABASE_URL!,
   schemas: ['public', 'analytics'],
 })
 
 const ws = new Workspace({ '/pg': pg }, { mode: MountMode.READ })
-await ws.shell('ls /pg/public/')
+try {
+  const result = await ws.shell('ls /pg/public/')
+  console.log(result.stdoutText)
+} finally {
+  await ws.close()
+}
 ```
 
 ## Browser
@@ -32,21 +37,32 @@ await ws.shell('ls /pg/public/')
 pnpm add @struktoai/mirage-browser
 ```
 
-For browser apps, point the VFS at a same-origin proxy or use a serverless Postgres driver such as `@neondatabase/serverless`. The browser examples include a Vite plugin that wires the VFS to a server-side `pg` client:
+The default browser driver uses Neon's HTTP transport. Replace the connection
+string below with one for a read-only demo role on Neon. Browser users can inspect
+this credential. Keep private database credentials in a Node backend.
 
 ```ts
 import { MountMode, PostgresVFS, Workspace } from '@struktoai/mirage-browser'
 
 const pg = new PostgresVFS({
-  dsn: 'postgres-proxy://app',
+  dsn: 'postgresql://mirage_reader:password@your-endpoint.neon.tech/app?sslmode=require',
+  schemas: ['public'],
 })
+const ws = new Workspace({ '/pg': pg }, { mode: MountMode.READ })
+
+try {
+  const result = await ws.shell('ls /pg/public/')
+  console.log(result.stdoutText)
+} finally {
+  await ws.close()
+}
 ```
 
 ## Config
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `dsn` | required | Postgres connection string. Redacted in snapshots. |
+| `dsn` | required | Postgres connection string. The default browser driver requires Neon's HTTP transport. Redacted in snapshots. |
 | `schemas` | none | Optional list to limit which schemas appear in the tree. |
 | `defaultRowLimit` | `1000` | Rows a windowed read returns when it passes an offset but no limit. |
 | `maxReadRows` | `10_000` | Hard ceiling per read. A whole read past it is refused, and so is a `head -n` / `tail -n` count past it on a table that long (`File too large`); `wc -l` counts past it. |
