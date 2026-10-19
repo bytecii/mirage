@@ -469,8 +469,8 @@ fn scan_literals(
     } else {
         end - (longest - 1)
     };
-    if let Some(found) = found
-        && (!prefix || end == haystack.len() || found.start < safe_end)
+    if let Some(found) =
+        found.filter(|found| !prefix || end == haystack.len() || found.start < safe_end)
     {
         return Scan::Hit(found.start);
     }
@@ -601,14 +601,15 @@ impl Search {
                 };
                 continue;
             }
-            if matches!(self.phase, Phase::Byte)
-                && self.seek_prefix
-                && self.current.ids.is_empty()
-                && !self.has_candidate
-                && !program.nfa.is_always_start_anchored()
-                && self.at <= self.haystack.len()
-                && let Some(filter) = &program.filters.prefix
-            {
+            let prefix = program.filters.prefix.as_ref().filter(|_| {
+                matches!(self.phase, Phase::Byte)
+                    && self.seek_prefix
+                    && self.current.ids.is_empty()
+                    && !self.has_candidate
+                    && !program.nfa.is_always_start_anchored()
+                    && self.at <= self.haystack.len()
+            });
+            if let Some(filter) = prefix {
                 match scan_literals(filter, &self.haystack, self.at, budget, true) {
                     Scan::Hit(at) => self.at = at,
                     Scan::Continue(at) => {
