@@ -136,6 +136,26 @@ class TestStat:
         assert row.type == FileType.SYMLINK
 
 
+class _ListedRAM(RAMVFS):
+    index_ttl = 600
+
+
+class _HeldRAM(RAMVFS):
+    caches_reads = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate: asyncio.Event | None = None
+        self.reading = asyncio.Event()
+
+    async def read(self, path, offset=0, size=None):
+        data = await super().read(path, offset, size)
+        if self.gate is not None:
+            self.reading.set()
+            await self.gate.wait()
+        return data
+
+
 class TestFreshStat:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("fresh", [False, True])
@@ -230,6 +250,90 @@ class TestFreshStat:
             assert await ws.vfs.read("/data/f.txt") == b"old"
             await ws.vfs.stat("/data/f.txt", fresh=True)
             assert not await ws.cache.exists("/data/f.txt")
+            assert await ws.vfs.read("/data/f.txt") == b"grown\n"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_drops_a_deleted_folder_listing(self):
+        vfs = _ListedRAM()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.mkdir("/data/d")
+            await ws.vfs.write("/data/d/k", b"k")
+            assert await ws.vfs.readdir("/data/d") == ["/data/d/k"]
+            del vfs._store.files["/d/k"]
+            vfs._store.dirs.discard("/d")
+            with pytest.raises(FileNotFoundError):
+                await ws.vfs.stat("/data/d", fresh=True)
+            with pytest.raises(FileNotFoundError):
+                await ws.vfs.readdir("/data/d")
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_checks_a_trailing_slash_past_the_index(self):
+        vfs = _ListedRAM()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/x", b"file")
+            await ws.vfs.readdir("/data")
+            del vfs._store.files["/x"]
+            vfs._store.dirs.add("/x")
+            vfs._store.files["/x/c"] = b"c"
+            row = await ws.vfs.stat("/data/x/", fresh=True)
+            assert row.type is FileType.DIRECTORY
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_replaces_a_row_that_differs_in_mode(self):
+        ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            listed = await ws.vfs.stat("/data/f.txt")
+            await ws.mount("/data").index.set_dir(
+                "/data",
+                [("f.txt", listed.model_copy(update={"mode": 0o600}))],
+                datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            assert (await ws.vfs.stat("/data/f.txt")).mode == 0o600
+            assert (await ws.vfs.stat("/data/f.txt", fresh=True)).mode is None
+            assert (await ws.vfs.stat("/data/f.txt")).mode is None
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_keeps_the_version_a_conditional_write_sends(
+        self,
+    ):
+        vfs = RAMVFS()
+        vfs.caches_reads = True
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            await ws.cache.remove("/data/f.txt")
+            await ws.cache.keep_fingerprints({"/data/f.txt": "v1"})
+            await ws.vfs.stat("/data/f.txt", fresh=True)
+            assert await ws.cache.fingerprint("/data/f.txt") == "v1"
+        finally:
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_fresh_stat_retires_a_read_already_in_flight(self):
+        vfs = _HeldRAM()
+        ws = Workspace({"/data": vfs}, mode=MountMode.WRITE)
+        try:
+            await ws.vfs.write("/data/f.txt", b"old")
+            await ws.cache.remove("/data/f.txt")
+            vfs.gate = asyncio.Event()
+            reading = asyncio.create_task(ws.vfs.read("/data/f.txt"))
+            await vfs.reading.wait()
+            vfs._store.files["/f.txt"] = b"grown\n"
+            await ws.vfs.stat("/data/f.txt", fresh=True)
+            vfs.gate.set()
+            assert await reading == b"old"
+            vfs.gate = None
             assert await ws.vfs.read("/data/f.txt") == b"grown\n"
         finally:
             await ws.close()

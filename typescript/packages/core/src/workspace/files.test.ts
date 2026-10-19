@@ -19,6 +19,8 @@ import type { Policy } from '../policy/base.ts'
 import { PolicyDenied, PolicyError } from '../policy/errors.ts'
 import type { Action, VfsContext, VfsResultContext } from '../policy/types.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
+import type { Handed } from '../vfs/types.ts'
+import type { PathSpec } from '../types.ts'
 import { stat as ramStat } from '../core/ram/stat.ts'
 import { DEFAULT_READ_TTL, FileStat, FileType, Limit, MountMode, ReadPolicy } from '../types.ts'
 import { eacces, enoent, enotdir } from '../errors/fs.ts'
@@ -142,6 +144,34 @@ describe('Files', () => {
   })
 })
 
+class ListedRAM extends RAMVFS {
+  override readonly indexTtl: number = 600
+}
+
+class HeldRAM extends RAMVFS {
+  override readonly cachesReads = true
+  gate: Promise<void> | null = null
+  reading: () => void = () => undefined
+  readonly started = new Promise<void>((resolve) => {
+    this.reading = resolve
+  })
+
+  override async read(
+    path: PathSpec,
+    handed?: Handed,
+    offset = 0,
+    size: number | null = null,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    const data = await super.read(path, handed, offset, size, signal)
+    if (this.gate !== null) {
+      this.reading()
+      await this.gate
+    }
+    return data
+  }
+}
+
 describe('fresh stat', () => {
   it.each([false, true])('sees an externally created file with fresh=%s', async (fresh) => {
     const vfs = new RAMVFS()
@@ -246,6 +276,96 @@ describe('fresh stat', () => {
       await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
       expect(await ws.cache.exists('/data/f.txt')).toBe(false)
       expect(new TextDecoder().decode(await ws.vfs.read('/data/f.txt'))).toBe('grown\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('drops a deleted folder listing', async () => {
+    const vfs = new ListedRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.mkdir('/data/d')
+      await ws.vfs.write('/data/d/k', 'k')
+      expect(await ws.vfs.readdir('/data/d')).toEqual(['/data/d/k'])
+      vfs.store.files.delete('/d/k')
+      vfs.store.dirs.delete('/d')
+      await expect(ws.vfs.stat('/data/d', undefined, { fresh: true })).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+      await expect(ws.vfs.readdir('/data/d')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('checks a trailing slash past the index', async () => {
+    const vfs = new ListedRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/x', 'file')
+      await ws.vfs.readdir('/data')
+      vfs.store.files.delete('/x')
+      vfs.store.dirs.add('/x')
+      vfs.store.files.set('/x/c', new TextEncoder().encode('c'))
+      const row = await ws.vfs.stat('/data/x/', undefined, { fresh: true })
+      expect(row.type).toBe(FileType.DIRECTORY)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('replaces a row that differs in mode', async () => {
+    const ws = mkWorkspace()
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      const listed = await ws.vfs.stat('/data/f.txt')
+      await ws
+        .mount('/data')
+        .index.setDir(
+          '/data',
+          [['f.txt', listed.with({ mode: 0o600 })]],
+          new Date(Date.now() + 3_600_000),
+        )
+      expect((await ws.vfs.stat('/data/f.txt')).mode).toBe(0o600)
+      expect((await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })).mode).toBeNull()
+      expect((await ws.vfs.stat('/data/f.txt')).mode).toBeNull()
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('keeps the version a conditional write sends', async () => {
+    const ws = new Workspace({ '/data': cachingRam() }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.cache.remove('/data/f.txt')
+      await ws.cache.keepFingerprints({ '/data/f.txt': 'v1' })
+      await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      expect(await ws.cache.fingerprint('/data/f.txt')).toBe('v1')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('retires a read already in flight', async () => {
+    const vfs = new HeldRAM()
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE })
+    try {
+      await ws.vfs.write('/data/f.txt', 'old')
+      await ws.cache.remove('/data/f.txt')
+      let release: () => void = () => undefined
+      vfs.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const reading = ws.vfs.read('/data/f.txt')
+      await vfs.started
+      vfs.store.files.set('/f.txt', new TextEncoder().encode('grown\n'))
+      await ws.vfs.stat('/data/f.txt', undefined, { fresh: true })
+      release()
+      expect(DEC.decode(await reading)).toBe('old')
+      vfs.gate = null
+      expect(DEC.decode(await ws.vfs.read('/data/f.txt'))).toBe('grown\n')
     } finally {
       await ws.close()
     }

@@ -948,7 +948,9 @@ class Dispatcher:
             m.vfs.supports(name) for m in self._namespace.registry.mounts()
         ):
             return None, IOResult()
-        call = await self._walk(name, path, kwargs, rule_gate, report, caller)
+        call = await self._walk(
+            name, path, kwargs, rule_gate, report, caller, fresh
+        )
         call.stream = stream
         call.direct = direct
         call.fresh = fresh
@@ -1299,6 +1301,7 @@ class Dispatcher:
         rule_gate: EntryGate | None,
         report: OpReport | None,
         caller: Caller,
+        fresh: bool = False,
     ) -> _Call:
         """Walk the op's path, as the kernel does before a call sees it.
 
@@ -1323,6 +1326,8 @@ class Dispatcher:
             rule_gate (EntryGate | None): the running command's gate.
             report (OpReport | None): the caller's report.
             caller (Caller): who makes the op.
+            fresh (bool): whether the names the walk checks are asked of
+                the backend past the mount's index, as a fresh stat asks.
         """
         vis = caller.visibility
         links = self._namespace.symlink_targets()
@@ -1362,7 +1367,7 @@ class Dispatcher:
         refusal = hidden_walk(path, follow, visible)
         if refusal is None and isinstance(dst, PathSpec):
             refusal = hidden_walk(dst, follow, visible)
-        stat = functools.partial(self._walk_stat, caller)
+        stat = functools.partial(self._walk_stat, caller, fresh=fresh)
         if refusal is None:
             refusal = await dot_refusal(
                 stat, path, follow, name in ENTRY_CREATE_OPS
@@ -2714,7 +2719,9 @@ class Dispatcher:
             raise refusal
         await self._namespace.purge_under(path.virtual)
 
-    async def _walk_stat(self, caller: Caller, path: PathSpec) -> FileStat:
+    async def _walk_stat(
+        self, caller: Caller, path: PathSpec, fresh: bool = False
+    ) -> FileStat:
         """The dispatcher's own stat in the shape a chain walk reads.
 
         Raises when nothing is there, so a dot walk judges a name
@@ -2724,8 +2731,9 @@ class Dispatcher:
         Args:
             caller (Caller): who walks.
             path (PathSpec): the path to stat.
+            fresh (bool): ask the backend past the mount's index.
         """
-        row, _ = await self.dispatch("stat", path, caller=caller)
+        row, _ = await self.dispatch("stat", path, caller=caller, fresh=fresh)
         if row is None:
             raise enoent(path)
         return row

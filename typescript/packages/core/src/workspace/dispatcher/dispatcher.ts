@@ -767,7 +767,16 @@ export class Dispatcher {
       (METADATA_OPS.has(name) && !admitOnly) || name === 'before_full_scan'
         ? null
         : (this.caller?.ruleGate ?? null)
-    const call = await this.walk(name, path, args, kwargs, gate, report, issuer)
+    const call = await this.walk(
+      name,
+      path,
+      args,
+      kwargs,
+      gate,
+      report,
+      issuer,
+      name === 'stat' && fresh === true,
+    )
     call.stream = name === 'read' && stream === true
     call.direct = name === 'read' && direct === true
     call.fresh = name === 'stat' && fresh === true
@@ -1158,6 +1167,7 @@ export class Dispatcher {
     ruleGate: EntryGate | null,
     report: OpReport | undefined,
     issuer: symbol | undefined,
+    fresh = false,
   ): Promise<Call> {
     const vis = sessionVisibility(this.access)
     const links = this.namespace.symlinkTargets()
@@ -1196,7 +1206,11 @@ export class Dispatcher {
     if (FILE_CREATE_OPS.has(name) && path.dotted?.endsWith('/') === true) throw eisdir(path)
     const renamed = dstArg instanceof PathSpec ? dstArg : null
     if (path.dotted !== null || (renamed !== null && renamed.dotted !== null)) {
-      const walkStat = dispatchStat(this.dispatch)
+      const walkStat = dispatchStat(
+        fresh
+          ? (op, p, a, k, r) => this.dispatch(op, p, a, { ...k, fresh: true }, r)
+          : this.dispatch,
+      )
       const follow = (virtual: string): string => this.namespace.follow(virtual)
       const visible = (virtual: string): boolean => pathVisible(vis, virtual)
       const refusal =
