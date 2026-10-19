@@ -29,6 +29,7 @@ from mirage.cache.index.config import (
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.config import Command
 from mirage.commands.spec import Argument, CommandSpec
+from mirage.core.api.client import SessionPool
 from mirage.io import IOResult
 from mirage.runtime.base import Runtime
 from mirage.shell.console import (
@@ -60,6 +61,48 @@ from mirage.workspace.types import ExecutionNode
 from tests.fixtures.vfs_io import override
 
 _RELEASE: list[asyncio.Event] = []
+
+
+@pytest.mark.parametrize("fail_close", [False, True])
+def test_sync_adapter_owner_drains_pools_and_joins_on_concurrent_close(
+    monkeypatch, fail_close
+):
+    vfs = RAMVFS()
+    ws = Workspace({"/": vfs}, mode=MountMode.WRITE)
+    pool = SessionPool()
+    original_close = vfs.close
+    closes = []
+
+    async def get():
+        return asyncio.get_running_loop(), pool.get()
+
+    owner, session = ws._run_sync(get, "get")
+    assert ws._run_sync(get, "get") == (owner, session)
+
+    async def close_mount():
+        closes.append(asyncio.get_running_loop())
+        await pool.close()
+        await original_close()
+        if fail_close:
+            raise ValueError("close failed")
+
+    async def close_twice():
+        return await asyncio.gather(
+            ws.close(), ws.close(), return_exceptions=True
+        )
+
+    monkeypatch.setattr(vfs, "close", close_mount)
+    results = asyncio.run(close_twice())
+    assert closes == [owner]
+    assert session.closed
+    assert owner.is_closed()
+    assert not ws._sync_bridge._thread.is_alive()
+    if fail_close:
+        assert all(isinstance(result, ValueError) for result in results)
+    else:
+        assert results == [None, None]
+    with pytest.raises(RuntimeError, match="Workspace is closed"):
+        ws._run_sync(get, "get")
 
 
 @pytest.mark.asyncio

@@ -12,8 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable
-from typing import Any, Callable, TypeVar
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import Any, ParamSpec, TypeVar
 
 try:
     from agno.tools import Toolkit
@@ -22,7 +23,7 @@ except ImportError as exc:
         "`agno` not installed. Install with: pip install 'mirage-ai[agno]'"
     ) from exc
 
-from mirage.bridge.sync import run_async_from_sync
+from mirage.bridge.sync import on_owner_loop
 from mirage.workspace.tools.tool_operations import (
     DEFAULT_READ_LIMIT,
     MirageToolOperations,
@@ -30,6 +31,7 @@ from mirage.workspace.tools.tool_operations import (
 from mirage.workspace.workspace import Session, Workspace
 
 T = TypeVar("T")
+P = ParamSpec("P")
 
 
 class MirageToolkit(Toolkit):
@@ -39,6 +41,10 @@ class MirageToolkit(Toolkit):
     as sync and async tool pairs, each answering as the MCP tool of the
     same name does. Agno builds a tool's schema from its signature, so
     each method takes the tool's input fields as parameters.
+
+    Sync tools may run on worker threads, but refuse calls on the owner
+    event-loop thread: await the corresponding async method there. Close
+    the workspace when finished to drain the sync loop and pooled clients.
 
     Args:
         workspace (Workspace): The workspace to operate on.
@@ -55,6 +61,9 @@ class MirageToolkit(Toolkit):
         session_id: str | None = None,
         **kwargs: Any,
     ) -> None:
+        self._ws = workspace
+        self._sync_bridge = workspace._sync_bridge
+        self._sync_bridge.attach()
         session = Session(workspace, session_id)
         self._ops = (
             session.tools
@@ -87,8 +96,10 @@ class MirageToolkit(Toolkit):
             **kwargs,
         )
 
-    def _run(self, coro: Awaitable[T]) -> T:
-        return run_async_from_sync(coro)
+    def _run(
+        self, fn: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        return self._ws._run_sync(partial(fn, *args, **kwargs), fn.__name__)
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> str:
         return (await self._ops.call(name, arguments)).text
@@ -100,8 +111,9 @@ class MirageToolkit(Toolkit):
         Args:
             command (str): The command line to run.
         """
-        return self._run(self.ashell(command))
+        return self._run(self.ashell, command)
 
+    @on_owner_loop
     async def ashell(self, command: str) -> str:
         return await self._call("shell", {"command": command})
 
@@ -115,8 +127,9 @@ class MirageToolkit(Toolkit):
             offset (int): Line to start at, 0-based.
             limit (int): Most lines to return.
         """
-        return self._run(self.aread(path, offset, limit))
+        return self._run(self.aread, path, offset, limit)
 
+    @on_owner_loop
     async def aread(
         self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT
     ) -> str:
@@ -133,8 +146,9 @@ class MirageToolkit(Toolkit):
             path (str): Absolute path of the file to write.
             content (str): The text to write.
         """
-        return self._run(self.awrite(path, content))
+        return self._run(self.awrite, path, content)
 
+    @on_owner_loop
     async def awrite(self, path: str, content: str) -> str:
         return await self._call("write", {"path": path, "content": content})
 
@@ -155,8 +169,9 @@ class MirageToolkit(Toolkit):
             replace_all (bool): Replace every occurrence instead of
                 exactly one.
         """
-        return self._run(self.aedit(path, old_string, new_string, replace_all))
+        return self._run(self.aedit, path, old_string, new_string, replace_all)
 
+    @on_owner_loop
     async def aedit(
         self,
         path: str,
@@ -180,8 +195,9 @@ class MirageToolkit(Toolkit):
         Args:
             path (str): Absolute path of the directory to list.
         """
-        return self._run(self.als(path))
+        return self._run(self.als, path)
 
+    @on_owner_loop
     async def als(self, path: str) -> str:
         return await self._call("ls", {"path": path})
 
@@ -214,19 +230,19 @@ class MirageToolkit(Toolkit):
                 matching lines (-m).
         """
         return self._run(
-            self.agrep(
-                pattern,
-                path,
-                ignore_case,
-                fixed_strings,
-                include,
-                context,
-                files_with_matches,
-                count,
-                max_count,
-            )
+            self.agrep,
+            pattern,
+            path,
+            ignore_case,
+            fixed_strings,
+            include,
+            context,
+            files_with_matches,
+            count,
+            max_count,
         )
 
+    @on_owner_loop
     async def agrep(
         self,
         pattern: str,
@@ -263,7 +279,8 @@ class MirageToolkit(Toolkit):
                 directories.
             path (str): Directory a relative pattern is matched under.
         """
-        return self._run(self.aglob(pattern, path))
+        return self._run(self.aglob, pattern, path)
 
+    @on_owner_loop
     async def aglob(self, pattern: str, path: str = "/") -> str:
         return await self._call("glob", {"pattern": pattern, "path": path})

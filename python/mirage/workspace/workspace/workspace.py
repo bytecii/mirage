@@ -31,11 +31,11 @@ from functools import partial
 from pathlib import Path
 from shlex import join as shell_join
 from types import TracebackType
-from typing import Any, Literal, overload
+from typing import Any, Literal, TypeVar, overload
 
 from pydantic import BaseModel
 
-from mirage.bridge.sync import run_async_from_sync
+from mirage.bridge.sync import SyncBridge
 from mirage.cache.file.config import CacheConfig
 from mirage.cache.file.mixin import FileCacheMixin
 from mirage.cache.index import NULL_INDEX, IndexConfig
@@ -226,6 +226,7 @@ from mirage.workspace.workspace.mounts import unmount as unmount_prefix
 from mirage.workspace.workspace.types import VFSMount
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class Workspace:
@@ -314,6 +315,7 @@ class Workspace:
         self._state_dropped = False
         self._close_error: BaseException | None = None
         self._close_lock = asyncio.Lock()
+        self._sync_bridge = SyncBridge()
         # mounts reused from another live workspace (copy() / load
         # VFS overrides) stay open here; their origin closes them.
         self._shared_mounts: set[int] = set()
@@ -1374,7 +1376,7 @@ class Workspace:
     # ── lifecycle ───────────────────────────────────────────────────────────
 
     def __enter__(self) -> "Workspace":
-        self._vfs_loop = asyncio.new_event_loop()
+        self._vfs_loop = self._sync_bridge.context_loop()
         self._patched = patch_process(self._files, self._vfs_loop)
         return self
 
@@ -1390,13 +1392,40 @@ class Workspace:
             caller = asyncio.get_running_loop()
         except RuntimeError:
             caller = None
-        run_async_from_sync(
-            self._close(drop_state=False, blocked_loop=caller), self._vfs_loop
-        )
-        # Closed after the workspace close, which ran on it.
-        loop, self._vfs_loop = self._vfs_loop, None
-        if loop is not None:
-            loop.close()
+        try:
+            if self._async_closed:
+                if self._close_error is not None:
+                    raise self._close_error
+            else:
+                assert self._vfs_loop is not None
+                self._sync_bridge.close_sync(
+                    partial(
+                        self._close, drop_state=False, blocked_loop=caller
+                    ),
+                    self._vfs_loop,
+                )
+        finally:
+            loop, self._vfs_loop = self._vfs_loop, None
+            self._sync_bridge.shutdown()
+            if loop is not None and not loop.is_closed():
+                loop.close()
+
+    def _run_sync(self, run: Callable[[], Awaitable[T]], async_name: str) -> T:
+        """Run an adapter tool on the shared owner.
+
+        Args:
+            run (Callable[[], Awaitable[T]]): deferred async tool call.
+            async_name (str): async method recommended on refusal.
+        """
+        if self._shutting_down:
+            raise RuntimeError("Workspace is closed")
+
+        async def checked() -> T:
+            if self._shutting_down:
+                raise RuntimeError("Workspace is closed")
+            return await run()
+
+        return self._sync_bridge.run(checked, async_name)
 
     @property
     def io(self) -> IOConfig:
@@ -1479,7 +1508,12 @@ class Workspace:
         await self._events.notify(change)
 
     async def close(self) -> None:
-        await self._close(drop_state=False)
+        try:
+            await self._sync_bridge.close(
+                partial(self._close, drop_state=False)
+            )
+        finally:
+            await self._sync_bridge.ashutdown()
 
     async def delete(self) -> None:
         """Close the workspace and delete its state from the store.
@@ -1492,7 +1526,12 @@ class Workspace:
             RuntimeError: the workspace was closed first, which closed
                 the stores its state lives in, so nothing was deleted.
         """
-        await self._close(drop_state=True)
+        try:
+            await self._sync_bridge.close(
+                partial(self._close, drop_state=True)
+            )
+        finally:
+            await self._sync_bridge.ashutdown()
         if not self._state_dropped:
             raise RuntimeError(
                 "workspace was closed before delete; its state is kept"
@@ -2027,6 +2066,7 @@ class Workspace:
         The discovery record resolves first so a minted default session
         id can adopt the stored pointer before hydration keys off it.
         """
+        self._sync_bridge.observe()
         await self._meta.ensure()
         await self._session_mgr.ensure_loaded()
 
@@ -2272,6 +2312,7 @@ class Workspace:
                 bound; None for the default session as it is now.
             run (Callable[[], Awaitable[Any]]): the dispatcher call.
         """
+        self._sync_bridge.observe()
         if get_current_session_unless_foreign(self._session_mgr) is not None:
             return await run()
         # The full hydration path, discovery record first: a workspace
@@ -2582,6 +2623,7 @@ class Workspace:
                 caller's ``jobs`` and ``wait`` never see them; None for
                 the session's.
         """
+        self._sync_bridge.observe()
         if stream and sink is not None:
             raise ValueError("stream and sink are mutually exclusive")
         if not stream and (
