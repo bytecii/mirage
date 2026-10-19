@@ -5,7 +5,7 @@ An implementation of `grep-matcher`'s `Matcher` trait for Rust's regex engine.
 
 pub use crate::{
     error::{Error, ErrorKind},
-    matcher::{RegexCaptures, RegexMatcher, RegexMatcherBuilder},
+    matcher::{CompiledNfa, LiteralFilters, RegexCaptures, RegexMatcher, RegexMatcherBuilder},
 };
 
 mod ast;

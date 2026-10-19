@@ -131,7 +131,15 @@ const CHECKS: [string, Check][] = [
         '/data/rg-long',
         new TextEncoder().encode('a'.repeat(4 * 1024 * 1024) + '!\n'),
       )
-      for (const command of ["rg '(a+)+$' /data/rg-long", "rg -U 'a+\\n!' /data/rg-long"]) {
+      equal(await shell(ws, "rg 'event=[0-9]+.*status=fail' /data/rg-long"), [1, '', ''])
+      const branches = Array.from({ length: 16 }, (_, index) => 'a'.repeat(index + 1)).join('|')
+      const multiline = `^(${branches}|\\n)+b?$`
+      await ws.vfs.write('/data/rg-multi-control', new TextEncoder().encode('aaa\naaa\n'))
+      equal(await shell(ws, `rg -U -c '${multiline}' /data/rg-multi-control`), [0, '1\n', ''])
+      for (const command of [
+        `rg '^(${branches})+b?$' /data/rg-long`,
+        `rg -U '${multiline}' /data/rg-long`,
+      ]) {
         const abort = new AbortController()
         const running = ws.shell(command, { signal: abort.signal })
         setTimeout(() => abort.abort(), 25)

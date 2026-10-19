@@ -3,11 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct CountAlloc;
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static ALLOCATION_CALLS: AtomicUsize = AtomicUsize::new(0);
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static LARGEST_REALLOC: AtomicUsize = AtomicUsize::new(0);
 
 fn allocated(size: usize) {
+    ALLOCATION_CALLS.fetch_add(1, Ordering::Relaxed);
     ALLOCATED.fetch_add(size, Ordering::Relaxed);
     let live = LIVE.fetch_add(size, Ordering::Relaxed) + size;
     PEAK.fetch_max(live, Ordering::Relaxed);
@@ -38,8 +40,107 @@ unsafe impl GlobalAlloc for CountAlloc {
 #[global_allocator]
 static ALLOCATOR: CountAlloc = CountAlloc;
 
+fn short_record_allocations(config: &[u8], data: &[u8], expected: &[u8]) -> usize {
+    let mut stream = mirage_rs::open("rg", config).unwrap();
+    stream.begin(b"{}").unwrap();
+    let mut out = Vec::new();
+    ALLOCATION_CALLS.store(0, Ordering::Relaxed);
+    for chunk in data.chunks(16 * 1024) {
+        stream.feed(chunk, &mut out).unwrap();
+        while stream.busy() {
+            stream.drain(&mut out).unwrap();
+        }
+    }
+    stream.finish(&mut out).unwrap();
+    while stream.busy() {
+        stream.drain(&mut out).unwrap();
+    }
+    let calls = ALLOCATION_CALLS.load(Ordering::Relaxed);
+    assert_eq!(out, expected);
+    assert_eq!(stream.status(), i32::from(expected.is_empty()));
+    let mut metadata = Vec::new();
+    stream.metadata(&mut metadata);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&metadata).unwrap()["searched"],
+        data.len(),
+    );
+    calls
+}
+
 #[test]
 fn short_records_bound_allocation_volume_and_live_input() {
+    for records in [16_384, 131_072] {
+        for (config, row, expected) in [
+            (
+                br#"{"pattern":"z"}"#.as_slice(),
+                b"a\n".as_slice(),
+                Vec::new(),
+            ),
+            (
+                br#"{"pattern":"a","count_only":true}"#.as_slice(),
+                b"a\n".as_slice(),
+                format!("{records}\n").into_bytes(),
+            ),
+            (
+                br#"{"pattern":"a","count_matches":true}"#.as_slice(),
+                b"a\nz\n".as_slice(),
+                format!("{records}\n").into_bytes(),
+            ),
+        ] {
+            let data = row.repeat(records);
+            let calls = short_record_allocations(config, &data, &expected);
+            let chunks = data.len().div_ceil(16 * 1024);
+            assert!(
+                calls < chunks * 32 + 128,
+                "{records} short records used {calls} allocation calls across {chunks} chunks",
+            );
+        }
+    }
+
+    for (config, oversized, short, expected) in [
+        (
+            br#"{"pattern":"z","count_only":true}"#.as_slice(),
+            [vec![b'x'; 512 * 1024], b"\n".to_vec()].concat(),
+            b"x\n".repeat(32_768),
+            Vec::new(),
+        ),
+        (
+            br#"{"pattern":"a","count_matches":true}"#.as_slice(),
+            [vec![b'a'; 32_768], b"\n".to_vec()].concat(),
+            b"a\n".repeat(32_768),
+            b"65537\n".to_vec(),
+        ),
+    ] {
+        let mut stream = mirage_rs::open("rg", config).unwrap();
+        stream.begin(b"{}").unwrap();
+        let mut out = Vec::new();
+        stream.feed(b"a\n", &mut out).unwrap();
+        while stream.busy() {
+            stream.drain(&mut out).unwrap();
+        }
+        let baseline = LIVE.load(Ordering::Relaxed);
+        for phase in [&oversized, &short] {
+            for chunk in phase.chunks(16 * 1024) {
+                stream.feed(chunk, &mut out).unwrap();
+                while stream.busy() {
+                    stream.drain(&mut out).unwrap();
+                }
+            }
+            let retained = LIVE.load(Ordering::Relaxed).saturating_sub(baseline);
+            assert!(
+                retained < 96 * 1024 * 8,
+                "discarded oversized record retained {retained} bytes after {} input bytes for {}",
+                phase.len(),
+                String::from_utf8_lossy(config),
+            );
+        }
+        stream.finish(&mut out).unwrap();
+        while stream.busy() {
+            stream.drain(&mut out).unwrap();
+        }
+        assert_eq!(out, expected);
+    }
+
     let data = b"a\n".repeat(32768);
     let mut stream = mirage_rs::open("rg", br#"{"pattern":"z"}"#).unwrap();
     stream.begin(b"{}").unwrap();

@@ -1,9 +1,92 @@
 use {
     grep_matcher::{ByteSet, Captures, LineMatchKind, LineTerminator, Match, Matcher, NoError},
-    regex_automata::{meta::Regex, util::captures::Captures as AutomataCaptures, Input, PatternID},
+    regex_automata::{
+        meta::Regex,
+        util::{captures::Captures as AutomataCaptures, prefilter::Prefilter},
+        Input, MatchKind, PatternID,
+    },
+    regex_syntax::hir::{
+        literal::{ExtractKind, Extractor, Seq},
+        Hir,
+    },
 };
 
 use crate::{config::Config, error::Error, literal::InnerLiterals};
+
+/// Normalized compilation shared by resumable execution and literal rejection.
+pub struct CompiledNfa {
+    /// The exact matcher, including the requested captures.
+    pub nfa: regex_automata::nfa::thompson::NFA,
+    /// Bytes that cannot occur inside a match.
+    pub non_matching_bytes: ByteSet,
+    /// Conservative UTF-8 prefixes for backend lookup.
+    pub lookup_terms: Option<(Vec<String>, bool)>,
+    /// Optional acceleration derived from the exact matcher's normalized HIR.
+    pub literal_filters: LiteralFilters,
+}
+
+/// Literal roles have different offset guarantees.
+#[derive(Default)]
+pub struct LiteralFilters {
+    /// Every match starts with one of these literals.
+    pub prefix: Option<Prefilter>,
+    /// Every match contains one of these literals, at an unspecified offset.
+    pub required: Option<Prefilter>,
+}
+
+impl LiteralFilters {
+    fn extract(hir: &Hir, kind: ExtractKind) -> Seq {
+        Extractor::new()
+            .kind(kind)
+            .limit_class(32)
+            .limit_repeat(8)
+            .limit_literal_len(64)
+            .limit_total(32)
+            .extract(hir)
+    }
+    fn strength(seq: &Seq) -> Option<(usize, std::cmp::Reverse<usize>)> {
+        let literals = seq.literals()?;
+        let shortest = literals
+            .iter()
+            .map(|literal| literal.as_bytes().len())
+            .min()?;
+        (shortest > 0 && literals.len() <= 32)
+            .then_some((shortest, std::cmp::Reverse(literals.len())))
+    }
+    fn compile(seq: &Seq, remaining: &mut usize) -> Option<Prefilter> {
+        Self::strength(seq)?;
+        let literals = seq.literals()?;
+        let bytes: usize = literals
+            .iter()
+            .map(|literal| literal.as_bytes().len())
+            .sum();
+        if bytes > *remaining {
+            return None;
+        }
+        let needles: Vec<&[u8]> = literals.iter().map(|literal| literal.as_bytes()).collect();
+        let prefilter = Prefilter::new(MatchKind::LeftmostFirst, &needles)?;
+        let memory = prefilter.memory_usage();
+        if memory > *remaining {
+            return None;
+        }
+        *remaining -= memory;
+        Some(prefilter)
+    }
+
+    fn new(hir: &Hir, limit: usize) -> Self {
+        let prefix = Self::extract(hir, ExtractKind::Prefix);
+        let suffix = Self::extract(hir, ExtractKind::Suffix);
+        let mut remaining = limit.min(64 * 1024);
+        let required = if Self::strength(&suffix) > Self::strength(&prefix) {
+            &suffix
+        } else {
+            &prefix
+        };
+        let required = Self::compile(required, &mut remaining);
+        let prefix = Self::compile(&prefix, &mut remaining);
+        Self { prefix, required }
+    }
+}
 
 /// A builder for constructing a `Matcher` using regular expressions.
 ///
@@ -88,14 +171,7 @@ impl RegexMatcherBuilder {
         &self,
         patterns: &[P],
         captures: regex_automata::nfa::thompson::WhichCaptures,
-    ) -> Result<
-        (
-            regex_automata::nfa::thompson::NFA,
-            grep_matcher::ByteSet,
-            Option<(Vec<String>, bool)>,
-        ),
-        Error,
-    > {
+    ) -> Result<CompiledNfa, Error> {
         let mut chir = self.config.build_many(patterns)?;
         let whole_word = chir.config().word || chir.config().whole_line;
         if chir.config().whole_line {
@@ -151,11 +227,16 @@ impl RegexMatcherBuilder {
                 })
             }
         };
-        Ok((
+        let literal_filters = LiteralFilters::new(
+            chir.hir(),
+            chir.config().size_limit.saturating_sub(nfa.memory_usage()),
+        );
+        Ok(CompiledNfa {
             nfa,
-            chir.non_matching_bytes(),
-            terms.map(|texts| (texts, whole_word)),
-        ))
+            non_matching_bytes: chir.non_matching_bytes(),
+            lookup_terms: terms.map(|texts| (texts, whole_word)),
+            literal_filters,
+        })
     }
 
     /// Build a new matcher from a plain alternation of literals.

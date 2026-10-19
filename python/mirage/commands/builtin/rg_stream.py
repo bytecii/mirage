@@ -153,8 +153,8 @@ async def drained(
     stream: OpenStream, output: bytes, tally: Tally, budget: YieldBudget
 ) -> AsyncIterator[bytes]:
     while True:
-        settle(stream, tally)
         if output:
+            settle(stream, tally)
             yield output
         if not stream.busy():
             return

@@ -147,8 +147,10 @@ async function* drained(
   budget: YieldBudget,
 ): AsyncGenerator<Uint8Array> {
   for (;;) {
-    settle(stream, tally)
-    if (output.byteLength > 0) yield output
+    if (output.byteLength > 0) {
+      settle(stream, tally)
+      yield output
+    }
     if (!stream.busy()) return
     await budget.run()
     output = stream.drain()

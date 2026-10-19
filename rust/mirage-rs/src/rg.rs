@@ -193,22 +193,41 @@ struct Tally {
 }
 
 #[derive(Clone)]
-struct Record {
-    data: Arc<Vec<u8>>,
+struct Record<D = Arc<Vec<u8>>, M = Arc<Matches>> {
+    data: D,
     content: Range<usize>,
     full_end: usize,
     number: u64,
     offset: u64,
     cr: bool,
     terminated: bool,
-    matches: Arc<Matches>,
+    matches: M,
     found: Range<usize>,
     matched: bool,
 }
 
-impl Record {
+type OwnedRecord = Record<Vec<u8>, Matches>;
+
+impl<D, M> Record<D, M> {
     fn hit(&self, invert: bool) -> bool {
         self.matched != invert
+    }
+}
+
+impl OwnedRecord {
+    fn share(self) -> Record {
+        Record {
+            data: Arc::new(self.data),
+            content: self.content,
+            full_end: self.full_end,
+            number: self.number,
+            offset: self.offset,
+            cr: self.cr,
+            terminated: self.terminated,
+            matches: Arc::new(self.matches),
+            found: self.found,
+            matched: self.matched,
+        }
     }
 }
 
@@ -983,11 +1002,10 @@ impl LineJob {
             return false;
         }
         if let ContextMatches::Search(search) = &mut self.context_matches {
-            let complete = search.step(program, *budget);
-            *budget = 0;
-            if !complete {
+            if !search.step(program, budget) || *budget == 0 {
                 return false;
             }
+            *budget -= 1;
             let data = search.take_haystack();
             let mut matches = search.take_matches();
             if matches.last().is_some_and(|mat| mat.start >= data.len()) {
@@ -1817,8 +1835,8 @@ struct Input {
     record: Vec<u8>,
     scan: usize,
     record_end: Option<usize>,
-    search: Option<Search>,
-    scratch: Option<Search>,
+    search: Option<Box<Search>>,
+    scratch: Option<Box<Search>>,
     selecting_cr: Option<(usize, Matches)>,
     searching_number: u64,
     searching_offset: u64,
@@ -1997,12 +2015,15 @@ impl Input {
             }
         }
     }
-    fn hold(&mut self, record: Record, config: &Config) {
+    fn hold(&mut self, record: OwnedRecord, config: &Config) -> Option<OwnedRecord> {
         if config.context() && config.context_before > 0 {
             if self.before.len() == config.context_before {
                 self.before.pop_front();
             }
-            self.before.push_back(record);
+            self.before.push_back(record.share());
+            None
+        } else {
+            Some(record)
         }
     }
     fn schedule(&mut self, record: Record, selected: bool, config: &Config) {
@@ -2014,7 +2035,7 @@ impl Input {
         }
         let _ = config;
     }
-    fn accept(&mut self, record: Record, config: &Config) {
+    fn accept(&mut self, record: OwnedRecord, config: &Config) -> Option<OwnedRecord> {
         let hit = record.hit(config.invert);
         if config.quiet || config.files_only || config.files_without_match {
             if hit {
@@ -2032,17 +2053,23 @@ impl Input {
                     self.done = true;
                 }
             }
-            return;
+            return Some(record);
         }
         if self.binary_converted && !hit && !config.count_only && !config.count_matches {
-            return;
+            return Some(record);
         }
         if !hit && self.stop_armed {
-            if !config.count_only && !config.count_matches && (config.passthru || self.after > 0) {
-                self.schedule(record, false, config);
-            }
+            let unused = if !config.count_only
+                && !config.count_matches
+                && (config.passthru || self.after > 0)
+            {
+                self.schedule(record.share(), false, config);
+                None
+            } else {
+                Some(record)
+            };
             self.done = true;
-            return;
+            return unused;
         }
         if !hit
             && config.stop_on_nonmatch
@@ -2052,11 +2079,10 @@ impl Input {
             && !self.stop_armed
         {
             self.stop_armed = true;
-            self.hold(record, config);
-            return;
+            return self.hold(record, config);
         }
         let selecting = config.max_count.is_none_or(|n| self.selected < n);
-        if hit && selecting {
+        let unused = if hit && selecting {
             self.stop_seen = true;
             if config.stop_on_nonmatch && (!config.invert || config.passthru) {
                 self.stop_armed = true;
@@ -2077,10 +2103,12 @@ impl Input {
                 } else {
                     1
                 };
+                Some(record)
             } else if self.binary_converted {
                 self.tally.binary = true;
                 self.pieces.push_back(Piece::bytes(self.notice()));
                 self.done = true;
+                Some(record)
             } else if config.context() {
                 let first = self.before.front().map_or(record.number, |r| r.number);
                 if self.last_printed.is_some_and(|last| first > last + 1) {
@@ -2091,26 +2119,31 @@ impl Input {
                     }
                 }
                 self.flush_before = std::mem::take(&mut self.before);
-                self.ready = Some(Job::Line(LineJob::new(record, true)));
+                self.ready = Some(Job::Line(LineJob::new(record.share(), true)));
                 self.after = config.context_after;
+                None
             } else {
-                self.schedule(record, true, config);
+                self.schedule(record.share(), true, config);
+                None
             }
         } else if config.passthru {
             if !selecting {
                 self.done = true;
-                return;
+                return Some(record);
             }
-            self.schedule(record, false, config);
+            self.schedule(record.share(), false, config);
+            None
         } else if self.after > 0 {
             self.after -= 1;
-            self.schedule(record, hit, config);
+            self.schedule(record.share(), hit, config);
+            None
         } else {
-            self.hold(record, config);
-        }
+            self.hold(record, config)
+        };
         if config.max_count.is_some_and(|n| self.selected >= n) && self.after == 0 {
             self.done = true;
         }
+        unused
     }
 }
 
@@ -2178,6 +2211,7 @@ impl Rg {
             .ok_or_else(|| StreamError::new("rg stream fed before begin"))
     }
     fn step(&mut self, out: &mut Vec<u8>) -> Result<(), StreamError> {
+        let initial_output = out.len();
         let config = &self.config;
         let program = &self.program;
         let input = self
@@ -2237,10 +2271,14 @@ impl Rg {
                 }
                 break;
             }
+            if out.len() > initial_output {
+                break;
+            }
             if let Some(search) = input.search.as_mut() {
-                if !search.step(program, budget) {
+                if !search.step(program, &mut budget) || budget == 0 {
                     break;
                 }
+                budget -= 1;
                 let mut search = input.search.take().unwrap();
                 let mut matches = search.take_matches();
                 let mut data = search.take_haystack();
@@ -2260,9 +2298,8 @@ impl Rg {
                     data.extend_from_slice(b"\r\n");
                     search.reset(data, false);
                     input.search = Some(search);
-                    break;
+                    continue;
                 }
-                input.scratch = Some(search);
                 if config.multiline {
                     input.multi = Some(Multi::new(data, matches));
                 } else {
@@ -2284,21 +2321,34 @@ impl Rg {
                     }
                     let count = matches.len();
                     let full_end = data.len();
-                    let record = Record {
-                        data: Arc::new(data),
+                    let record = OwnedRecord {
+                        data,
                         content: 0..content,
                         full_end,
                         number: input.searching_number,
                         offset: input.searching_offset,
                         cr: input.searching_cr,
                         terminated: input.searching_terminated,
-                        matches: Arc::new(matches),
+                        matches,
                         found: 0..count,
                         matched,
                     };
-                    input.accept(record, config);
+                    if let Some(Record {
+                        mut data, matches, ..
+                    }) = input.accept(record, config)
+                    {
+                        debug_assert!(input.record.is_empty());
+                        data.clear();
+                        if data.capacity() <= INPUT_LIMIT
+                            && data.capacity() > input.record.capacity()
+                        {
+                            input.record = data;
+                        }
+                        search.recycle_matches(matches, INPUT_LIMIT);
+                    }
                 }
-                break;
+                input.scratch = Some(search);
+                continue;
             }
             if let Some(multi) = input.multi.as_mut() {
                 if !multi.prepare(config, &mut budget) {
@@ -2467,22 +2517,23 @@ impl Rg {
                 if input.finishing {
                     let data = input.pending.take();
                     input.tally.searched = data.len() as u64;
-                    input.search = Some(program.start(data, true));
+                    input.search = Some(Box::new(program.start(data, true)));
                     continue;
                 }
                 break;
             }
             if input.record_end.is_none() {
                 let end = input.pending.len().min(input.scan.saturating_add(budget));
-                while input.scan < end {
-                    let at = input.scan;
-                    input.scan += 1;
-                    budget -= 1;
-                    if input.pending[at] == config.terminator() {
-                        input.record_end = Some(at);
-                        break;
-                    }
-                }
+                let scanned = if let Some(at) =
+                    memchr::memchr(config.terminator(), &input.pending[input.scan..end])
+                {
+                    input.record_end = Some(input.scan + at);
+                    at + 1
+                } else {
+                    end - input.scan
+                };
+                input.scan += scanned;
+                budget -= scanned;
             }
             let terminated = input.record_end.is_some();
             if !terminated
@@ -2539,7 +2590,7 @@ impl Rg {
                 scratch.reset(data, all);
                 scratch
             } else {
-                program.start(data, all)
+                Box::new(program.start(data, all))
             });
         }
         Ok(())
@@ -2838,9 +2889,189 @@ mod tests {
         assert_eq!(tally["matches"], 1);
     }
 
+    #[test]
+    fn record_delimiters_preserve_offsets_at_work_boundaries() {
+        for terminator in [b'\n', 0] {
+            for len in [
+                WORK - 1,
+                WORK,
+                WORK + 1,
+                WORK * 2 - 1,
+                WORK * 2,
+                WORK * 2 + 1,
+            ] {
+                let data = [
+                    vec![b'x'; len],
+                    vec![terminator, terminator],
+                    b"needle".to_vec(),
+                    vec![terminator],
+                    b"needle\r".to_vec(),
+                ]
+                .concat();
+                let (out, tally, _) = run(
+                    &data,
+                    json!({
+                        "pattern":"needle", "fixed_string":true, "line_numbers":true,
+                        "byte_offsets":true, "stats":true, "null_data":terminator == 0,
+                        "ban_nul":false,
+                    }),
+                );
+                let expected = [
+                    format!("3:{}:needle", len + 2).into_bytes(),
+                    vec![terminator],
+                    format!("4:{}:needle\r", len + 9).into_bytes(),
+                    vec![terminator],
+                ]
+                .concat();
+                assert_eq!(out, expected, "terminator={terminator}, len={len}");
+                assert_eq!(tally["searched"], data.len());
+                assert_eq!(tally["matched_lines"], 2);
+                assert_eq!(tally["matches"], 2);
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_record_retention_preserves_acceptance_modes_and_tallies() {
+        let data = b"z\naa\nz\na\nz\nz\na\nz\n";
+        for (mut config, expected, lines, matches) in [
+            (json!({}), b"aa\na\na\n".as_slice(), 3, 4),
+            (json!({"quiet":true}), b"".as_slice(), 3, 4),
+            (json!({"files_only":true}), b"<stdin>\n".as_slice(), 3, 4),
+            (json!({"files_without_match":true}), b"".as_slice(), 3, 4),
+            (json!({"count_only":true}), b"3\n".as_slice(), 3, 4),
+            (json!({"count_matches":true}), b"4\n".as_slice(), 3, 4),
+            (
+                json!({"count_only":true,"invert":true}),
+                b"5\n".as_slice(),
+                5,
+                0,
+            ),
+            (json!({"passthru":true}), data.as_slice(), 3, 4),
+            (
+                json!({"context_before":1,"context_after":1}),
+                data.as_slice(),
+                3,
+                4,
+            ),
+            (
+                json!({"context_after":2,"max_count":1}),
+                b"aa\nz\na\n".as_slice(),
+                1,
+                2,
+            ),
+            (
+                json!({"count_only":true,"max_count":1}),
+                b"1\n".as_slice(),
+                1,
+                2,
+            ),
+            (json!({"max_count":1}), b"aa\n".as_slice(), 1, 2),
+            (json!({"quiet":true,"max_count":1}), b"".as_slice(), 1, 2),
+            (json!({"stop_on_nonmatch":true}), b"aa\n".as_slice(), 1, 2),
+            (
+                json!({"stop_on_nonmatch":true,"passthru":true}),
+                b"z\naa\nz\n".as_slice(),
+                1,
+                2,
+            ),
+            (
+                json!({"stop_on_nonmatch":true,"invert":true}),
+                b"z\nz\n".as_slice(),
+                2,
+                0,
+            ),
+        ] {
+            config["pattern"] = json!("a");
+            config["stats"] = json!(true);
+            let (out, tally, _) = run(data, config.clone());
+            assert_eq!(out, expected, "{config}");
+            assert_eq!(tally["selected"], true, "{config}");
+            assert_eq!(tally["matched_lines"], lines, "{config}");
+            assert_eq!(tally["matches"], matches, "{config}");
+        }
+    }
+
+    #[test]
+    fn retained_context_keeps_bytes_and_captures_while_unused_records_recycle() {
+        let data = b"before\na1\nunused\nunused\nunused\na2\ntail\n".repeat(100);
+        let (out, tally, _) = run(
+            &data,
+            json!({"pattern":"a([12])$","replace":"<$1>","context_before":1,"context_after":1,"stats":true}),
+        );
+        let group = b"before\n<1>\nunused\n--\nunused\n<2>\ntail\n";
+        let expected = (0..100)
+            .flat_map(|_| group.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(out, expected);
+        assert_eq!(tally["matched_lines"], 200);
+        assert_eq!(tally["matches"], 200);
+        assert_eq!(tally["searched"], data.len());
+    }
+
+    #[test]
+    fn record_completion_reuses_remaining_poll_allowance() {
+        let data = b"event=42 status=ok\n".repeat(10_000);
+        let (out, tally, calls) = run(
+            &data,
+            json!({"pattern":"event=[0-9]+.*status=fail", "count_only":true, "stats":true}),
+        );
+        assert!(out.is_empty());
+        assert_eq!(tally["searched"], data.len());
+        assert_eq!(tally["matched_lines"], 0);
+        assert!(calls < 100, "short negative records needed {calls} drains");
+    }
+
+    #[test]
+    fn dense_literal_matches_share_poll_allowance() {
+        let data = [vec![b'a'; 64 * 1024], b"\n".to_vec()].concat();
+        for pattern in ["a", "abcdef|a"] {
+            let (out, tally, calls) = run(
+                &data,
+                json!({"pattern":pattern,"count_matches":true,"stats":true}),
+            );
+            assert_eq!(out, b"65536\n", "{pattern}");
+            assert_eq!(tally["matched_lines"], 1, "{pattern}");
+            assert_eq!(tally["matches"], 65_536, "{pattern}");
+            assert_eq!(tally["searched"], data.len(), "{pattern}");
+            assert!(calls < 2_000, "{pattern} needed {calls} drains");
+        }
+    }
+
+    #[test]
+    fn ready_output_does_not_start_an_unrelated_record_search() {
+        use crate::Stream;
+        let mut stream = super::Rg {
+            config: super::Config::default(),
+            program: super::Program::with_options(
+                &["needle".to_owned()],
+                crate::rg_matcher::Options::default(),
+            )
+            .unwrap(),
+            input: None,
+        };
+        stream.begin(b"{}").unwrap();
+        let data = [b"needle\n".to_vec(), vec![b'x'; 64 * 1024], b"\n".to_vec()].concat();
+        let mut out = Vec::new();
+        stream.feed(&data, &mut out).unwrap();
+        while out.is_empty() {
+            stream.drain(&mut out).unwrap();
+        }
+        assert_eq!(out, b"needle\n");
+        let input = stream.input.as_ref().unwrap();
+        assert!(input.search.is_none());
+        assert!(input.searching_number <= 1);
+        assert!(stream.busy());
+        stream.finish(&mut out).unwrap();
+        while stream.busy() {
+            stream.drain(&mut out).unwrap();
+        }
+        assert_eq!(out, b"needle\n");
+    }
+
     fn matched_record(data: Vec<u8>, program: &super::Program) -> super::Record {
         let mut search = program.start(data, true);
-        while !search.step(program, 17) {}
+        while !search.step(program, &mut 17) {}
         let matches = std::sync::Arc::new(search.take_matches());
         let data = std::sync::Arc::new(search.take_haystack());
         super::Record {
