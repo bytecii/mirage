@@ -2,7 +2,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 
-from mirage.cache.context import active_cache_manager
 from mirage.commands.builtin.find_parse import (
     parse_depth,
     parse_find_expression,
@@ -279,15 +278,6 @@ async def resolve_start(
         return StartPoint(walk=False, results=[], missing=True, detail=detail)
     if start is None:
         return await _missing_start_detail(search, stat)
-    manager = active_cache_manager()
-    if (
-        start.type is FileType.FILE
-        and start.size is None
-        and manager is not None
-    ):
-        cached_size = await manager.cached_size(search)
-        if cached_size is not None:
-            start = start.model_copy(update={"size": cached_size})
     if start.type == FileType.DIRECTORY:
         return StartPoint(walk=True, results=[], stat=start)
     # POSIX reads `x/` as `x/.`, so an operand typed with a trailing

@@ -39,6 +39,7 @@ from mirage.commands.builtin.utils.limit import run_with_timeout
 from mirage.commands.builtin.utils.paths import (
     dot_refusal,
     hidden_walk,
+    read_hit_a_dir,
     walk_spelling,
 )
 from mirage.context import (
@@ -141,6 +142,7 @@ from mirage.workspace.dispatcher.constants import (
     NO_FOLLOW_OPS,
     POLICY_WRITE_OPS,
     READ_AHEAD_BYTES,
+    READ_STAND_IN_OPS,
     SERIAL_WRITE_OPS,
     SETATTR_KEYS,
     STAMP_WRITE_OPS,
@@ -166,10 +168,9 @@ async def _sized(mount: MountEntry, path: PathSpec, row: Any) -> Any:
     named none.
 
     An API mount cannot size a file without fetching it, so once a read
-    kept its bytes, their length is the size. The backfill command stats
-    already make (``generic_bind``), here once for every caller of the
-    dispatcher (``ws.vfs``, FUSE, a runtime's ``os.stat``). The length
-    alone, read without revalidating: it serves no content.
+    kept its bytes, their length is the size, for every caller of the
+    dispatcher (a command, ``ws.vfs``, FUSE, a runtime's ``os.stat``). The
+    length alone, read without revalidating: it serves no content.
 
     Args:
         mount (MountEntry): the mount that answered the stat.
@@ -669,6 +670,8 @@ class _Call:
         stream (bool): whether a read is answered as it is pulled.
         direct (bool): whether a read skips the file cache, neither
             served from it nor kept in it.
+        warm (bool): whether a read is answered from the file cache
+            alone: the copy it holds, else None, never the backend.
         fresh (bool): whether a stat asks the backend past the mount's
             index, through a throwaway store as a ``read: fresh`` probe
             does, with the index's rows only as hints, and reconciles the
@@ -692,6 +695,7 @@ class _Call:
     write: bool
     stream: bool = False
     direct: bool = False
+    warm: bool = False
     fresh: bool = False
     walked: PathSpec | None = None
 
@@ -901,11 +905,139 @@ class Dispatcher:
         """
         token = bind_caller(dataclasses.replace(caller, rule_gate=None))
         try:
+            if name == "read" and not kwargs.get("warm"):
+                return await self._read_refusing_dirs(
+                    path, caller, report, kwargs
+                )
             return await self._dispatch(
                 name, path, caller, report=report, **kwargs
             )
         finally:
             reset_caller(token)
+
+    async def _read_refusing_dirs(
+        self,
+        path: PathSpec,
+        caller: Caller,
+        report: OpReport | None,
+        kwargs: dict[str, Any],
+    ) -> tuple[Any, IOResult]:
+        """A read that refuses a directory with GNU's EISDIR, at the path
+        it was handed.
+
+        A store answers a read of a directory in its own voice: ENOENT
+        from a keyed store, whose directory is a set of keys rather than
+        an object, an opaque error from sftp, no bytes from some drivers.
+        So a read that fails or answers no bytes asks whether its path is
+        a directory (``read_hit_a_dir``), and any other answer stands. A
+        stream is judged as it is pulled; a live pipe is no directory.
+
+        Args:
+            path (PathSpec): the path as the caller named it.
+            caller (Caller): who makes the read.
+            report (OpReport | None): the caller's report.
+            kwargs (dict[str, Any]): the read's own arguments.
+        """
+        try:
+            data, io = await self._dispatch(
+                "read", path, caller, report=report, **kwargs
+            )
+        except Exception as exc:
+            if await self._read_hit_a_dir(path, caller, exc):
+                raise eisdir(path) from None
+            raise
+        if isinstance(data, PipeStream):
+            return data, io
+        if hasattr(data, "__aiter__"):
+            drained = self._drain_refusing_dirs(path, caller, data)
+            await anext(drained)
+            return drained, io
+        if not data and await self._read_hit_a_dir(path, caller, None):
+            raise eisdir(path)
+        return data, io
+
+    async def _drain_refusing_dirs(
+        self, path: PathSpec, caller: Caller, source: AsyncIterator[bytes]
+    ) -> AsyncIterator[bytes]:
+        """A streamed read that refuses a directory once it fails or
+        ends with no bytes.
+
+        Run to its empty first step before it is handed on, as
+        ``_primed`` runs a stream, so a caller that closes it before
+        pulling still closes the read.
+
+        Args:
+            path (PathSpec): the path as the caller named it.
+            caller (Caller): who makes the read.
+            source (AsyncIterator[bytes]): the read's stream.
+        """
+        empty = True
+        try:
+            yield b""
+            async for chunk in source:
+                empty = empty and not chunk
+                yield chunk
+        except Exception as exc:
+            if await self._read_hit_a_dir(path, caller, exc):
+                raise eisdir(path) from None
+            raise
+        finally:
+            await close_quietly(source)
+        if empty and await self._read_hit_a_dir(path, caller, None):
+            raise eisdir(path)
+
+    async def _read_hit_a_dir(
+        self, path: PathSpec, caller: Caller, exc: BaseException | None
+    ) -> bool:
+        """Whether a read of ``path`` that failed or answered no bytes
+        reached a directory, probed as the caller.
+
+        The probes are the dispatcher's own, no call of the command's, so
+        its path rules do not judge them. A policy's refusal is the
+        dispatcher's own answer rather than a store's, so it stands, and a
+        dry run asks the gates only, so it probes nothing.
+
+        Args:
+            path (PathSpec): the path as the caller named it.
+            caller (Caller): who made the read.
+            exc (BaseException | None): the failure, None for no bytes.
+        """
+        if caller.explaining is not None or isinstance(
+            exc, (PolicyDenied, PolicyError)
+        ):
+            return False
+        prober = dataclasses.replace(caller, rule_gate=None)
+        return await read_hit_a_dir(
+            functools.partial(self._lstat, prober),
+            functools.partial(self._listing, prober),
+            path,
+            exc,
+        )
+
+    async def _lstat(self, caller: Caller, path: PathSpec) -> FileStat:
+        """The entry at ``path`` itself, as lstat answers; raises when
+        nothing is there.
+
+        Args:
+            caller (Caller): who asks.
+            path (PathSpec): the path.
+        """
+        row, _ = await self.dispatch(
+            "stat", path, caller=caller, nofollow=True
+        )
+        if not isinstance(row, FileStat):
+            raise enoent(path)
+        return row
+
+    async def _listing(self, caller: Caller, path: PathSpec) -> list[str]:
+        """The entries of the directory at ``path``.
+
+        Args:
+            caller (Caller): who asks.
+            path (PathSpec): the directory.
+        """
+        entries, _ = await self.dispatch("readdir", path, caller=caller)
+        return list(entries)
 
     async def _dispatch(
         self,
@@ -918,23 +1050,27 @@ class Dispatcher:
         **kwargs: Any,
     ) -> tuple[Any, IOResult]:
         # The dispatcher's own keywords: a read answered as it is pulled, a
-        # read of what the backend holds now, past the file cache, and a
-        # stat of what it holds now, past the mount's index.
+        # read of what the backend holds now, past the file cache, a read
+        # of what the file cache alone holds, and a stat of what the
+        # backend holds now, past the mount's index.
         admit_only = name in {"write", "stat"} and bool(
             kwargs.pop("admit_only", False)
         )
+        stream = name == "read" and bool(kwargs.pop("stream", False))
+        direct = name == "read" and bool(kwargs.pop("direct", False))
+        warm = name == "read" and bool(kwargs.pop("warm", False))
+        fresh = name == "stat" and bool(kwargs.pop("fresh", False))
         # The command's gate judges its own calls; a metadata call passes,
         # as its guards let stat pass, unless it only asks admission, and a
-        # scan guard reads nothing: the rule judges each read it guards.
+        # scan guard reads nothing: the rule judges each read it guards. A
+        # warm read is judged once the file cache is found to hold a copy.
         rule_gate = (
             None
             if (name in METADATA_OPS and not admit_only)
             or name == "before_full_scan"
+            or warm
             else caller.rule_gate
         )
-        stream = name == "read" and bool(kwargs.pop("stream", False))
-        direct = name == "read" and bool(kwargs.pop("direct", False))
-        fresh = name == "stat" and bool(kwargs.pop("fresh", False))
         if name == "read_many":
             await self._read_many([path, *kwargs.pop("paths", ())], caller)
             return None, IOResult()
@@ -955,6 +1091,7 @@ class Dispatcher:
         )
         call.stream = stream
         call.direct = direct
+        call.warm = warm
         call.fresh = fresh
         await self._refuse_rename(call)
         if report is not None:
@@ -1001,6 +1138,19 @@ class Dispatcher:
             mount is None or not mount.vfs.supports(name)
         ):
             return None, IOResult()
+        # The cache stage answers first where the file cache decides: a
+        # call standing in for a read gives way to the read for a file it
+        # holds, and a warm read of a file it holds no copy of answers
+        # None. Neither has anything to judge; the read is judged.
+        if name in READ_STAND_IN_OPS and await self._held(call, mount):
+            _memory_answered(report)
+            return None, IOResult()
+        if warm:
+            if not await self._held(call, mount):
+                _memory_answered(report)
+                return None, IOResult()
+            if caller.rule_gate is not None:
+                _judge(caller.rule_gate, call.typed, call.walked, call.path)
         if mount is None:
             return (
                 self._on_device(
@@ -1054,7 +1204,7 @@ class Dispatcher:
             return None, IOResult()
         await mount.ensure_ready()
         served = await self._serve_cached(call, mount, boundary, mark)
-        if served is not None:
+        if served is not None or warm:
             return served, IOResult()
         settles = (
             name in DISPATCH_WRITE_OPS
@@ -1364,9 +1514,15 @@ class Dispatcher:
         # every name in front of one has to be a directory: `virtual`
         # simplified the dots away and reaches `f` through a missing
         # `nope/..`, the typed spelling (`dotted`) does not. A trailing
-        # slash is part of that spelling: `x/` must be a directory, so a
-        # create of one is EISDIR before anything is looked up.
-        if name in FILE_CREATE_OPS and (path.dotted or "").endswith("/"):
+        # slash is part of that spelling: `x/` (or `x/./`, as typed) must
+        # be a directory, so a create of one is EISDIR before anything is
+        # looked up, as GNU tee and truncate answer `missing/`. Deliberate
+        # divergence: under a parent that is itself absent GNU reports
+        # the parent first (ENOENT); the spelling is refused here without
+        # a round trip, so that corner reads EISDIR too.
+        if name in FILE_CREATE_OPS and (
+            (path.dotted or "").endswith("/") or path.raw_path.endswith("/")
+        ):
             raise eisdir(path)
         follow = self._namespace.follow
         visible = functools.partial(path_visible, vis)
@@ -1735,6 +1891,20 @@ class Dispatcher:
         ):
             raise enotempty(call.path.virtual)
         return boundary
+
+    async def _held(self, call: _Call, mount: MountEntry | None) -> bool:
+        """Whether the file cache holds a copy of the call's path.
+
+        Asked of the store without fetching the bytes or checking the
+        copy against the backend: a read of a held file is checked as it
+        is served.
+
+        Args:
+            call (_Call): the followed op.
+            mount (MountEntry | None): the mount serving its path.
+        """
+        manager = mount.cache_manager if mount is not None else None
+        return manager is not None and await manager.is_cached(call.path)
 
     async def _serve_cached(
         self,

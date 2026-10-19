@@ -16,7 +16,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
-from mirage.cache.context import active_cache_manager
 from mirage.commands.builtin.generic.grep import (
     directories_action,
 )
@@ -364,15 +363,15 @@ async def search_reads(
     the output shows nothing else, or tells whether it is worth reading.
     An operand named on the line is never ruled out by a search asked
     about directories, nor is a path pinned to a revision, since a
-    search sees the current content, nor a file the read cache holds,
-    which a read serves as it was cached, nor a path a link leads
-    elsewhere, which the mount's search never sees. Both are asked
-    through the dispatcher, which drops what the session hides from a
-    ``files_containing`` answer, judges ``lines_containing`` as a read of
-    its file, and answers None where a path rule or a pre_vfs policy
-    reaches below a directory, so every file is read and judged. When
-    neither can stand in for a walk, the mount's ``before_full_scan`` may
-    refuse it.
+    search sees the current content, nor a file the read cache holds
+    (``read_warm``), which a read serves as it was cached, nor a path a
+    link leads elsewhere, which the mount's search never sees. Both are
+    asked through the dispatcher, which drops what the session hides
+    from a ``files_containing`` answer, judges ``lines_containing`` as a
+    read of its file, and answers None where a path rule or a pre_vfs
+    policy reaches below a directory, so every file is read and judged.
+    When neither can stand in for a walk, the mount's
+    ``before_full_scan`` may refuse it.
 
     Args:
         files (CommandFiles): the command's files.
@@ -463,12 +462,9 @@ async def search_reads(
                 raise
 
     async def narrowed(path: PathSpec) -> ByteSource | None:
-        manager = active_cache_manager()
-        if manager is not None and await manager.is_cached(path):
-            return None
         if _linked(links, path.virtual):
             return None
-        if (
+        ruled_out = (
             hits is not None
             and path.virtual not in named
             and revision_for(path.virtual) is None
@@ -481,9 +477,10 @@ async def search_reads(
                 searchable is None
                 or any(glob_prefix_match(path.vfs_path, g) for g in searchable)
             )
-        ):
-            return b""
-        if lines is None:
+        )
+        if ruled_out:
+            return None if await files.read_warm(path) is not None else b""
+        if lines is None or await files.read_warm(path) is not None:
             return None
         if terms.line_output and len(terms.texts) == 1:
             found: ByteSource | None = await lines(

@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
 import posixpath
 from collections.abc import Callable
 from dataclasses import replace
@@ -20,9 +21,16 @@ from functools import partial
 from mirage.errors.constants import MISS_ERRORS
 from mirage.errors.fs import dot_walk_error, eexist, eloop, enoent
 from mirage.errors.render import operand_spelling
-from mirage.errors.types import DotWalkLoop, FsCondition
+from mirage.errors.types import DotWalkError, DotWalkLoop, FsCondition
 from mirage.runtime.types import DispatchFn
-from mirage.types import LINK_TARGET_KEY, FileStat, FileType, PathSpec, StatFn
+from mirage.types import (
+    LINK_TARGET_KEY,
+    FileStat,
+    FileType,
+    PathSpec,
+    ReaddirFn,
+    StatFn,
+)
 from mirage.utils.key_prefix import rekey
 from mirage.utils.path import (
     CycleError,
@@ -34,6 +42,8 @@ from mirage.utils.path import (
 )
 from mirage.view.types import LinkView, ReaddirPath, StatPath
 from mirage.workspace.files import Files
+
+logger = logging.getLogger(__name__)
 
 # What an existence probe reads as nothing there: every miss, and a link
 # loop, which the walk reaches nothing through.
@@ -263,6 +273,107 @@ async def nearest_ancestor(stat: StatFn, path: PathSpec) -> tuple[str, bool]:
             return node, is_dir
         node = parent(node)
     return "/", True
+
+
+async def is_implicit_dir(readdir: ReaddirFn, path: PathSpec) -> bool:
+    """Whether a path that failed stat with ENOENT is an implicit directory.
+
+    Keyed backends (RAM/Redis/S3) have no directory entries: stat of a
+    prefix that only exists through deeper keys raises ENOENT. The operand's
+    own readdir cannot serve as the probe: synthetic hierarchies fabricate
+    children for any name (postgres answers ``tables/views`` for a missing
+    schema) and database backends raise driver errors for missing tables.
+    The parent listing is authoritative instead: the operand is an implicit
+    directory only if its parent's readdir lists it. When the operand is
+    the mount root there is no parent to list, so its own readdir decides
+    (root listings are real in every backend). A listing that misses is a
+    negative probe (the original ENOENT stands); any other failure
+    propagates.
+
+    Args:
+        readdir (ReaddirFn): the caller's listing.
+        path (PathSpec): The operand whose stat raised ENOENT.
+    """
+    target = norm(path.virtual)
+    key = path.vfs_path.strip("/")
+    if not key:
+        try:
+            entries = await readdir(path)
+        except MISS_ERRORS:
+            return False
+        return bool(entries)
+    parent_key = key.rsplit("/", 1)[0] if "/" in key else ""
+    parent_virtual = parent(target)
+    parent_path = PathSpec(
+        virtual=parent_virtual, directory=parent_virtual, vfs_path=parent_key
+    )
+    try:
+        entries = await readdir(parent_path)
+    except MISS_ERRORS:
+        return False
+    return any(norm(entry) == target for entry in entries)
+
+
+async def read_hit_a_dir(
+    stat: StatFn,
+    readdir: ReaddirFn,
+    path: PathSpec,
+    exc: BaseException | None,
+) -> bool:
+    """Whether a failed or empty read was a read of a directory.
+
+    Asked after a failure or EOF without bytes: some drivers report an
+    empty stream for directories. Nonempty reads need no extra probe.
+    One that knows says so (gdrive, box, dropbox and disk raise
+    IsADirectoryError), a keyed store answers ENOENT because a directory
+    there is a set of keys rather than an object, and sftp answers with
+    an opaque non-OSError.
+
+    Three ways the answer can be yes, in probe-cost order. The errno
+    itself costs nothing. The stat is one call, and a stat that ANSWERS
+    ends the cascade either way: a file is a file, and the later probe
+    only makes sense for a path stat could not see. Reaching past a
+    successful stat read a rule-refused file as a directory, because its
+    parent's listing names it. The parent listing is one call and is the
+    only thing that can tell a missing key from a prefix that exists only
+    through deeper keys.
+
+    A no leaves the original error untouched, so nothing is swallowed:
+    the caller re-raises what the backend said. Both probes are broad for
+    that same reason: a probe that fails is a negative probe, never an
+    error to surface. Surfacing one would replace the read's error with
+    one from a call the user never made, and it is the read that failed.
+    ``is_implicit_dir`` narrows to MISS_ERRORS because for its other
+    caller the stat IS the operation; here it is a probe, so the wider
+    catch belongs on this side of the call, and each failure it absorbs
+    is logged.
+
+    Args:
+        stat (StatFn): the entry at a path itself, as lstat answers;
+            raises when nothing is there.
+        readdir (ReaddirFn): the caller's listing.
+        path (PathSpec): the path whose read failed.
+        exc (BaseException | None): the failure, or None for an empty read.
+    """
+    if isinstance(exc, IsADirectoryError):
+        return True
+    if isinstance(exc, DotWalkError):
+        # The path did not resolve at all, which no reading turns into a
+        # directory; its parent may well list the name it simplifies to.
+        return False
+    try:
+        st: FileStat | None = await stat(path)
+    except Exception as probe:
+        logger.debug("read probe: stat %s failed: %s", path.virtual, probe)
+        st = None
+    if st is not None:
+        return st.type == FileType.DIRECTORY
+    try:
+        if await is_implicit_dir(readdir, path):
+            return True
+    except Exception as probe:
+        logger.debug("read probe: listing %s failed: %s", path.virtual, probe)
+    return False
 
 
 async def absent_dest_error(

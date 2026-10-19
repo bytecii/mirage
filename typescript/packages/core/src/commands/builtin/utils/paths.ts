@@ -16,7 +16,14 @@ import type { LinkView, ReaddirPath, StatPath } from '../../../view/types.ts'
 import type { Files } from '../../../workspace/files.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
 import { FileStat, FileType, LINK_TARGET_KEY, PathSpec, type StatFn } from '../../../types.ts'
-import { dotWalkError, eexist, enoent, isMissError, isMissingPath } from '../../../errors/fs.ts'
+import {
+  dotWalkError,
+  eexist,
+  enoent,
+  isDotWalkError,
+  isMissError,
+  isMissingPath,
+} from '../../../errors/fs.ts'
 import { operandSpelling } from '../../../errors/render.ts'
 import { type FsError } from '../../../errors/types.ts'
 import { mountKey, rekey, respelled } from '../../../utils/key_prefix.ts'
@@ -29,7 +36,7 @@ import {
   parent,
   resolvePath,
 } from '../../../utils/path.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import type { FsCondition } from '../../../errors/types.ts'
 
 // What a path is, asked on both channels a backend can answer on.
@@ -174,6 +181,102 @@ export async function nearestAncestor(stat: StatFn, path: PathSpec): Promise<[st
     node = parent(node)
   }
   return ['/', true]
+}
+
+// Whether a path that failed with ENOENT is an implicit directory. Keyed
+// backends (RAM/Redis/S3) have no directory entries: stat/read of a prefix
+// that only exists through deeper keys raises ENOENT. The operand's own
+// readdir cannot serve as the probe: synthetic hierarchies fabricate
+// children for any name (postgres answers tables/views for a missing
+// schema) and database backends raise driver errors for missing tables.
+// The parent listing is authoritative instead: the operand is an implicit
+// directory only if its parent's readdir lists it. When the operand is the
+// mount root there is no parent to list, so its own readdir decides (root
+// listings are real in every backend). A listing that misses is a negative
+// probe (the original ENOENT stands); any other failure propagates, as
+// Python's MISS_ERRORS catch lets it. Mirrors Python's `is_implicit_dir`.
+export async function isImplicitDir(
+  readdir: (path: PathSpec) => Promise<string[]>,
+  path: PathSpec,
+): Promise<boolean> {
+  const target = norm(path.virtual)
+  const key = stripSlash(path.vfsPath)
+  if (!key) {
+    try {
+      const entries = await readdir(path)
+      return entries.length > 0
+    } catch (err) {
+      if (!isMissError(err) && !isMissingPath(err)) throw err
+      return false
+    }
+  }
+  const parentKey = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : ''
+  const parentVirtual = parent(target)
+  const parentPath = new PathSpec({
+    virtual: parentVirtual,
+    directory: parentVirtual,
+    vfsPath: parentKey,
+  })
+  try {
+    const entries = await readdir(parentPath)
+    return entries.some((entry) => norm(entry) === target)
+  } catch (err) {
+    if (!isMissError(err) && !isMissingPath(err)) throw err
+    return false
+  }
+}
+
+/**
+ * Whether a failed or empty read was a read of a directory.
+ *
+ * Asked after failure or EOF without bytes: some drivers return an empty
+ * stream for directories. Nonempty reads need no extra probe. One that knows
+ * says so (gdrive, box, dropbox and disk throw EISDIR), a keyed store answers
+ * ENOENT because a directory there is a set of keys rather than an object,
+ * and sftp answers with an error carrying no errno at all.
+ *
+ * Three ways the answer can be yes, in probe-cost order. The code itself
+ * costs nothing. The stat is one call, and a stat that ANSWERS ends the
+ * cascade either way: a file is a file, and the later probe only makes
+ * sense for a path stat could not see. Reaching past a successful stat
+ * read a rule-refused file as a directory, because its parent's listing
+ * names it. The parent listing is one call and is the only thing that can
+ * tell a missing key from a prefix that exists only through deeper keys.
+ *
+ * A no leaves the original error untouched, so nothing is swallowed: the
+ * caller rethrows what the backend said. Both probes are broad for that
+ * same reason: a probe that fails is a negative probe, never an error to
+ * surface. Surfacing one would replace the read's error with one from a
+ * call the user never made, and it is the read that failed.
+ * `isImplicitDir` narrows to a miss because for its other caller the stat
+ * IS the operation; here it is a probe, so the wider catch belongs on this
+ * side of the call, and each failure it absorbs is logged. Mirrors Python's
+ * `read_hit_a_dir`.
+ */
+export async function readHitADir(
+  stat: (path: PathSpec) => Promise<FileStat>,
+  readdir: (path: PathSpec) => Promise<string[]>,
+  path: PathSpec,
+  err: unknown,
+): Promise<boolean> {
+  if ((err as { code?: string } | null)?.code === 'EISDIR') return true
+  // The path did not resolve at all, which no reading turns into a
+  // directory; its parent may well list the name it simplifies to.
+  if (isDotWalkError(err)) return false
+  let st: FileStat | null = null
+  try {
+    st = await stat(path)
+  } catch (probe) {
+    console.debug(`read probe: stat ${path.virtual} failed: ${String(probe)}`)
+    st = null
+  }
+  if (st !== null) return st.type === FileType.DIRECTORY
+  try {
+    if (await isImplicitDir(readdir, path)) return true
+  } catch (probe) {
+    console.debug(`read probe: listing ${path.virtual} failed: ${String(probe)}`)
+  }
+  return false
 }
 
 // The condition a create at an absent path meets in its parent chain: null

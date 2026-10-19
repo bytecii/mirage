@@ -84,15 +84,9 @@ def _bind(
     vfs: str | None,
     stream: Callable[[Context, PathSpec], AsyncIterator[bytes] | None] | None,
 ) -> Command:
-    # The builder reads its files under the command tier's guards: what it
-    # reads, cut into pieces unless it passes its input through, and a
-    # stat's unknown size filled from the read cache unless it only
-    # writes.
-    reading = Reading(
-        split=not builder.pass_through,
-        cached_sizes=not builder.write or builder.read,
-        stream=stream,
-    )
+    # What the builder reads is cut into pieces unless it passes its input
+    # through.
+    reading = Reading(split=not builder.pass_through, stream=stream)
     bound = functools.partial(_run_builder, builder, reading)
     (registered,) = registered_commands(
         [

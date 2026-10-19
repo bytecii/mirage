@@ -12,8 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { activeCacheManager } from '../../../cache/context.ts'
-
 import { closeQuietly, ensureStream } from '../../../io/stream.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { byteView, utf8Locale } from '../../../shell/bytes.ts'
@@ -296,8 +294,9 @@ async function fullScan(
  * is worth reading. An operand
  * named on the line is never ruled out by a search asked about directories,
  * nor is a path pinned to a revision, since a search sees the current content,
- * nor a file the read cache holds, which a read serves as it was cached, nor a
- * path a link leads elsewhere, which the mount's search never sees.
+ * nor a file the read cache holds (`readWarm`), which a read serves as it was
+ * cached, nor a path a link leads elsewhere, which the mount's search never
+ * sees.
  * Both are asked through the dispatcher, which drops what the session hides
  * from a `filesContaining` answer, judges `linesContaining` as a read of its
  * file, and answers null where a path rule or a preVfs policy reaches below a
@@ -379,20 +378,16 @@ export async function searchReads(
     return scan
   }
   const narrowed = async (path: PathSpec): Promise<ByteSource | null> => {
-    const manager = activeCacheManager()
-    if (manager !== null && (await manager.isCached(path))) return null
     if (linked(links, path.virtual)) return null
-    if (
+    const ruledOut =
       found !== null &&
       !named.has(path.virtual) &&
       revisionFor(path.virtual) === null &&
       !(asked.readsBinary && BINARY_EXTENSIONS.has(getExtension(path.virtual) ?? '')) &&
       !found.has(path.vfsPath.toLowerCase()) &&
       (searchable === null || searchable.some((glob) => globPrefixMatch(path.vfsPath, glob)))
-    ) {
-      return new Uint8Array(0)
-    }
-    if (lines === undefined) return null
+    if (ruledOut) return (await files.readWarm(path)) !== null ? null : new Uint8Array(0)
+    if (lines === undefined || (await files.readWarm(path)) !== null) return null
     const ignoreCase = { ignoreCase: asked.ignoreCase }
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {

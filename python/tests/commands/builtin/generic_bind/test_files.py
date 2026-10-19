@@ -47,14 +47,10 @@ class Backend:
     stored: dict[str, bytes] = field(default_factory=dict)
     implicit: set[str] = field(default_factory=set)
     explicit: set[str] = field(default_factory=set)
-    read_error: Any = FileNotFoundError
-    probe_error: Any = None
     listing: Any = None
     calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
 
     def _stat(self, at: str) -> FileStat:
-        if self.probe_error is not None:
-            raise self.probe_error(at)
         if at in self.explicit:
             return FileStat(name=at, type=FileType.DIRECTORY)
         if at in self.stored:
@@ -63,8 +59,6 @@ class Backend:
         raise FileNotFoundError(at)
 
     def _listing(self, at: str) -> list[str]:
-        if self.probe_error is not None:
-            raise self.probe_error(at)
         if self.listing is not None:
             return list(self.listing(at))
         names = {*self.implicit, *self.explicit, *self.stored}
@@ -75,7 +69,7 @@ class Backend:
 
     def _read(self, at: str) -> bytes:
         if at not in self.stored:
-            raise self.read_error(at)
+            raise FileNotFoundError(at)
         return self.stored[at]
 
     async def _stream(self, at: str) -> AsyncIterator[bytes]:
@@ -103,16 +97,16 @@ def _driver(at: str) -> list[str]:
     raise ValueError(f"Table '{at}' was not found")
 
 
-def _host_named(at: str) -> OSError:
-    return IsADirectoryError(21, "Is a directory", "/host" + at)
-
-
 def _st(kind: FileType = FileType.FILE, **fields: Any) -> FileStat:
     return FileStat(name="f", type=kind, **fields)
 
 
-def _answering(st: FileStat, now: FileStat | None = None) -> Any:
+def _answering(
+    st: FileStat, now: FileStat | None = None, warm: bytes | None = None
+) -> Any:
     async def dispatch(name, path, /, **kwargs):
+        if name == "read":
+            return warm, IOResult()
         return (now or st) if kwargs.get("fresh") else st, IOResult()
 
     return dispatch
@@ -138,7 +132,7 @@ def _on_mount(prefix: str = "/") -> Iterator[None]:
 
 
 def _files(ctx: Context) -> CommandFiles:
-    with with_reading(ctx, Reading(split=False, cached_sizes=True)) as run:
+    with with_reading(ctx, Reading(split=False)) as run:
         return command_files(run)
 
 
@@ -148,13 +142,6 @@ def _path(virtual: str) -> PathSpec:
 
 async def _drain(stream: AsyncIterator[bytes]) -> bytes:
     return b"".join([chunk async for chunk in stream])
-
-
-_READS = {
-    "bytes": lambda files, path: files.read_bytes(path),
-    "range": lambda files, path: files.read_range(path, offset=0, size=None),
-    "stream": lambda files, path: _drain(files.read_stream(path)),
-}
 
 
 @pytest.mark.asyncio
@@ -186,60 +173,6 @@ async def test_dir_aware_stat_and_stream_judge_each_kind_of_directory(
     with pytest.raises(error):
         await _drain(dir_aware_stream(files, ctx)(_path(path)))
     assert [v for n, v, _ in backend.calls if n == "read"] == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("read", sorted(_READS))
-@pytest.mark.parametrize(
-    "backend,error",
-    [
-        ({"implicit": {"/f"}}, IsADirectoryError),
-        ({"explicit": {"/f"}, "read_error": RuntimeError}, IsADirectoryError),
-        ({"explicit": {"/f"}, "read_error": _host_named}, IsADirectoryError),
-        ({"explicit": {"/f"}, "stored": {"/f": b""}}, IsADirectoryError),
-        ({"read_error": PermissionError}, PermissionError),
-        (
-            {"read_error": PermissionError, "probe_error": RuntimeError},
-            PermissionError,
-        ),
-    ],
-    ids="implicit opaque host empty other probe".split(),
-)
-async def test_a_read_answers_each_kind_with_its_own_error_at_its_path(
-    backend, error, read
-):
-    with _on_mount():
-        files = _files(_ctx(Backend(**backend)))
-    with pytest.raises(error) as raised:
-        await _READS[read](files, _path("/f"))
-    assert "/f" in str(raised.value)
-    assert "/host" not in str(raised.value)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("read", sorted(_READS))
-async def test_a_read_reads_a_file_empty_or_not(read):
-    with _on_mount():
-        files = _files(_ctx(Backend(stored={"/f": b"data", "/empty": b""})))
-    assert await _READS[read](files, _path("/f")) == b"data"
-    assert await _READS[read](files, _path("/empty")) == b""
-
-
-@pytest.mark.asyncio
-async def test_only_a_builders_files_refuse_a_slashed_write():
-    backend = Backend()
-    slashed = PathSpec.from_str_path("missing/", cwd="/")
-    with _on_mount():
-        files = _files(_ctx(backend))
-        bare = command_files(_ctx(backend))
-    for write in (files.write, files.append):
-        with pytest.raises(IsADirectoryError):
-            await write(slashed, b"x")
-    with pytest.raises(IsADirectoryError):
-        await files.truncate(slashed, 0)
-    assert backend.calls == []
-    await bare.write(slashed, b"x")
-    assert [name for name, _, _ in backend.calls] == ["write"]
 
 
 @pytest.mark.asyncio
@@ -282,21 +215,22 @@ async def test_a_glob_resolves_under_its_mounts_cap_and_none_reads_as_stdin():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "st,now,pin,size",
+    "st,now,warm,pin,size",
     [
-        (_st(size=7), None, None, 7),
-        (_st(size=7), _st(size=9), None, None),
-        (_st(size=7), None, {"/f": "v1"}, None),
-        (_st(size=7, mode=0o644), None, None, None),
-        (_st(), None, None, None),
-        (_st(FileType.CHAR_DEVICE, size=0), None, None, None),
+        (_st(size=7), None, None, None, 7),
+        (_st(size=7), _st(size=9), None, None, None),
+        (_st(size=7), None, b"cached", None, None),
+        (_st(size=7), None, None, {"/f": "v1"}, None),
+        (_st(size=7, mode=0o644), None, None, None, None),
+        (_st(), None, None, None, None),
+        (_st(FileType.CHAR_DEVICE, size=0), None, None, None, None),
     ],
-    ids="file moved pinned mode unsized device".split(),
+    ids="file moved cached pinned mode unsized device".split(),
 )
 async def test_file_size_answers_a_store_files_unmoved_unpinned_size(
-    st, now, pin, size
+    st, now, warm, pin, size
 ):
-    ctx = _ctx(_answering(st, now))
+    ctx = _ctx(_answering(st, now, warm))
     with _on_mount():
         bound = file_size(command_files(ctx), ctx)
     token = push_revisions(pin)

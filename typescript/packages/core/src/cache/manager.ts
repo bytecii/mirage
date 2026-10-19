@@ -615,10 +615,10 @@ export class CacheManager {
    * Return the cached render's byte length, without revalidating.
    *
    * The size backfill a render-dependent backend cannot answer for itself
-   * (`generic_bind/factory.ts`) runs only where the backend reported no
-   * size, which is exactly the API mounts, so gating it would turn a stat
-   * into a backend stat. It answers a length rather than content, so nothing
-   * can serve unverified bytes through it.
+   * (the dispatcher's stat) runs only where the backend reported no size,
+   * which is exactly the API mounts, so gating it would turn a stat into a
+   * backend stat. It answers a length rather than content, so nothing can
+   * serve unverified bytes through it.
    */
   async cachedSize(path: PathSpec): Promise<number | null> {
     const key = this.cacheKey(path)

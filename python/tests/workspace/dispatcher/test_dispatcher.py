@@ -17,6 +17,7 @@ import dataclasses
 import errno
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1552,6 +1553,199 @@ async def test_a_directory_stat_does_not_probe_cached_bytes():
         row = await ws.vfs.stat("/api/d")
         assert (row.type, row.size) == (FileType.DIRECTORY, None)
         assert get.call_args_list == []
+    finally:
+        await ws.close()
+
+
+class _DirVoiceRAM(RAMVFS):
+    """A RAM store that answers a read of a path in ``voiced`` in another
+    store's voice: an error of its own, or no bytes."""
+
+    def __init__(self, voice: Any, voiced: set[str]) -> None:
+        super().__init__()
+        self.voice = voice
+        self.voiced = voiced
+
+    def _answer(self, path: PathSpec) -> bytes:
+        if not callable(self.voice):
+            return self.voice
+        raise self.voice(path.virtual)
+
+    async def read(
+        self, path: PathSpec, offset: int = 0, size: int | None = None
+    ) -> bytes:
+        if path.mount_path in self.voiced:
+            return self._answer(path)
+        return await super().read(path, offset, size)
+
+    def read_stream(self, path: PathSpec) -> AsyncIterator[bytes]:
+        if path.mount_path in self.voiced:
+            return _voiced(self, path)
+        return super().read_stream(path)
+
+
+async def _voiced(vfs: _DirVoiceRAM, path: PathSpec) -> AsyncIterator[bytes]:
+    yield vfs._answer(path)
+
+
+def _host_named(at: str) -> OSError:
+    return IsADirectoryError(21, "Is a directory", "/host" + at)
+
+
+async def _drained(stream: AsyncIterator[bytes]) -> bytes:
+    return b"".join([chunk async for chunk in stream])
+
+
+_WS_READS = {
+    "bytes": lambda ws, path: ws.vfs.read(path),
+    "range": lambda ws, path: ws.vfs.read(path, offset=0, size=4),
+    "stream": lambda ws, path: _drained_stream(ws, path),
+}
+
+
+async def _drained_stream(ws: Workspace, path: str) -> bytes:
+    return await _drained(await ws.vfs.read_stream(path))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", sorted(_WS_READS))
+@pytest.mark.parametrize(
+    "voice,dirs,files,path,error",
+    [
+        (None, set(), {"/sub/x": b"x"}, "/m/sub", IsADirectoryError),
+        (RuntimeError, {"/d"}, {}, "/m/d", IsADirectoryError),
+        (_host_named, {"/d"}, {}, "/m/d", IsADirectoryError),
+        (b"", {"/d"}, {}, "/m/d", IsADirectoryError),
+        (PermissionError, set(), {"/f": b"x"}, "/m/f", PermissionError),
+    ],
+    ids="implicit opaque host empty other".split(),
+)
+async def test_a_read_of_a_directory_is_refused_for_every_caller(
+    voice, dirs, files, path, error, read
+):
+    # A store answers a read of a directory in its own voice (a keyed
+    # store's ENOENT, sftp's opaque error, no bytes); ws.vfs gets GNU's
+    # EISDIR at the path it named, as a command does, and any other
+    # failure as it was.
+    vfs = _DirVoiceRAM(voice, {*dirs, "/f"} if voice else set())
+    vfs._store.dirs.update({"/", *dirs})
+    vfs._store.files.update(files)
+    ws = Workspace({"/m": vfs})
+    try:
+        with pytest.raises(error) as raised:
+            await _WS_READS[read](ws, path)
+        assert path in str(raised.value)
+        assert "/host" not in str(raised.value)
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", sorted(_WS_READS))
+async def test_a_read_of_a_file_empty_or_not_is_answered(read):
+    vfs = RAMVFS()
+    vfs._store.dirs.add("/")
+    vfs._store.files.update({"/f": b"data", "/empty": b""})
+    ws = Workspace({"/m": vfs})
+    try:
+        assert await _WS_READS[read](ws, "/m/f") == b"data"
+        assert await _WS_READS[read](ws, "/m/empty") == b""
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", ["/m/missing/", "/m/d/f/", "/m/d/f/./", "/m/missing/./"]
+)
+async def test_a_write_to_a_slash_terminated_name_is_refused_for_every_caller(
+    path,
+):
+    # `x/` names a directory, so ws.vfs refuses to create a file there
+    # before anything is looked up, as the shell's tee and truncate do,
+    # however the slash is spelled.
+    vfs = RAMVFS()
+    vfs._store.dirs.update({"/", "/d"})
+    vfs._store.files["/d/f"] = b"x"
+    ws = Workspace({"/m": vfs}, mode=MountMode.WRITE)
+    try:
+        for write in (
+            lambda: ws.vfs.write(path, b"y"),
+            lambda: ws.vfs.append(path, b"y"),
+            lambda: ws.vfs.pwrite(path, b"y", 0),
+            lambda: ws.vfs.truncate(path, 0),
+        ):
+            with pytest.raises(IsADirectoryError):
+                await write()
+        assert vfs._store.files == {"/d/f": b"x"}
+    finally:
+        await ws.close()
+
+
+class _StandInRAM(RAMVFS):
+    """A caching RAM mount that answers the read stand-ins itself."""
+
+    caches_reads = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[str] = []
+
+    async def first_lines(
+        self, path: PathSpec, n: int, index: IndexCacheStore = NULL_INDEX
+    ) -> bytes | None:
+        self.asked.append("first_lines")
+        return b"stand-in\n"
+
+    async def line_count(
+        self, path: PathSpec, index: IndexCacheStore = NULL_INDEX
+    ) -> int | None:
+        self.asked.append("line_count")
+        return 7
+
+
+@pytest.mark.asyncio
+async def test_a_stand_in_gives_way_to_the_read_for_a_cached_file():
+    # A call standing in for a read answers None for a file the read
+    # cache holds, so ws.vfs reads it and is served the cached copy.
+    vfs = _StandInRAM()
+    vfs._store.dirs.add("/")
+    vfs._store.files.update({"/cold": b"a\n", "/warm": b"b\n"})
+    ws = Workspace({"/m": vfs})
+    try:
+        await ws.vfs.read("/m/warm")
+        for name, kwargs in (("first_lines", {"n": 1}), ("line_count", {})):
+            cold, _ = await ws.vfs.dispatch(
+                name, PathSpec.from_str_path("/m/cold"), **kwargs
+            )
+            warm, _ = await ws.vfs.dispatch(
+                name, PathSpec.from_str_path("/m/warm"), **kwargs
+            )
+            assert cold is not None and warm is None
+        assert vfs.asked == ["first_lines", "line_count"]
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_warm_read_answers_the_cached_copy_or_none():
+    vfs = _StandInRAM()
+    vfs._store.dirs.add("/")
+    vfs._store.files.update({"/cold": b"a\n", "/warm": b"b\n"})
+    ws = Workspace({"/m": vfs})
+    try:
+        await ws.vfs.read("/m/warm")
+        vfs._store.files["/warm"] = b"changed\n"
+        reads = AsyncMock(wraps=vfs.read)
+        vfs.read = reads
+        cold, _ = await ws.vfs.dispatch(
+            "read", PathSpec.from_str_path("/m/cold"), warm=True
+        )
+        warm, _ = await ws.vfs.dispatch(
+            "read", PathSpec.from_str_path("/m/warm"), warm=True
+        )
+        assert (cold, warm) == (None, b"b\n")
+        assert reads.call_args_list == []
     finally:
         await ws.close()
 

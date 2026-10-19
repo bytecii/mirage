@@ -12,7 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { activeCacheManager } from '../../../cache/context.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
@@ -348,7 +347,6 @@ export function findGeneric(
           ...(pathFlag !== null ? { pathPattern: pathFlag } : {}),
           ...(emptyFlag ? { empty: true } : {}),
         }
-  const cacheManager = activeCacheManager()
   const records: PathRecord[] = []
   const io = new IOResult({ records })
   async function* stream(): AsyncGenerator<Uint8Array> {
@@ -422,11 +420,6 @@ export function findGeneric(
           missing.push(`find: '${label}': ${await missingStartDetail(root, missingStat ?? stat)}`)
           continue
         }
-        const cachedSize =
-          start.type === FileType.FILE && start.size === null
-            ? await cacheManager?.cachedSize(root)
-            : null
-        if (cachedSize != null) start = start.with({ size: cachedSize })
         if (start.type !== FileType.DIRECTORY && root.rawPath.endsWith('/')) {
           // POSIX reads `x/` as `x/.`, so an operand typed with a trailing
           // slash has to name a directory; GNU refuses the rest with

@@ -759,7 +759,7 @@ class CacheManager:
         """Return the cached render's byte length, without revalidating.
 
         The size backfill a render-dependent backend cannot answer for
-        itself (``generic_bind.factory``) runs only where the backend
+        itself (the dispatcher's stat) runs only where the backend
         reported no size, which is exactly the API mounts, so gating it
         would turn a stat into a backend stat. It answers a length rather
         than content, so nothing can serve unverified bytes through it.

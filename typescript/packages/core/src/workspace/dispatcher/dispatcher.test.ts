@@ -28,7 +28,8 @@ import { POLICY_WRITE_OPS, READ_AHEAD_BYTES } from './constants.ts'
 import { runInCommandScope } from '../../cache/index/scope.ts'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { BaseVFS } from '../../vfs/base.ts'
-import { enoent, erofs } from '../../errors/fs.ts'
+import type { Handed } from '../../vfs/types.ts'
+import { eacces, enoent, erofs } from '../../errors/fs.ts'
 import { CommandTimeoutError } from '../../errors/types.ts'
 import type { Policy } from '../../policy/base.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
@@ -2716,6 +2717,197 @@ describe('a stat with no size', () => {
       expect((await ws.vfs.stat('/api/f')).size).toBeNull()
       await ws.vfs.read('/api/f')
       expect((await ws.vfs.stat('/api/f')).size).toBe('hello\n'.length)
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+// A RAM store that answers a read of a path in `voiced` in another store's
+// voice: an error of its own, or no bytes.
+class DirVoiceRAM extends RAMVFS {
+  constructor(
+    readonly voice: ((virtual: string) => Error) | Uint8Array,
+    readonly voiced: ReadonlySet<string>,
+  ) {
+    super()
+  }
+
+  answer(path: PathSpec): Uint8Array {
+    if (this.voice instanceof Uint8Array) return this.voice
+    throw this.voice(path.virtual)
+  }
+
+  override async read(
+    path: PathSpec,
+    handed?: Handed,
+    offset = 0,
+    size: number | null = null,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    if (this.voiced.has(path.mountPath)) return this.answer(path)
+    return super.read(path, handed, offset, size, signal)
+  }
+
+  override readStream(path: PathSpec): AsyncIterable<Uint8Array> {
+    if (this.voiced.has(path.mountPath)) return voicedStream(this, path)
+    return super.readStream(path)
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/require-await
+async function* voicedStream(vfs: DirVoiceRAM, path: PathSpec): AsyncIterable<Uint8Array> {
+  yield vfs.answer(path)
+}
+
+const hostNamed = (virtual: string): Error =>
+  Object.assign(new Error('Is a directory'), { code: 'EISDIR', path: `/host${virtual}` })
+
+async function drained(stream: AsyncIterable<Uint8Array>): Promise<string> {
+  let text = ''
+  for await (const chunk of stream) text += DEC.decode(chunk)
+  return text
+}
+
+const WS_READS: [string, (ws: Workspace, path: string) => Promise<string>][] = [
+  ['whole', async (ws, path) => DEC.decode(await ws.vfs.read(path))],
+  ['ranged', async (ws, path) => DEC.decode(await ws.vfs.read(path, { offset: 0, size: 4 }))],
+  ['streamed', async (ws, path) => drained(await ws.vfs.readStream(path))],
+]
+
+describe.each(WS_READS)('a %s read through ws.vfs', (_, read) => {
+  // A store answers a read of a directory in its own voice (a keyed store's
+  // ENOENT, sftp's opaque error, no bytes); ws.vfs gets GNU's EISDIR at the
+  // path it named, as a command does, and any other failure as it was.
+  it.each([
+    ['an implicit directory', null, [], { '/sub/x': 'x' }, '/m/sub', 'EISDIR'],
+    ['an opaque directory read', () => new Error('SFTP'), ['/d'], {}, '/m/d', 'EISDIR'],
+    ['a host-named directory', hostNamed, ['/d'], {}, '/m/d', 'EISDIR'],
+    ['a directory read empty', new Uint8Array(), ['/d'], {}, '/m/d', 'EISDIR'],
+    ['an unrelated failure', (v: string) => eacces(v), [], { '/f': 'x' }, '/m/f', 'EACCES'],
+  ] as [string, DirVoiceRAM['voice'] | null, string[], Record<string, string>, string, string][])(
+    'answers %s with its own code at the path',
+    async (_, voice, dirs, files, path, code) => {
+      const vfs = voice === null ? new RAMVFS() : new DirVoiceRAM(voice, new Set([...dirs, '/f']))
+      vfs.store.dirs.add('/')
+      for (const dir of dirs) vfs.store.dirs.add(dir)
+      for (const [name, text] of Object.entries(files)) vfs.store.files.set(name, ENC.encode(text))
+      const ws = new Workspace({ '/m': vfs })
+      try {
+        const refused = await read(ws, path).then(
+          () => null,
+          (err: unknown) => err as { code?: string; message?: string },
+        )
+        expect(refused?.code).toBe(code)
+        expect(refused?.message).toContain(path)
+        expect(refused?.message).not.toContain('/host')
+      } finally {
+        await ws.close()
+      }
+    },
+  )
+
+  it('reads a file, empty or not', async () => {
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/')
+    vfs.store.files.set('/f', ENC.encode('data'))
+    vfs.store.files.set('/empty', new Uint8Array())
+    const ws = new Workspace({ '/m': vfs })
+    try {
+      expect(await read(ws, '/m/f')).toBe('data')
+      expect(await read(ws, '/m/empty')).toBe('')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('a write to a slash-terminated name', () => {
+  it.each(['/m/missing/', '/m/d/f/', '/m/d/f/./', '/m/missing/./'])(
+    'is refused through ws.vfs for %s',
+    async (path) => {
+      // `x/` names a directory, so ws.vfs refuses to create a file there
+      // before anything is looked up, as the shell's tee and truncate do,
+      // however the slash is spelled.
+      const vfs = new RAMVFS()
+      vfs.store.dirs.add('/')
+      vfs.store.dirs.add('/d')
+      vfs.store.files.set('/d/f', ENC.encode('x'))
+      const ws = new Workspace({ '/m': vfs }, { mode: MountMode.WRITE })
+      try {
+        for (const write of [
+          () => ws.vfs.write(path, 'y'),
+          () => ws.vfs.append(path, ENC.encode('y')),
+          () => ws.vfs.pwrite(path, ENC.encode('y'), 0),
+          () => ws.vfs.truncate(path, 0),
+        ]) {
+          await expect(write()).rejects.toMatchObject({ code: 'EISDIR' })
+        }
+        expect([...vfs.store.files.keys()]).toEqual(['/d/f'])
+      } finally {
+        await ws.close()
+      }
+    },
+  )
+})
+
+// A caching RAM mount that answers the read stand-ins itself.
+class StandInRAM extends RAMVFS {
+  override readonly cachesReads = true
+  readonly asked: string[] = []
+
+  override firstLines(_path: PathSpec, _n: number, _handed?: Handed): Promise<Uint8Array> {
+    this.asked.push('first_lines')
+    return Promise.resolve(ENC.encode('stand-in\n'))
+  }
+
+  override lineCount(_path: PathSpec, _handed?: Handed): Promise<number> {
+    this.asked.push('line_count')
+    return Promise.resolve(7)
+  }
+}
+
+function standIns(): [StandInRAM, Workspace] {
+  const vfs = new StandInRAM()
+  vfs.store.dirs.add('/')
+  vfs.store.files.set('/cold', ENC.encode('a\n'))
+  vfs.store.files.set('/warm', ENC.encode('b\n'))
+  return [vfs, new Workspace({ '/m': vfs })]
+}
+
+describe('the cache stage', () => {
+  it('has a stand-in give way to the read for a cached file', async () => {
+    // A call standing in for a read answers null for a file the read cache
+    // holds, so ws.vfs reads it and is served the cached copy.
+    const [vfs, ws] = standIns()
+    try {
+      await ws.vfs.read('/m/warm')
+      for (const [name, args] of [
+        ['first_lines', [1]],
+        ['line_count', []],
+      ] as [string, unknown[]][]) {
+        const [cold] = await ws.vfs.dispatch(name, '/m/cold', args)
+        const [warm] = await ws.vfs.dispatch(name, '/m/warm', args)
+        expect(cold).not.toBeNull()
+        expect(warm).toBeNull()
+      }
+      expect(vfs.asked).toEqual(['first_lines', 'line_count'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('answers a warm read with the cached copy or null', async () => {
+    const [vfs, ws] = standIns()
+    try {
+      await ws.vfs.read('/m/warm')
+      vfs.store.files.set('/warm', ENC.encode('changed\n'))
+      const reads = vi.spyOn(vfs, 'read')
+      const [cold] = await ws.vfs.dispatch('read', '/m/cold', [], { warm: true })
+      const [warm] = await ws.vfs.dispatch('read', '/m/warm', [], { warm: true })
+      expect(cold).toBeNull()
+      expect(DEC.decode(warm as Uint8Array)).toBe('b\n')
+      expect(reads.mock.calls).toEqual([])
     } finally {
       await ws.close()
     }

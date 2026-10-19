@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { runWithMountGate } from '../../../context/session_context.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
 import { FileStat, FileType, MountMode, PathSpec, type FileStatInit } from '../../../types.ts'
-import { eacces, eisdir, enoent } from '../../../errors/fs.ts'
+import { eacces, enoent } from '../../../errors/fs.ts'
 import { IOResult } from '../../../io/types.ts'
 import { Files } from '../../../workspace/files.ts'
 import type { MountRow } from '../../../workspace/types.ts'
@@ -53,8 +53,6 @@ interface Backend {
   stored?: Record<string, string>
   implicit?: readonly string[]
   explicit?: readonly string[]
-  readError?: (p: PathSpec) => Error
-  probeError?: Error
   listing?: (p: PathSpec) => Promise<string[]>
 }
 
@@ -64,7 +62,7 @@ async function* throwing(err: Error): AsyncIterable<Uint8Array> {
 }
 
 function keyed(backend: Backend, calls: string[] = []): DispatchFn {
-  const { stored = {}, implicit = [], explicit = [], readError = enoent, probeError } = backend
+  const { stored = {}, implicit = [], explicit = [] } = backend
   const done = (value: unknown): Promise<[unknown, IOResult]> =>
     Promise.resolve([value, new IOResult()])
   const names = [...implicit, ...explicit, ...Object.keys(stored)]
@@ -79,22 +77,20 @@ function keyed(backend: Backend, calls: string[] = []): DispatchFn {
   return (name, p, _args, kwargs = {}) => {
     calls.push(`${name} ${p.virtual}`)
     const hit = stored[p.virtual]
-    if ((name === 'stat' || name === 'readdir') && probeError !== undefined)
-      return Promise.reject(probeError)
     if (name === 'readdir') return listing(p).then(done)
     if (name === 'stat' && explicit.includes(p.virtual))
       return done(new FileStat({ name: p.virtual, type: FileType.DIRECTORY }))
     if (name === 'stat') return done(hit === undefined ? null : stat({ size: hit.length }))
     if (name !== 'read') return done(null)
     if (kwargs.stream === true)
-      return done(hit === undefined ? throwing(readError(p)) : [ENC.encode(hit)])
-    return hit === undefined ? Promise.reject(readError(p)) : done(ENC.encode(hit))
+      return done(hit === undefined ? throwing(enoent(p)) : [ENC.encode(hit)])
+    return hit === undefined ? Promise.reject(enoent(p)) : done(ENC.encode(hit))
   }
 }
 
-function answering(st: FileStat, now: FileStat = st): DispatchFn {
-  return (_name, _p, _args, kwargs = {}) =>
-    Promise.resolve([kwargs.fresh === true ? now : st, new IOResult()])
+function answering(st: FileStat, now: FileStat = st, warm: Uint8Array | null = null): DispatchFn {
+  return (name, _p, _args, kwargs = {}) =>
+    Promise.resolve([name === 'read' ? warm : kwargs.fresh === true ? now : st, new IOResult()])
 }
 
 interface Mounts {
@@ -116,7 +112,7 @@ function contextFor(
 
 // The command's files as the factory hands them to a builder on a mount.
 function guarded(ctx: Context): Promise<CommandFiles> {
-  const reading = withReading(ctx, { split: true, cachedSizes: true, stream: null })
+  const reading = withReading(ctx, { split: true, stream: null })
   return runWithMountGate('/', MountMode.WRITE, () => Promise.resolve(commandFiles(reading)))
 }
 
@@ -125,23 +121,6 @@ async function drain(stream: AsyncIterable<Uint8Array>): Promise<string> {
   for await (const chunk of stream) text += DEC.decode(chunk)
   return text
 }
-
-const READS: [string, (files: CommandFiles, p: PathSpec) => Promise<string>][] = [
-  ['whole', async (files, p) => DEC.decode(await files.readBytes(p))],
-  ['ranged', async (files, p) => DEC.decode(await files.readRange(p, 0, null))],
-  ['streamed', (files, p) => drain(files.readStream(p))],
-]
-
-const refused = (p: PathSpec): Error => eacces(p.virtual)
-
-const KINDS: [string, Backend, string][] = [
-  ['an implicit directory', { implicit: ['/f'] }, 'EISDIR'],
-  ['an opaque directory read', { explicit: ['/f'], readError: () => new Error('SFTP') }, 'EISDIR'],
-  ['a host-named directory', { explicit: ['/f'], readError: () => eisdir('/host/f') }, 'EISDIR'],
-  ['a directory read empty', { explicit: ['/f'], stored: { '/f': '' } }, 'EISDIR'],
-  ['an unrelated failure', { readError: refused }, 'EACCES'],
-  ['probes that blow up', { readError: refused, probeError: new Error('reset') }, 'EACCES'],
-]
 
 describe('commandFiles', () => {
   it('reads the stored bytes on a mount, and across mounts renders after a stat', async () => {
@@ -188,7 +167,7 @@ describe('commandFiles', () => {
 const fabricated = (p: PathSpec) =>
   Promise.resolve(stripSlash(p.virtual) === '' ? ['/real.txt'] : [`${p.virtual}/tables`])
 const driver = () => Promise.reject(new Error("Table 'nope.txt' was not found"))
-const refusing = (p: PathSpec) => Promise.reject(refused(p))
+const refusing = (p: PathSpec) => Promise.reject(eacces(p.virtual))
 
 describe('dirAwareStat and dirAwareStream', () => {
   it.each([
@@ -205,19 +184,6 @@ describe('dirAwareStat and dirAwareStream', () => {
     await expect(dirAwareStat(files, ctx)(at(path))).rejects.toMatchObject({ code })
     await expect(drain(dirAwareStream(files, ctx)(at(path)))).rejects.toMatchObject({ code })
     expect(calls.filter((call) => call.startsWith('read '))).toEqual([])
-  })
-})
-
-describe.each(READS)('a %s read under the directory guard', (_, read) => {
-  it.each(KINDS)('answers %s with its own code at the virtual path', async (_, backend, code) => {
-    const files = await guarded(contextFor(keyed(backend)))
-    await expect(read(files, at('/f'))).rejects.toMatchObject({ code, message: '/f' })
-  })
-
-  it('reads a file, empty or not', async () => {
-    const files = await guarded(contextFor(keyed({ stored: { '/f': 'data', '/empty': '' } })))
-    expect(await read(files, at('/f'))).toBe('data')
-    expect(await read(files, at('/empty'))).toBe('')
   })
 })
 
@@ -255,14 +221,15 @@ describe('the abort guard', () => {
 
 describe('fileSize', () => {
   it.each([
-    ['a store file', stat({ size: 7 }), undefined, false, 7],
-    ['a file whose size moved', stat({ size: 7 }), stat({ size: 9 }), false, null],
-    ['a path pinned to a revision', stat({ size: 7 }), undefined, true, null],
-    ['a file with permission bits', stat({ size: 7, mode: 0o644 }), undefined, false, null],
-    ['a file of unknown size', stat(), undefined, false, null],
-    ['a device', stat({ type: FileType.CHAR_DEVICE, size: 0 }), undefined, false, null],
-  ])('answers %s', async (_, st, now, pinned, size) => {
-    const ctx = contextFor(answering(st, now))
+    ['a store file', stat({ size: 7 }), undefined, null, false, 7],
+    ['a file whose size moved', stat({ size: 7 }), stat({ size: 9 }), null, false, null],
+    ['a file the read cache holds', stat({ size: 7 }), undefined, ENC.encode('x'), false, null],
+    ['a path pinned to a revision', stat({ size: 7 }), undefined, null, true, null],
+    ['a file with permission bits', stat({ size: 7, mode: 0o644 }), undefined, null, false, null],
+    ['a file of unknown size', stat(), undefined, null, false, null],
+    ['a device', stat({ type: FileType.CHAR_DEVICE, size: 0 }), undefined, null, false, null],
+  ])('answers %s', async (_, st, now, warm, pinned, size) => {
+    const ctx = contextFor(answering(st, now, warm))
     const bound = fileSize(await guarded(ctx), ctx)
     const pins = pinned ? new Map([['/f', 'v1']]) : null
     expect(await runWithRevisions(pins, () => bound(at('/f')))).toBe(size)
